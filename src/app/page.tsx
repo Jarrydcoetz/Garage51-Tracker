@@ -1,7 +1,11 @@
 import { submitEnquiry } from "./actions";
 import type { ReactNode, CSSProperties } from "react";
 
-const ORANGE = "#FF5E1A";
+const RED = "#ED1C24";
+const C = {
+  page: "#1A1817", card: "#242120", border: "#39342F",
+  inputBg: "#151311", inputBorder: "#3A332E", text: "#F4F2EF", muted: "#9A938D",
+};
 
 export default function Home() {
   return (
@@ -9,11 +13,9 @@ export default function Home() {
       <style>{css}</style>
       <div style={styles.card}>
         <header style={styles.header}>
-          <div style={styles.mark}>G51</div>
-          <div>
-            <div style={styles.wordmark}>GARAGE<span style={{ color: ORANGE }}>51</span></div>
-            <div style={styles.tagline}>Booking Enquiry</div>
-          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/garage51-logo.png" alt="Garage51 Middle East" style={styles.logo} />
+          <div style={styles.tagline}>Booking Enquiry</div>
         </header>
 
         <p style={styles.intro}>
@@ -61,61 +63,21 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 }
 
 const css = `
-@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@600;700&display=swap');
-.g51-input::placeholder { color: #6B6F78; }
-.g51-input:focus { outline: none; border-color: ${ORANGE}; box-shadow: 0 0 0 3px rgba(255,94,26,0.18); }
-.g51-button:hover { background: #e54e12; }
+.g51-input::placeholder { color: #6E6862; }
+.g51-input:focus { outline: none; border-color: ${RED}; box-shadow: 0 0 0 3px rgba(237,28,36,0.18); }
+.g51-button:hover { background: #cf1820; }
 `;
 
 const styles: Record<string, CSSProperties> = {
-  page: {
-    minHeight: "100vh",
-    background: "#16171B",
-    display: "flex",
-    alignItems: "flex-start",
-    justifyContent: "center",
-    padding: "48px 20px",
-    fontFamily: "system-ui, -apple-system, sans-serif",
-    colorScheme: "dark",
-  },
-  card: {
-    width: "100%",
-    maxWidth: 520,
-    background: "#1E2026",
-    border: "1px solid #2A2D34",
-    borderRadius: 16,
-    padding: "32px 28px",
-    boxShadow: "0 20px 50px rgba(0,0,0,0.4)",
-  },
-  header: { display: "flex", alignItems: "center", gap: 14, marginBottom: 20 },
-  mark: {
-    background: ORANGE, color: "#16171B", fontFamily: "'Oswald', system-ui, sans-serif",
-    fontWeight: 700, fontSize: 18, width: 46, height: 46, borderRadius: 10,
-    display: "grid", placeItems: "center", transform: "skewX(-6deg)",
-  },
-  wordmark: {
-    fontFamily: "'Oswald', system-ui, sans-serif", fontWeight: 700, fontSize: 26,
-    letterSpacing: "0.08em", color: "#F2F1EE", lineHeight: 1,
-  },
-  tagline: {
-    fontSize: 12, letterSpacing: "0.18em", textTransform: "uppercase",
-    color: "#8A8D96", marginTop: 5,
-  },
-  intro: { color: "#A9ACB4", fontSize: 14.5, lineHeight: 1.6, margin: "0 0 24px" },
+  page: { minHeight: "100vh", background: C.page, display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark" },
+  card: { width: "100%", maxWidth: 520, background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: "32px 28px", boxShadow: "0 24px 60px rgba(0,0,0,0.45)" },
+  header: { textAlign: "center", marginBottom: 22 },
+  logo: { width: 230, maxWidth: "80%", height: "auto", display: "block", margin: "0 auto" },
+  tagline: { fontSize: 12, letterSpacing: "0.22em", textTransform: "uppercase", color: C.muted, marginTop: 14 },
+  intro: { color: "#B6AFA9", fontSize: 14.5, lineHeight: 1.6, margin: "0 0 24px", textAlign: "center" },
   form: { display: "grid", gap: 16 },
   field: { display: "grid", gap: 6 },
-  label: {
-    fontSize: 11.5, letterSpacing: "0.1em", textTransform: "uppercase",
-    color: "#8A8D96", fontWeight: 600,
-  },
-  input: {
-    width: "100%", boxSizing: "border-box",
-    background: "#121317", border: "1px solid #2C2F36", borderRadius: 9,
-    color: "#F2F1EE", fontSize: 15, padding: "11px 13px", fontFamily: "inherit",
-  },
-  button: {
-    marginTop: 6, background: ORANGE, color: "#16171B", border: "none",
-    borderRadius: 10, padding: "14px", fontSize: 15.5, fontWeight: 700,
-    cursor: "pointer", letterSpacing: "0.02em",
-  },
+  label: { fontSize: 11.5, letterSpacing: "0.1em", textTransform: "uppercase", color: C.muted, fontWeight: 600 },
+  input: { width: "100%", boxSizing: "border-box", background: C.inputBg, border: `1px solid ${C.inputBorder}`, borderRadius: 9, color: C.text, fontSize: 15, padding: "11px 13px", fontFamily: "inherit" },
+  button: { marginTop: 6, background: RED, color: "#FFFFFF", border: "none", borderRadius: 10, padding: "14px", fontSize: 15.5, fontWeight: 700, cursor: "pointer", letterSpacing: "0.02em" },
 };
