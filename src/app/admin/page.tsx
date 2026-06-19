@@ -42,7 +42,15 @@ const STATUS_COLOR: Record<string, string> = {
   new: "#3B9EFF", contacted: "#FFB02E", booked: "#ED1C24",
   paid: "#FFC400", completed: "#2FBF71", lost: "#7A746E",
 };
+const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
+const dotColor = (k: string) => STATUS_COLOR[k] || (k === "sent" ? "#2FBF71" : "#6F6862");
+
+const FILTER_OPTS = [
+  { key: "all", label: "All enquiries" },
+  ...STATUSES.map(st => ({ key: st, label: cap(st) })),
+  { key: "sent", label: "Payment link sent" },
+];
 
 const BLANK = {
   customer_name: "", phone: "", email: "", service_type: "academy",
@@ -90,13 +98,50 @@ function printJobCard(r: Enquiry) {
   w.document.close();
 }
 
+const CSS = `
+.g51-row{transition:background .15s ease;}
+.g51-row:hover{background:#2A2624;}
+.g51-card{transition:border-color .15s ease;}
+.g51-card:hover{border-color:#403A35;}
+.g51-btn{transition:background .15s ease,border-color .15s ease,opacity .15s ease;}
+.g51-ghost:hover{border-color:#5A534D;color:#F4F2EF;}
+.g51-primary:hover{background:#ff2a32;}
+.g51-item:hover{background:#322D29;}
+.g51-input{transition:border-color .15s ease;}
+.g51-input:focus{outline:none;border-color:#6A625B;}
+.g51-expand{animation:g51fade .18s ease;}
+.g51-btn:disabled{opacity:.55;cursor:default;}
+@keyframes g51fade{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:none;}}
+`;
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s ease", flexShrink: 0, opacity: 0.7 }}>
+      <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function Stat({ label, sub, value, color }: { label: string; sub: string; value: string; color: string }) {
+  return (
+    <div style={s.stat}>
+      <div style={s.statLabel}>{label}</div>
+      <div style={{ ...s.statValue, color }}>{value}</div>
+      <div style={s.statSub}>{sub}</div>
+    </div>
+  );
+}
+
 export default function Admin() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [rows, setRows] = useState<Enquiry[]>([]);
   const [loading, setLoading] = useState(true);
   const [savedId, setSavedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<string>("all");
+  const [filter, setFilter] = useState("all");
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [creating, setCreating] = useState(false);
   const [addError, setAddError] = useState("");
@@ -117,6 +162,13 @@ export default function Admin() {
   function edit(id: string, patch: Partial<Enquiry>) {
     setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
   }
+  function toggleExpand(id: string) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
 
   async function save(row: Enquiry) {
     await supabase.from("enquiries").update({
@@ -135,10 +187,7 @@ export default function Admin() {
 
   async function createPaymentLink(row: Enquiry) {
     const amount = Number(row.estimated_value) || 0;
-    if (amount < 2) {
-      alert("Set an estimated value of at least AED 2 before creating a payment link.");
-      return;
-    }
+    if (amount < 2) { alert("Set an estimated value of at least AED 2 before creating a payment link."); return; }
     setLinkBusy(row.id);
     try {
       const res = await fetch("/api/payment-link", {
@@ -147,10 +196,7 @@ export default function Admin() {
         body: JSON.stringify({ amount, message: `Garage51 - ${row.customer_name}` }),
       });
       const data = await res.json();
-      if (!res.ok || !data.url) {
-        alert(data.error || "Could not create the payment link.");
-        return;
-      }
+      if (!res.ok || !data.url) { alert(data.error || "Could not create the payment link."); return; }
       await supabase.from("enquiries").update({ payment_link: data.url, payment_intent_id: data.id }).eq("id", row.id);
       edit(row.id, { payment_link: data.url, payment_intent_id: data.id });
     } catch {
@@ -161,18 +207,14 @@ export default function Admin() {
   }
 
   function copyLink(url: string) {
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(url);
-      alert("Payment link copied.");
-    } else {
-      window.prompt("Copy this payment link:", url);
-    }
+    if (navigator.clipboard) { navigator.clipboard.writeText(url); alert("Payment link copied."); }
+    else { window.prompt("Copy this payment link:", url); }
   }
 
   function whatsappLink(phone: string, name: string, link: string) {
     let n = (phone || "").replace(/\D/g, "");
     if (n.startsWith("00")) n = n.slice(2);
-    if (n.startsWith("0")) n = "971" + n.slice(1); // UAE local 05x -> 9715x
+    if (n.startsWith("0")) n = "971" + n.slice(1);
     const msg = `Hi ${name}, here is your Garage51 booking payment link: ${link}`;
     return `https://wa.me/${n}?text=${encodeURIComponent(msg)}`;
   }
@@ -181,23 +223,14 @@ export default function Admin() {
     try {
       const res = await fetch("/api/setup-webhook", { method: "POST" });
       const data = await res.json();
-      if (!res.ok || !data.ok) {
-        alert(data.error || "Could not connect the webhook.");
-        return;
-      }
+      if (!res.ok || !data.ok) { alert(data.error || "Could not connect the webhook."); return; }
       alert("Payment webhook connected. Paid enquiries will now update automatically.");
-    } catch {
-      alert("Could not reach the server to connect the webhook.");
-    }
+    } catch { alert("Could not reach the server to connect the webhook."); }
   }
 
   async function createEnquiry() {
-    if (!form.customer_name.trim() || !form.phone.trim()) {
-      setAddError("Name and phone are required.");
-      return;
-    }
-    setCreating(true);
-    setAddError("");
+    if (!form.customer_name.trim() || !form.phone.trim()) { setAddError("Name and phone are required."); return; }
+    setCreating(true); setAddError("");
     const { data, error } = await supabase.from("enquiries").insert({
       customer_name: form.customer_name,
       phone: form.phone,
@@ -211,11 +244,7 @@ export default function Admin() {
     }).select().single();
     setCreating(false);
     if (error) { setAddError(error.message); return; }
-    if (data) {
-      setRows(prev => [data as Enquiry, ...prev]);
-      setForm({ ...BLANK });
-      setAdding(false);
-    }
+    if (data) { setRows(prev => [data as Enquiry, ...prev]); setForm({ ...BLANK }); setAdding(false); }
   }
 
   function exportCsv() {
@@ -249,250 +278,289 @@ export default function Admin() {
   const booked = rows.filter(r => r.status === "booked").reduce((a, r) => a + (r.estimated_value || 0), 0);
   const earned = rows.filter(r => ["paid", "completed"].includes(r.status)).reduce((a, r) => a + (r.estimated_value || 0), 0);
 
-  const counts: Record<string, number> = { all: rows.length };
+  const counts: Record<string, number> = { all: rows.length, sent: rows.filter(r => r.payment_link).length };
   STATUSES.forEach(st => { counts[st] = rows.filter(r => r.status === st).length; });
-  counts["sent"] = rows.filter(r => r.payment_link).length;
-  const visible =
-    filter === "all" ? rows
+
+  const q = query.trim().toLowerCase();
+  let visible = filter === "all" ? rows
     : filter === "sent" ? rows.filter(r => r.payment_link)
     : rows.filter(r => r.status === filter);
+  if (q) visible = visible.filter(r =>
+    r.customer_name.toLowerCase().includes(q) ||
+    (r.phone || "").toLowerCase().includes(q) ||
+    (r.selection || "").toLowerCase().includes(q) ||
+    r.service_type.toLowerCase().includes(q)
+  );
 
+  const currentLabel = FILTER_OPTS.find(o => o.key === filter)?.label ?? "All";
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
 
   return (
     <main style={s.page}>
-      <div style={s.bar}>
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
+
+      <header style={s.header}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          <button onClick={() => { setAdding(a => !a); setAddError(""); }} style={s.add}>+ Add enquiry</button>
-          <button onClick={exportCsv} style={s.logout}>Export CSV</button>
-          <button onClick={connectWebhook} style={s.logout}>Connect payment webhook</button>
-          <button onClick={logout} style={s.logout}>Log out</button>
+        <div style={s.headerActions}>
+          <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New enquiry</button>
+          <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
+          <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
         </div>
-      </div>
+      </header>
 
-      <div style={s.stats}>
-        <Stat label="In pipeline" value={aed(pipeline)} color="#3B9EFF" />
-        <Stat label="Booked" value={aed(booked)} color={RED} />
-        <Stat label="Earned" value={aed(earned)} color="#2FBF71" />
-      </div>
-
-      {adding && (
-        <div style={{ ...s.card, borderColor: RED + "77", marginBottom: 16 }}>
-          <div style={{ fontWeight: 700, marginBottom: 14 }}>New enquiry</div>
-          <div style={s.controls}>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
-              <input value={form.customer_name} onChange={e => set("customer_name", e.target.value)} style={s.input} /></label>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Phone *</span>
-              <input value={form.phone} onChange={e => set("phone", e.target.value)} style={s.input} /></label>
-          </div>
-          <div style={s.controls}>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
-              <input value={form.email} onChange={e => set("email", e.target.value)} style={s.input} /></label>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Service</span>
-              <select value={form.service_type} onChange={e => set("service_type", e.target.value)} style={s.input}>
-                <option value="academy">academy</option>
-                <option value="rental">rental</option>
-                <option value="desert_tour">desert_tour</option>
-                <option value="workshop">workshop</option>
-              </select></label>
-          </div>
-          <div style={s.controls}>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Source</span>
-              <select value={form.source} onChange={e => set("source", e.target.value)} style={s.input}>
-                {SOURCES.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
-              </select></label>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Status</span>
-              <select value={form.status} onChange={e => set("status", e.target.value)} style={s.input}>
-                {STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
-              </select></label>
-          </div>
-          <div style={s.controls}>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
-              <input type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
-            <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
-              <input type="datetime-local" value={form.booking_at} onChange={e => set("booking_at", e.target.value)} style={s.input} /></label>
-          </div>
-          <label style={s.ctrl}><span style={s.ctrlLabel}>Notes</span>
-            <textarea value={form.notes} onChange={e => set("notes", e.target.value)} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
-          {addError && <p style={{ color: "#FF6B6B", fontSize: 13, margin: "0 0 10px" }}>{addError}</p>}
-          <div style={s.cardBottom}>
-            <button onClick={createEnquiry} disabled={creating} style={s.save}>{creating ? "Adding…" : "Create enquiry"}</button>
-            <button onClick={() => { setAdding(false); setAddError(""); }} style={s.logout}>Cancel</button>
-          </div>
+      <div style={s.bodyWrap}>
+        <div style={s.stats}>
+          <Stat label="In pipeline" sub="New + contacted" value={aed(pipeline)} color="#5BB0FF" />
+          <Stat label="Booked" sub="Awaiting payment" value={aed(booked)} color={RED} />
+          <Stat label="Earned" sub="Paid + completed" value={aed(earned)} color="#2FBF71" />
         </div>
-      )}
 
-      <div style={s.chips}>
-        {["all", ...STATUSES, "sent"].map(f => {
-          const active = filter === f;
-          const label = f === "sent" ? "links sent" : f;
-          return (
-            <button key={f} onClick={() => setFilter(f)}
-              style={{ ...s.chip, ...(active ? { borderColor: RED, color: "#F4F2EF", background: RED + "1c" } : {}) }}>
-              {label} <span style={{ opacity: 0.6 }}>{counts[f] ?? 0}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {loading ? (
-        <p style={s.muted}>Loading enquiries…</p>
-      ) : rows.length === 0 ? (
-        <p style={s.muted}>No enquiries yet. Use &quot;Add enquiry&quot; or wait for the form to be submitted.</p>
-      ) : visible.length === 0 ? (
-        <p style={s.muted}>Nothing in this status.</p>
-      ) : (
-        <div style={s.list}>
-          {visible.map(r => (
-            <div key={r.id} style={s.card}>
-              <div style={s.cardTop}>
-                <div>
-                  <div style={s.name}>{r.customer_name}</div>
-                  <div style={s.metaRow}>
-                    <span style={s.tag}>{r.service_type}</span>
-                    <span style={s.muted2}>{new Date(r.created_at).toLocaleDateString()}</span>
-                    {r.preferred_date && <span style={s.muted2}>· prefers {r.preferred_date}</span>}
-                  </div>
-                </div>
-                <span style={{ ...s.badge, color: STATUS_COLOR[r.status], borderColor: STATUS_COLOR[r.status] + "66", background: STATUS_COLOR[r.status] + "1c" }}>
-                  {r.status}
-                </span>
-              </div>
-
-              <div style={s.contact}>
-                <a href={`tel:${r.phone}`} style={s.link}>{r.phone}</a>
-                {r.email && <span style={s.muted2}>{r.email}</span>}
-              </div>
-
-              {r.selection && (
-                <div style={s.selBox}>
-                  <span style={s.selLabel}>Requested</span>
-                  <span style={s.selText}>{r.selection}</span>
-                </div>
-              )}
-
-              <div style={s.controls}>
-                <label style={s.ctrl}>
-                  <span style={s.ctrlLabel}>Status</span>
-                  <select value={r.status} onChange={e => edit(r.id, { status: e.target.value })} style={s.input}>
-                    {STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
-                  </select>
-                </label>
-                <label style={s.ctrl}>
-                  <span style={s.ctrlLabel}>Est. value (AED)</span>
-                  <input type="number" value={r.estimated_value} onChange={e => edit(r.id, { estimated_value: Number(e.target.value) })} style={s.input} />
-                </label>
-                <label style={s.ctrl}>
-                  <span style={s.ctrlLabel}>Booking date &amp; time</span>
-                  <input type="datetime-local" value={r.booking_at || ""} onChange={e => edit(r.id, { booking_at: e.target.value })} style={s.input} />
-                </label>
-              </div>
-
-              {r.service_type === "workshop" && (
-                <>
-                  <div style={s.controls}>
-                    <label style={s.ctrl}>
-                      <span style={s.ctrlLabel}>Bike (make / model)</span>
-                      <input value={r.bike_details || ""} onChange={e => edit(r.id, { bike_details: e.target.value })} style={s.input} />
-                    </label>
-                  </div>
-                  <div style={s.controls}>
-                    <label style={s.ctrl}>
-                      <span style={s.ctrlLabel}>Year</span>
-                      <input value={r.bike_year || ""} onChange={e => edit(r.id, { bike_year: e.target.value })} style={s.input} />
-                    </label>
-                    <label style={s.ctrl}>
-                      <span style={s.ctrlLabel}>Hours / mileage</span>
-                      <input value={r.bike_hours || ""} onChange={e => edit(r.id, { bike_hours: e.target.value })} style={s.input} />
-                    </label>
-                  </div>
-                  <label style={s.ctrl}>
-                    <span style={s.ctrlLabel}>Work required</span>
-                    <textarea value={r.work_required || ""} onChange={e => edit(r.id, { work_required: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} />
-                  </label>
-                </>
-              )}
-
-              <label style={s.ctrl}>
-                <span style={s.ctrlLabel}>Notes</span>
-                <textarea value={r.notes || ""} onChange={e => edit(r.id, { notes: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} />
-              </label>
-
-              <div style={s.cardBottom}>
-                <button onClick={() => save(r)} style={s.save}>Save</button>
-                {savedId === r.id && <span style={s.saved}>Saved ✓</span>}
-                {r.service_type === "workshop" && (
-                  <button onClick={() => printJobCard(r)} style={s.logout}>Job card</button>
-                )}
-                {r.status === "booked" && !r.payment_link && (
-                  <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} style={s.payBtn}>
-                    {linkBusy === r.id ? "Creating…" : "Create payment link"}
-                  </button>
-                )}
-                {r.payment_link && (
-                  <>
-                    <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer" style={s.waBtn}>Send on WhatsApp</a>
-                    <a href={r.payment_link} target="_blank" rel="noreferrer" style={s.logout}>Open link</a>
-                    <button onClick={() => copyLink(r.payment_link!)} style={s.logout}>Copy link</button>
-                    <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} style={s.logout}>
-                      {linkBusy === r.id ? "Creating…" : "New link"}
-                    </button>
-                  </>
-                )}
-              </div>
+        {adding && (
+          <div style={s.addPanel}>
+            <div style={s.addTitle}>New enquiry</div>
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
+                <input className="g51-input" value={form.customer_name} onChange={e => set("customer_name", e.target.value)} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Phone *</span>
+                <input className="g51-input" value={form.phone} onChange={e => set("phone", e.target.value)} style={s.input} /></label>
             </div>
-          ))}
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
+                <input className="g51-input" value={form.email} onChange={e => set("email", e.target.value)} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Service</span>
+                <select className="g51-input" value={form.service_type} onChange={e => set("service_type", e.target.value)} style={s.input}>
+                  <option value="academy">academy</option>
+                  <option value="rental">rental</option>
+                  <option value="desert_tour">desert_tour</option>
+                  <option value="workshop">workshop</option>
+                </select></label>
+            </div>
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Source</span>
+                <select className="g51-input" value={form.source} onChange={e => set("source", e.target.value)} style={s.input}>
+                  {SOURCES.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
+                </select></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Status</span>
+                <select className="g51-input" value={form.status} onChange={e => set("status", e.target.value)} style={s.input}>
+                  {STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
+                </select></label>
+            </div>
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
+                <input className="g51-input" type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
+                <input className="g51-input" type="datetime-local" value={form.booking_at} onChange={e => set("booking_at", e.target.value)} style={s.input} /></label>
+            </div>
+            <label style={s.ctrl}><span style={s.ctrlLabel}>Notes</span>
+              <textarea className="g51-input" value={form.notes} onChange={e => set("notes", e.target.value)} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+            {addError && <p style={s.addError}>{addError}</p>}
+            <div style={s.actions}>
+              <button onClick={createEnquiry} disabled={creating} className="g51-btn g51-primary" style={s.save}>{creating ? "Adding…" : "Create enquiry"}</button>
+              <button onClick={() => { setAdding(false); setAddError(""); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
+            </div>
+          </div>
+        )}
+
+        <div style={s.toolbar}>
+          <div style={s.searchWrap}>
+            <svg width="15" height="15" viewBox="0 0 24 24" style={{ flexShrink: 0, opacity: 0.5 }}><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" /><path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+            <input className="g51-input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search name, phone, or service" style={s.search} />
+          </div>
+          <div style={s.filterWrap}>
+            <button onClick={() => setFilterOpen(o => !o)} className="g51-btn g51-ghost" style={s.filterBtn}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor(filter), flexShrink: 0 }} />
+              <span>{currentLabel}</span>
+              <span style={s.pillCount}>{counts[filter] ?? 0}</span>
+              <Chevron open={filterOpen} />
+            </button>
+            {filterOpen && (
+              <>
+                <div style={s.overlay} onClick={() => setFilterOpen(false)} />
+                <div style={s.menu}>
+                  {FILTER_OPTS.map(opt => (
+                    <button key={opt.key} className="g51-item" onClick={() => { setFilter(opt.key); setFilterOpen(false); }}
+                      style={{ ...s.menuItem, ...(filter === opt.key ? { color: "#F4F2EF", background: "#2C2723" } : {}) }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: dotColor(opt.key), flexShrink: 0 }} />
+                      <span style={{ flex: 1, textAlign: "left" }}>{opt.label}</span>
+                      <span style={s.menuCount}>{counts[opt.key] ?? 0}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
-      )}
+
+        {loading ? (
+          <p style={s.muted}>Loading enquiries…</p>
+        ) : rows.length === 0 ? (
+          <div style={s.empty}>No enquiries yet. New web submissions appear here automatically.</div>
+        ) : visible.length === 0 ? (
+          <div style={s.empty}>Nothing matches this view.</div>
+        ) : (
+          <div style={s.list}>
+            {visible.map(r => {
+              const open = expanded.has(r.id);
+              const sc = STATUS_COLOR[r.status];
+              return (
+                <div key={r.id} className="g51-card" style={s.card}>
+                  <div className="g51-row" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: sc, flexShrink: 0 }} />
+                    <div style={s.headMain}>
+                      <div style={s.name}>{r.customer_name}</div>
+                      <div style={s.sub}>
+                        {cap(r.service_type.replace("_", " "))}
+                        <span style={s.dotSep}>·</span>
+                        {new Date(r.created_at).toLocaleDateString()}
+                        {r.selection && <><span style={s.dotSep}>·</span>{r.selection}</>}
+                      </div>
+                    </div>
+                    <div style={s.headRight}>
+                      {r.estimated_value > 0 && <span style={s.amount}>{aed(r.estimated_value)}</span>}
+                      <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{r.status}</span>
+                      <Chevron open={open} />
+                    </div>
+                  </div>
+
+                  {open && (
+                    <div className="g51-expand" style={s.cardBody}>
+                      <div style={s.contact}>
+                        <a href={`tel:${r.phone}`} style={s.link}>{r.phone}</a>
+                        {r.email && <span style={s.muted2}>{r.email}</span>}
+                        {r.preferred_date && <span style={s.muted2}>Prefers {r.preferred_date}</span>}
+                      </div>
+
+                      {r.selection && (
+                        <div style={s.selBox}>
+                          <span style={s.selLabel}>Requested</span>
+                          <span style={s.selText}>{r.selection}</span>
+                        </div>
+                      )}
+
+                      <div style={s.controls}>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Status</span>
+                          <select className="g51-input" value={r.status} onChange={e => edit(r.id, { status: e.target.value })} style={s.input}>
+                            {STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
+                          </select></label>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
+                          <input className="g51-input" type="number" value={r.estimated_value} onChange={e => edit(r.id, { estimated_value: Number(e.target.value) })} style={s.input} /></label>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
+                          <input className="g51-input" type="datetime-local" value={r.booking_at || ""} onChange={e => edit(r.id, { booking_at: e.target.value })} style={s.input} /></label>
+                      </div>
+
+                      {r.service_type === "workshop" && (
+                        <>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Bike (make / model)</span>
+                              <input className="g51-input" value={r.bike_details || ""} onChange={e => edit(r.id, { bike_details: e.target.value })} style={s.input} /></label>
+                          </div>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Year</span>
+                              <input className="g51-input" value={r.bike_year || ""} onChange={e => edit(r.id, { bike_year: e.target.value })} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Hours / mileage</span>
+                              <input className="g51-input" value={r.bike_hours || ""} onChange={e => edit(r.id, { bike_hours: e.target.value })} style={s.input} /></label>
+                          </div>
+                          <label style={s.ctrl}><span style={s.ctrlLabel}>Work required</span>
+                            <textarea className="g51-input" value={r.work_required || ""} onChange={e => edit(r.id, { work_required: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+                        </>
+                      )}
+
+                      <label style={s.ctrl}><span style={s.ctrlLabel}>Notes</span>
+                        <textarea className="g51-input" value={r.notes || ""} onChange={e => edit(r.id, { notes: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+
+                      <div style={s.actions}>
+                        <button onClick={() => save(r)} className="g51-btn g51-primary" style={s.save}>Save</button>
+                        {savedId === r.id && <span style={s.saved}>Saved ✓</span>}
+                        {r.service_type === "workshop" && (
+                          <button onClick={() => printJobCard(r)} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
+                        )}
+                        {r.status === "booked" && !r.payment_link && (
+                          <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} className="g51-btn" style={s.payBtn}>
+                            {linkBusy === r.id ? "Creating…" : "Create payment link"}
+                          </button>
+                        )}
+                        {r.payment_link && (
+                          <>
+                            <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer" className="g51-btn" style={s.waBtn}>Send on WhatsApp</a>
+                            <a href={r.payment_link} target="_blank" rel="noreferrer" className="g51-btn g51-ghost" style={s.ghostBtn}>Open link</a>
+                            <button onClick={() => copyLink(r.payment_link!)} className="g51-btn g51-ghost" style={s.ghostBtn}>Copy link</button>
+                            <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} className="g51-btn g51-ghost" style={s.ghostBtn}>{linkBusy === r.id ? "…" : "New link"}</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <footer style={s.footer}>
+        <button onClick={connectWebhook} className="g51-btn g51-ghost" style={s.ghostBtn}>Connect payment webhook</button>
+        <span style={s.footerNote}>One-time setup · run on the live site</span>
+      </footer>
     </main>
   );
 }
 
-function Stat({ label, value, color }: { label: string; value: string; color: string }) {
-  return (
-    <div style={s.stat}>
-      <div style={s.statLabel}>{label}</div>
-      <div style={{ ...s.statValue, color }}>{value}</div>
-    </div>
-  );
-}
-
 const s: Record<string, CSSProperties> = {
-  loading: { minHeight: "100vh", background: "#1A1817", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
-  page: { minHeight: "100vh", background: "#1A1817", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", padding: "24px 20px 60px", maxWidth: 820, margin: "0 auto", colorScheme: "dark" },
-  bar: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 24 },
-  logo: { height: 40, width: "auto" },
-  add: { background: RED, color: "#fff", border: "none", padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700 },
-  logout: { background: "transparent", color: "#9A938D", border: "1px solid #3A332E", padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13 },
-  stats: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 20 },
-  stat: { flex: "1 1 140px", background: "#242120", border: "1px solid #39342F", borderRadius: 12, padding: "14px 16px" },
-  statLabel: { fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D" },
-  statValue: { fontSize: 22, fontWeight: 700, marginTop: 6 },
-  chips: { display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 22 },
-  chip: { fontSize: 12.5, fontWeight: 600, padding: "6px 12px", borderRadius: 20, border: "1px solid #39342F", background: "transparent", color: "#9A938D", cursor: "pointer", textTransform: "capitalize" },
-  muted: { color: "#9A938D" },
-  muted2: { color: "#8C857F", fontSize: 12.5 },
-  list: { display: "flex", flexDirection: "column", gap: 12 },
-  card: { background: "#242120", border: "1px solid #39342F", borderRadius: 13, padding: "16px 18px" },
-  cardTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 },
-  name: { fontWeight: 600, fontSize: 16 },
-  metaRow: { display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" },
-  tag: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#D8D2CC", border: "1px solid #4A443E", borderRadius: 5, padding: "2px 7px" },
-  badge: { fontSize: 11.5, fontWeight: 700, textTransform: "uppercase", border: "1px solid", borderRadius: 20, padding: "3px 11px", whiteSpace: "nowrap" },
-  contact: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", margin: "12px 0" },
-  selBox: { display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", background: "#1B1816", border: "1px solid " + RED + "44", borderRadius: 9, padding: "9px 12px", marginBottom: 12 },
+  loading: { minHeight: "100vh", background: "#181615", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
+  page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50 },
+  header: { position: "sticky", top: 0, zIndex: 30, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "13px 20px", background: "rgba(24,22,21,0.82)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderBottom: "1px solid #2A2623" },
+  logo: { height: 30, width: "auto" },
+  headerActions: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  primaryBtn: { background: RED, color: "#fff", border: "none", borderRadius: 9, padding: "9px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
+  ghostBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 500, cursor: "pointer", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 7 },
+  bodyWrap: { maxWidth: 860, margin: "0 auto", padding: "24px 20px 0" },
+  stats: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 },
+  stat: { flex: "1 1 160px", background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14, padding: "15px 17px" },
+  statLabel: { fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#9A938D" },
+  statValue: { fontSize: 23, fontWeight: 800, margin: "7px 0 3px", letterSpacing: "-0.01em" },
+  statSub: { fontSize: 11.5, color: "#6F6862" },
+  addPanel: { background: "#221F1D", border: "1px solid #3A2E2C", borderRadius: 14, padding: 18, marginBottom: 20 },
+  addTitle: { fontWeight: 700, marginBottom: 14, fontSize: 15 },
+  toolbar: { display: "flex", gap: 10, alignItems: "center", marginBottom: 16, flexWrap: "wrap" },
+  searchWrap: { flex: "1 1 240px", display: "flex", alignItems: "center", gap: 9, background: "#141211", border: "1px solid #322E2A", borderRadius: 10, padding: "0 12px", height: 42, color: "#9A938D" },
+  search: { flex: 1, background: "transparent", border: "none", outline: "none", color: "#F4F2EF", fontSize: 14.5, fontFamily: "inherit" },
+  filterWrap: { position: "relative" },
+  filterBtn: { height: 42, padding: "0 14px", display: "inline-flex", alignItems: "center", gap: 9, fontSize: 13.5 },
+  pillCount: { fontSize: 12, color: "#9A938D", background: "#2C2824", borderRadius: 20, padding: "1px 8px", fontWeight: 600 },
+  overlay: { position: "fixed", inset: 0, zIndex: 40 },
+  menu: { position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 50, minWidth: 234, background: "#26221F", border: "1px solid #38332E", borderRadius: 12, padding: 6, boxShadow: "0 16px 40px rgba(0,0,0,0.5)" },
+  menuItem: { width: "100%", display: "flex", alignItems: "center", gap: 10, background: "transparent", border: "none", borderRadius: 8, padding: "9px 11px", cursor: "pointer", color: "#C9C2BC", fontSize: 13.5, fontFamily: "inherit" },
+  menuCount: { fontSize: 12, color: "#8C857F" },
+  list: { display: "flex", flexDirection: "column", gap: 10 },
+  card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14, overflow: "hidden" },
+  cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer" },
+  headMain: { flex: 1, minWidth: 0 },
+  name: { fontWeight: 600, fontSize: 15.5 },
+  sub: { fontSize: 12.5, color: "#9A938D", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  dotSep: { margin: "0 7px", opacity: 0.5 },
+  headRight: { display: "flex", alignItems: "center", gap: 11, flexShrink: 0 },
+  amount: { fontWeight: 700, fontSize: 14.5 },
+  pill: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" },
+  cardBody: { padding: "2px 17px 17px", borderTop: "1px solid #2A2623" },
+  contact: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", margin: "14px 0" },
+  link: { color: "#F4F2EF", textDecoration: "none", fontWeight: 500, fontSize: 14 },
+  muted2: { color: "#8C857F", fontSize: 13 },
+  controls: { display: "flex", gap: 12, flexWrap: "wrap" },
+  ctrl: { display: "grid", gap: 5, flex: "1 1 160px", marginBottom: 13 },
+  ctrlLabel: { fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9A938D" },
+  input: { width: "100%", boxSizing: "border-box", background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 14, padding: "10px 12px", fontFamily: "inherit" },
+  selBox: { display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", background: "#1B1816", border: "1px solid " + RED + "33", borderRadius: 9, padding: "9px 12px", marginBottom: 13 },
   selLabel: { fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D", flexShrink: 0 },
   selText: { fontSize: 13.5, color: "#F4F2EF", fontWeight: 500 },
-  link: { color: "#F4F2EF", textDecoration: "none", fontWeight: 500, fontSize: 14 },
-  controls: { display: "flex", gap: 12, flexWrap: "wrap" },
-  ctrl: { display: "grid", gap: 5, flex: "1 1 160px", marginBottom: 12 },
-  ctrlLabel: { fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#9A938D" },
-  input: { width: "100%", boxSizing: "border-box", background: "#151311", border: "1px solid #3A332E", borderRadius: 8, color: "#F4F2EF", fontSize: 14, padding: "9px 11px", fontFamily: "inherit" },
-  cardBottom: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
-  save: { background: RED, color: "#fff", border: "none", borderRadius: 8, padding: "9px 18px", fontWeight: 700, fontSize: 13.5, cursor: "pointer" },
-  payBtn: { background: "#FFC400", color: "#1A1817", border: "none", borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13.5, cursor: "pointer" },
-  waBtn: { background: "#25D366", color: "#0B2E13", border: "none", borderRadius: 8, padding: "9px 16px", fontWeight: 700, fontSize: 13.5, cursor: "pointer", textDecoration: "none" },
+  actions: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 4 },
+  save: { background: RED, color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontWeight: 700, fontSize: 13.5, cursor: "pointer" },
   saved: { color: "#2FBF71", fontSize: 13, fontWeight: 600 },
+  payBtn: { background: "#FFC400", color: "#1A1817", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13.5, cursor: "pointer" },
+  waBtn: { background: "#25D366", color: "#0B2E13", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13.5, cursor: "pointer", textDecoration: "none" },
+  muted: { color: "#9A938D", textAlign: "center", padding: "30px 0" },
+  empty: { color: "#8C857F", textAlign: "center", padding: "40px 20px", border: "1px dashed #322E2A", borderRadius: 14, fontSize: 14 },
+  addError: { color: "#FF6B6B", fontSize: 13, margin: "0 0 10px" },
+  footer: { maxWidth: 860, margin: "30px auto 0", padding: "18px 20px", borderTop: "1px solid #2A2623", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
+  footerNote: { fontSize: 12, color: "#6F6862" },
 };
