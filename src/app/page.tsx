@@ -373,15 +373,15 @@ function Opt({ active, onClick, title, sub, price, custom, perRider, half }: {
 }
 
 const s: Record<string, CSSProperties> = {
-  page: { minHeight: "100vh", background: "#1A1817", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", padding: "32px 18px 70px", colorScheme: "dark" },
+  page: { minHeight: "100vh", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", padding: "36px 18px 70px", colorScheme: "dark", backgroundColor: "#1A1817", backgroundImage: "linear-gradient(180deg, rgba(18,20,19,0.34) 0%, rgba(18,20,19,0.58) 45%, rgba(18,20,19,0.90) 100%), url('/cover.jpg')", backgroundSize: "cover", backgroundPosition: "center 65%", backgroundRepeat: "no-repeat" },
   wrap: { maxWidth: 540, margin: "0 auto" },
-  logo: { height: 42, width: "auto", display: "block", margin: "0 auto 22px" },
-  h1: { fontSize: 24, fontWeight: 700, textAlign: "center", margin: "0 0 6px" },
-  sub: { color: "#9A938D", textAlign: "center", fontSize: 14, margin: "0 0 22px" },
+  logo: { height: 54, width: "auto", display: "block", margin: "0 auto 18px", filter: "drop-shadow(0 4px 16px rgba(0,0,0,0.5))" },
+  h1: { fontSize: 28, fontWeight: 800, textAlign: "center", margin: "0 0 8px", textShadow: "0 2px 16px rgba(0,0,0,0.55)" },
+  sub: { color: "#D8D2CC", textAlign: "center", fontSize: 14.5, margin: "0 0 24px", textShadow: "0 1px 10px rgba(0,0,0,0.5)" },
   steps: { display: "flex", gap: 8, justifyContent: "center", marginBottom: 22 },
   stepDot: { width: 34, height: 4, borderRadius: 4, background: "#3A332E" },
   stepDotOn: { background: RED },
-  card: { background: "#242120", border: "1px solid #39342F", borderRadius: 14, padding: 18 },
+  card: { background: "rgba(32,30,29,0.94)", border: "1px solid #46413B", borderRadius: 16, padding: 18, boxShadow: "0 18px 50px rgba(0,0,0,0.45)", backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)" },
   q: { fontSize: 13, fontWeight: 700, letterSpacing: "0.03em", margin: "4px 0 12px", color: "#D8D2CC" },
   row: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 4 },
   opt: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "#151311", border: "1px solid #3A332E", borderRadius: 10, padding: "13px 15px", marginBottom: 10, cursor: "pointer", color: "#F4F2EF", fontFamily: "inherit" },
