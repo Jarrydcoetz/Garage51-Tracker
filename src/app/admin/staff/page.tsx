@@ -25,7 +25,16 @@ const CSS = `
 .g51-primary:hover{background:#ff2a32;}
 .g51-input:focus{outline:none;border-color:#6A625B;}
 .g51-btn:disabled{opacity:.55;cursor:default;}
+.g51-item:hover{background:#322D29;}
 `;
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s ease", opacity: 0.7 }}>
+      <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
 export default function StaffScreen() {
   const router = useRouter();
@@ -37,6 +46,14 @@ export default function StaffScreen() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
+  const [myEmail, setMyEmail] = useState("");
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState("");
+  const [pwErr, setPwErr] = useState("");
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -46,6 +63,7 @@ export default function StaffScreen() {
       if (!me.data || me.data.role !== "admin") { router.replace("/admin"); return; }
       setToken(data.session.access_token);
       setMeId(data.session.user.id);
+      setMyEmail(data.session.user.email || "");
       await load();
       setReady(true);
     });
@@ -85,6 +103,24 @@ export default function StaffScreen() {
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
   const set = (k: string, v: string) => setForm(prev => ({ ...prev, [k]: v }));
+  const me = staff.find(p => p.id === meId) || null;
+  const initials = ((me?.name || myEmail || "?").trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
+  const myColor = ROLE_COLOR[me?.role || ""] || "#3B9EFF";
+
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
+  async function changePassword() {
+    if (newPw.length < 8) { setPwErr("Use at least 8 characters."); setPwMsg(""); return; }
+    if (newPw !== confirmPw) { setPwErr("The passwords don't match."); setPwMsg(""); return; }
+    setPwBusy(true); setPwErr("");
+    const { error } = await supabase.auth.updateUser({ password: newPw });
+    setPwBusy(false);
+    if (error) { setPwErr(error.message); return; }
+    setPwMsg("Password updated."); setNewPw(""); setConfirmPw("");
+  }
 
   return (
     <main style={s.page}>
@@ -93,7 +129,45 @@ export default function StaffScreen() {
       <header style={s.header}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <button onClick={() => router.push("/admin")} className="g51-btn g51-ghost" style={s.ghostBtn}>← Dashboard</button>
+        <div style={s.headRight}>
+          <button onClick={() => router.push("/admin")} className="g51-btn g51-ghost" style={s.ghostBtn}>← Dashboard</button>
+          <div style={s.profileWrap}>
+            <button onClick={() => setProfileOpen(o => !o)} className="g51-btn g51-ghost" style={s.profileBtn} aria-label="Account">
+              <span style={{ ...s.avatar, background: myColor }}>{initials}</span>
+              <Chevron open={profileOpen} />
+            </button>
+            {profileOpen && (
+              <>
+                <div style={s.overlay} onClick={() => { setProfileOpen(false); setPwOpen(false); }} />
+                <div style={s.profileMenu}>
+                  <div style={s.pmHead}>
+                    <span style={{ ...s.avatarLg, background: myColor }}>{initials}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={s.pmName}>{me?.name || "Account"}</div>
+                      <div style={s.pmEmail}>{myEmail}</div>
+                      <span style={{ ...s.pmRole, color: myColor, borderColor: myColor + "66", background: myColor + "1c" }}>{me?.role}</span>
+                    </div>
+                  </div>
+                  {!pwOpen ? (
+                    <button onClick={() => { setPwOpen(true); setPwMsg(""); setPwErr(""); }} className="g51-item" style={s.pmItem}>Change password</button>
+                  ) : (
+                    <div style={s.pmForm}>
+                      <input className="g51-input" type="password" placeholder="New password" value={newPw} onChange={e => setNewPw(e.target.value)} style={s.pmInput} />
+                      <input className="g51-input" type="password" placeholder="Confirm password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} style={s.pmInput} />
+                      {pwErr && <div style={s.pmErr}>{pwErr}</div>}
+                      {pwMsg && <div style={s.pmOk}>{pwMsg}</div>}
+                      <div style={s.pmFormBtns}>
+                        <button onClick={changePassword} disabled={pwBusy} className="g51-btn g51-primary" style={s.pmSave}>{pwBusy ? "Saving…" : "Save"}</button>
+                        <button onClick={() => { setPwOpen(false); setNewPw(""); setConfirmPw(""); }} className="g51-btn g51-ghost" style={s.pmCancel}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                  <button onClick={logout} className="g51-item" style={{ ...s.pmItem, color: "#FF7A7A" }}>Log out</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       </header>
 
       <div style={s.wrap}>
@@ -181,4 +255,23 @@ const s: Record<string, CSSProperties> = {
   inactive: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "#9A938D", border: "1px solid #4A443E", borderRadius: 20, padding: "3px 9px" },
   roleSelect: { background: "#141211", border: "1px solid #322E2A", borderRadius: 9, fontSize: 13, fontWeight: 700, padding: "8px 10px", fontFamily: "inherit" },
   ghostSmall: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "8px 12px", fontSize: 12.5, fontWeight: 500, cursor: "pointer" },
+  headRight: { display: "flex", alignItems: "center", gap: 9 },
+  profileWrap: { position: "relative" },
+  profileBtn: { display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 9px 5px 6px" },
+  avatar: { width: 26, height: 26, borderRadius: "50%", display: "grid", placeItems: "center", color: "#fff", fontSize: 11, fontWeight: 800 },
+  avatarLg: { width: 40, height: 40, borderRadius: "50%", display: "grid", placeItems: "center", color: "#fff", fontSize: 15, fontWeight: 800, flexShrink: 0 },
+  overlay: { position: "fixed", inset: 0, zIndex: 40 },
+  profileMenu: { position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 50, width: 262, background: "#26221F", border: "1px solid #38332E", borderRadius: 12, padding: 8, boxShadow: "0 16px 40px rgba(0,0,0,0.5)" },
+  pmHead: { display: "flex", gap: 11, alignItems: "center", padding: "8px 9px 12px", borderBottom: "1px solid #322E2A", marginBottom: 6 },
+  pmName: { fontWeight: 700, fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  pmEmail: { fontSize: 12, color: "#9A938D", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 1 },
+  pmRole: { display: "inline-block", marginTop: 6, fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", border: "1px solid", borderRadius: 20, padding: "2px 9px" },
+  pmItem: { width: "100%", textAlign: "left", background: "transparent", border: "none", borderRadius: 8, padding: "10px 11px", cursor: "pointer", color: "#C9C2BC", fontSize: 13.5, fontFamily: "inherit" },
+  pmForm: { padding: "6px 9px 9px", display: "grid", gap: 8 },
+  pmInput: { width: "100%", boxSizing: "border-box", background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 14, padding: "9px 11px", fontFamily: "inherit" },
+  pmFormBtns: { display: "flex", gap: 8 },
+  pmSave: { flex: 1, background: RED, color: "#fff", border: "none", borderRadius: 9, padding: "9px 14px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
+  pmCancel: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "9px 14px", fontSize: 13, cursor: "pointer" },
+  pmErr: { color: "#FF6B6B", fontSize: 12.5 },
+  pmOk: { color: "#2FBF71", fontSize: 12.5 },
 };
