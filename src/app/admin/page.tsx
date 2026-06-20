@@ -117,6 +117,7 @@ function nextLabel(r: Enquiry): string {
     const d = upcoming || new Date(Math.max(...dated.map(ss => new Date(ss.scheduled_at as string).getTime())));
     return d.toLocaleDateString();
   }
+  if (r.preferred_date) return new Date(r.preferred_date).toLocaleDateString();
   return new Date(r.created_at).toLocaleDateString();
 }
 function isoToLocalInput(iso: string | null): string {
@@ -294,8 +295,12 @@ export default function Admin() {
 
   async function addSession(row: Enquiry) {
     const nextSeq = (row.sessions || []).reduce((m, ss) => Math.max(m, ss.seq), 0) + 1;
+    const scheduled_at =
+      (row.sessions || []).length === 0 && row.preferred_date
+        ? localInputToIso(`${row.preferred_date}T09:00`)
+        : null;
     const { data, error } = await supabase.from("sessions")
-      .insert({ enquiry_id: row.id, seq: nextSeq, status: "scheduled" })
+      .insert({ enquiry_id: row.id, seq: nextSeq, status: "scheduled", scheduled_at })
       .select().single();
     if (error || !data) { alert(error?.message || "Could not add session."); return; }
     edit(row.id, { sessions: [...(row.sessions || []), data as Session] });
@@ -575,6 +580,13 @@ export default function Admin() {
                         )}
                       </div>
 
+                      {r.preferred_date && (
+                        <div style={s.prefRow}>
+                          <span style={s.prefLabel}>Preferred date</span>
+                          <span style={s.prefVal}>{new Date(r.preferred_date).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" })}</span>
+                        </div>
+                      )}
+
                       {r.selection && (
                         <div style={s.selBox}>
                           <span style={s.selLabel}>Requested</span>
@@ -731,6 +743,9 @@ const s: Record<string, CSSProperties> = {
   contact: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", margin: "14px 0" },
   link: { color: "#F4F2EF", textDecoration: "none", fontWeight: 500, fontSize: 14 },
   muted2: { color: "#8C857F", fontSize: 13 },
+  prefRow: { display: "flex", alignItems: "center", gap: 10, margin: "0 0 13px" },
+  prefLabel: { fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D" },
+  prefVal: { fontSize: 13.5, fontWeight: 600, color: "#FFB02E" },
   refund: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 12, fontWeight: 700, color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E14", borderRadius: 20, padding: "3px 6px 3px 12px" },
   refundClear: { background: "#2C2824", color: "#C9C2BC", border: "none", borderRadius: 16, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap" },
