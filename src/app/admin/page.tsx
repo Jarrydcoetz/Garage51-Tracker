@@ -5,6 +5,16 @@ import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
 
+type Session = {
+  id: string;
+  enquiry_id: string;
+  seq: number;
+  scheduled_at: string | null;
+  status: string;
+  google_event_id: string | null;
+  notes: string | null;
+};
+
 type Enquiry = {
   id: string;
   created_at: string;
@@ -15,6 +25,12 @@ type Enquiry = {
   preferred_date: string | null;
   booking_at: string | null;
   status: string;
+  stage: string;
+  paid_at: string | null;
+  sessions_total: number;
+  cancelled_at: string | null;
+  cancel_reason: string | null;
+  refund_due: boolean;
   estimated_value: number;
   notes: string;
   bike_details: string | null;
@@ -27,10 +43,12 @@ type Enquiry = {
   bike_hours: string | null;
   payment_link: string | null;
   payment_intent_id: string | null;
+  sessions: Session[];
 };
 
 const RED = "#ED1C24";
-const STATUSES = ["new", "contacted", "booked", "paid", "completed", "lost"];
+const STAGES = ["new", "contacted", "booked", "lost", "cancelled"];
+const SESSION_STATUSES = ["scheduled", "completed", "no_show", "cancelled"];
 const SOURCES = [
   { v: "whatsapp", label: "WhatsApp" },
   { v: "instagram", label: "Instagram" },
@@ -38,24 +56,82 @@ const SOURCES = [
   { v: "walk_in", label: "Walk-in" },
   { v: "form", label: "Web form" },
 ];
-const STATUS_COLOR: Record<string, string> = {
+const STATE_COLOR: Record<string, string> = {
   new: "#3B9EFF", contacted: "#FFB02E", booked: "#ED1C24",
-  paid: "#FFC400", completed: "#2FBF71", lost: "#7A746E",
+  completed: "#2FBF71", cancelled: "#7A746E", lost: "#7A746E",
 };
+const PAID_COLOR = "#FFC400";
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
-const dotColor = (k: string) => STATUS_COLOR[k] || (k === "sent" ? "#2FBF71" : "#6F6862");
+const dotColor = (k: string) =>
+  STATE_COLOR[k] || (k === "needs_payment" ? PAID_COLOR : k === "sent" ? "#2FBF71" : "#9A938D");
 
 const FILTER_OPTS = [
-  { key: "all", label: "All enquiries" },
-  ...STATUSES.map(st => ({ key: st, label: cap(st) })),
+  { key: "all", label: "All bookings" },
+  { key: "new", label: "New" },
+  { key: "contacted", label: "Contacted" },
+  { key: "booked", label: "Booked" },
+  { key: "completed", label: "Completed" },
+  { key: "cancelled", label: "Cancelled" },
+  { key: "lost", label: "Lost" },
+  { key: "needs_payment", label: "Needs payment" },
   { key: "sent", label: "Payment link sent" },
 ];
 
 const BLANK = {
   customer_name: "", phone: "", email: "", service_type: "academy",
-  source: "whatsapp", status: "new", estimated_value: 0, booking_at: "", notes: "",
+  source: "whatsapp", stage: "new", estimated_value: 0, booking_at: "", notes: "",
 };
+
+// ---- session / state helpers ----------------------------------------------
+function sessionDone(ss: Session): boolean {
+  if (ss.status === "completed") return true;
+  return ss.status === "scheduled" && !!ss.scheduled_at && new Date(ss.scheduled_at) < new Date();
+}
+function sessionLabel(ss: Session): string {
+  if (ss.status === "no_show") return "No-show";
+  if (ss.status === "cancelled") return "Cancelled";
+  if (sessionDone(ss)) return "Completed";
+  if (ss.scheduled_at) return "Scheduled";
+  return "Unscheduled";
+}
+function completedCount(r: Enquiry): number {
+  return (r.sessions || []).filter(sessionDone).length;
+}
+function bookingState(r: Enquiry): string {
+  if (r.stage === "cancelled") return "cancelled";
+  if (r.stage === "lost") return "lost";
+  if (r.stage === "new") return "new";
+  if (r.stage === "contacted") return "contacted";
+  if (r.sessions_total > 0 && completedCount(r) >= r.sessions_total) return "completed";
+  return "booked";
+}
+function nextLabel(r: Enquiry): string {
+  const dated = (r.sessions || []).filter(ss => ss.scheduled_at);
+  if (dated.length) {
+    const now = Date.now();
+    const upcoming = dated
+      .map(ss => new Date(ss.scheduled_at as string))
+      .filter(d => d.getTime() >= now)
+      .sort((a, b) => a.getTime() - b.getTime())[0];
+    const d = upcoming || new Date(Math.max(...dated.map(ss => new Date(ss.scheduled_at as string).getTime())));
+    return d.toLocaleDateString();
+  }
+  return new Date(r.created_at).toLocaleDateString();
+}
+function isoToLocalInput(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+function localInputToIso(v: string): string | null {
+  if (!v) return null;
+  const d = new Date(v);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
 
 function printJobCard(r: Enquiry) {
   const w = window.open("", "_blank", "width=820,height=1000");
@@ -153,7 +229,7 @@ export default function Admin() {
       if (!data.session) { router.replace("/login"); return; }
       setReady(true);
       const { data: rowsData } = await supabase
-        .from("enquiries").select("*").order("created_at", { ascending: false });
+        .from("enquiries").select("*, sessions(*)").order("created_at", { ascending: false });
       setRows((rowsData as Enquiry[]) || []);
       setLoading(false);
     });
@@ -161,6 +237,10 @@ export default function Admin() {
 
   function edit(id: string, patch: Partial<Enquiry>) {
     setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
+  }
+  function editSessionLocal(enqId: string, sessId: string, patch: Partial<Session>) {
+    setRows(prev => prev.map(r =>
+      r.id === enqId ? { ...r, sessions: r.sessions.map(ss => (ss.id === sessId ? { ...ss, ...patch } : ss)) } : r));
   }
   function toggleExpand(id: string) {
     setExpanded(prev => {
@@ -171,18 +251,54 @@ export default function Admin() {
   }
 
   async function save(row: Enquiry) {
-    await supabase.from("enquiries").update({
-      status: row.status,
+    const patch: Record<string, unknown> = {
+      stage: row.stage,
       estimated_value: row.estimated_value,
       notes: row.notes,
-      booking_at: row.booking_at || null,
+      sessions_total: Number(row.sessions_total) || 1,
       bike_details: row.bike_details || null,
       work_required: row.work_required || null,
       bike_year: row.bike_year || null,
       bike_hours: row.bike_hours || null,
-    }).eq("id", row.id);
+    };
+    if (row.stage === "cancelled") {
+      patch.cancelled_at = row.cancelled_at || new Date().toISOString();
+      patch.refund_due = !!row.paid_at;
+    } else {
+      patch.cancelled_at = null;
+      patch.refund_due = false;
+    }
+    await supabase.from("enquiries").update(patch).eq("id", row.id);
+    edit(row.id, {
+      cancelled_at: patch.cancelled_at as string | null,
+      refund_due: patch.refund_due as boolean,
+    });
     setSavedId(row.id);
     setTimeout(() => setSavedId(null), 1500);
+  }
+
+  async function togglePaid(row: Enquiry) {
+    const paid_at = row.paid_at ? null : new Date().toISOString();
+    await supabase.from("enquiries").update({ paid_at }).eq("id", row.id);
+    edit(row.id, { paid_at });
+  }
+
+  async function clearRefund(row: Enquiry) {
+    await supabase.from("enquiries").update({ refund_due: false }).eq("id", row.id);
+    edit(row.id, { refund_due: false });
+  }
+
+  async function persistSession(sessId: string, patch: Partial<Session>) {
+    await supabase.from("sessions").update(patch).eq("id", sessId);
+  }
+
+  async function addSession(row: Enquiry) {
+    const nextSeq = (row.sessions || []).reduce((m, ss) => Math.max(m, ss.seq), 0) + 1;
+    const { data, error } = await supabase.from("sessions")
+      .insert({ enquiry_id: row.id, seq: nextSeq, status: "scheduled" })
+      .select().single();
+    if (error || !data) { alert(error?.message || "Could not add session."); return; }
+    edit(row.id, { sessions: [...(row.sessions || []), data as Session] });
   }
 
   async function createPaymentLink(row: Enquiry) {
@@ -212,9 +328,12 @@ export default function Admin() {
   }
 
   function whatsappLink(phone: string, name: string, link: string) {
-    let n = (phone || "").replace(/\D/g, "");
-    if (n.startsWith("00")) n = n.slice(2);
-    if (n.startsWith("0")) n = "971" + n.slice(1);
+    const raw = (phone || "").trim();
+    let n = raw.replace(/\D/g, "");
+    if (!raw.startsWith("+")) {
+      if (n.startsWith("00")) n = n.slice(2);
+      if (n.startsWith("0")) n = "971" + n.slice(1);
+    }
     const msg = `Hi ${name}, here is your Garage51 booking payment link: ${link}`;
     return `https://wa.me/${n}?text=${encodeURIComponent(msg)}`;
   }
@@ -224,7 +343,7 @@ export default function Admin() {
       const res = await fetch("/api/setup-webhook", { method: "POST" });
       const data = await res.json();
       if (!res.ok || !data.ok) { alert(data.error || "Could not connect the webhook."); return; }
-      alert("Payment webhook connected. Paid enquiries will now update automatically.");
+      alert("Payment webhook connected. Paid bookings will now update automatically.");
     } catch { alert("Could not reach the server to connect the webhook."); }
   }
 
@@ -237,32 +356,42 @@ export default function Admin() {
       email: form.email || null,
       service_type: form.service_type,
       source: form.source,
-      status: form.status,
+      stage: form.stage,
       estimated_value: Number(form.estimated_value) || 0,
       booking_at: form.booking_at || null,
       notes: form.notes || "",
-    }).select().single();
+    }).select("*, sessions(*)").single();
+    if (error || !data) { setCreating(false); setAddError(error?.message || "Could not create booking."); return; }
+    const enq = data as Enquiry;
+    if (form.booking_at) {
+      const { data: ses } = await supabase.from("sessions")
+        .insert({ enquiry_id: enq.id, seq: 1, scheduled_at: localInputToIso(form.booking_at) })
+        .select().single();
+      if (ses) enq.sessions = [...(enq.sessions || []), ses as Session];
+    }
     setCreating(false);
-    if (error) { setAddError(error.message); return; }
-    if (data) { setRows(prev => [data as Enquiry, ...prev]); setForm({ ...BLANK }); setAdding(false); }
+    setRows(prev => [enq, ...prev]);
+    setForm({ ...BLANK });
+    setAdding(false);
   }
 
   function exportCsv() {
-    const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Preferred date", "Booking date/time", "Status", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Notes"];
+    const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Notes"];
     const esc = (v: unknown) => `"${(v == null ? "" : String(v)).replace(/"/g, '""')}"`;
     const lines = [
       headers.join(","),
       ...rows.map(r => [
         new Date(r.created_at).toLocaleDateString(), r.customer_name, r.phone,
-        r.email || "", r.service_type, r.selection || "", r.preferred_date || "", r.booking_at || "",
-        r.status, r.estimated_value, r.bike_details || "", r.bike_year || "", r.bike_hours || "", r.work_required || "", r.notes || "",
+        r.email || "", r.service_type, r.selection || "", r.stage, r.paid_at ? "yes" : "no",
+        completedCount(r), r.sessions_total, r.estimated_value,
+        r.bike_details || "", r.bike_year || "", r.bike_hours || "", r.work_required || "", r.notes || "",
       ].map(esc).join(",")),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `garage51-enquiries-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `garage51-bookings-${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }
@@ -274,17 +403,22 @@ export default function Admin() {
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
-  const pipeline = rows.filter(r => ["new", "contacted"].includes(r.status)).reduce((a, r) => a + (r.estimated_value || 0), 0);
-  const booked = rows.filter(r => r.status === "booked").reduce((a, r) => a + (r.estimated_value || 0), 0);
-  const earned = rows.filter(r => ["paid", "completed"].includes(r.status)).reduce((a, r) => a + (r.estimated_value || 0), 0);
+  const pipeline = rows.filter(r => ["new", "contacted"].includes(r.stage)).reduce((a, r) => a + (r.estimated_value || 0), 0);
+  const booked = rows.filter(r => r.stage === "booked" && !r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
+  const earned = rows.filter(r => !!r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
 
-  const counts: Record<string, number> = { all: rows.length, sent: rows.filter(r => r.payment_link).length };
-  STATUSES.forEach(st => { counts[st] = rows.filter(r => r.status === st).length; });
+  const matches = (r: Enquiry, f: string) => {
+    if (f === "all") return true;
+    if (f === "needs_payment") return r.stage === "booked" && !r.paid_at;
+    if (f === "sent") return !!r.payment_link;
+    return bookingState(r) === f;
+  };
+
+  const counts: Record<string, number> = {};
+  FILTER_OPTS.forEach(o => { counts[o.key] = rows.filter(r => matches(r, o.key)).length; });
 
   const q = query.trim().toLowerCase();
-  let visible = filter === "all" ? rows
-    : filter === "sent" ? rows.filter(r => r.payment_link)
-    : rows.filter(r => r.status === filter);
+  let visible = rows.filter(r => matches(r, filter));
   if (q) visible = visible.filter(r =>
     r.customer_name.toLowerCase().includes(q) ||
     (r.phone || "").toLowerCase().includes(q) ||
@@ -303,7 +437,7 @@ export default function Admin() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
         <div style={s.headerActions}>
-          <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New enquiry</button>
+          <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New booking</button>
           <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
           <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
         </div>
@@ -313,12 +447,12 @@ export default function Admin() {
         <div style={s.stats}>
           <Stat label="In pipeline" sub="New + contacted" value={aed(pipeline)} color="#5BB0FF" />
           <Stat label="Booked" sub="Awaiting payment" value={aed(booked)} color={RED} />
-          <Stat label="Earned" sub="Paid + completed" value={aed(earned)} color="#2FBF71" />
+          <Stat label="Earned" sub="Paid" value={aed(earned)} color="#2FBF71" />
         </div>
 
         {adding && (
           <div style={s.addPanel}>
-            <div style={s.addTitle}>New enquiry</div>
+            <div style={s.addTitle}>New booking</div>
             <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
                 <input className="g51-input" value={form.customer_name} onChange={e => set("customer_name", e.target.value)} style={s.input} /></label>
@@ -341,9 +475,9 @@ export default function Admin() {
                 <select className="g51-input" value={form.source} onChange={e => set("source", e.target.value)} style={s.input}>
                   {SOURCES.map(o => <option key={o.v} value={o.v}>{o.label}</option>)}
                 </select></label>
-              <label style={s.ctrl}><span style={s.ctrlLabel}>Status</span>
-                <select className="g51-input" value={form.status} onChange={e => set("status", e.target.value)} style={s.input}>
-                  {STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Stage</span>
+                <select className="g51-input" value={form.stage} onChange={e => set("stage", e.target.value)} style={s.input}>
+                  {STAGES.map(st => <option key={st} value={st}>{st}</option>)}
                 </select></label>
             </div>
             <div style={s.controls}>
@@ -356,7 +490,7 @@ export default function Admin() {
               <textarea className="g51-input" value={form.notes} onChange={e => set("notes", e.target.value)} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
             {addError && <p style={s.addError}>{addError}</p>}
             <div style={s.actions}>
-              <button onClick={createEnquiry} disabled={creating} className="g51-btn g51-primary" style={s.save}>{creating ? "Adding…" : "Create enquiry"}</button>
+              <button onClick={createEnquiry} disabled={creating} className="g51-btn g51-primary" style={s.save}>{creating ? "Adding…" : "Create booking"}</button>
               <button onClick={() => { setAdding(false); setAddError(""); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
             </div>
           </div>
@@ -393,16 +527,20 @@ export default function Admin() {
         </div>
 
         {loading ? (
-          <p style={s.muted}>Loading enquiries…</p>
+          <p style={s.muted}>Loading bookings…</p>
         ) : rows.length === 0 ? (
-          <div style={s.empty}>No enquiries yet. New web submissions appear here automatically.</div>
+          <div style={s.empty}>No bookings yet. New web submissions appear here automatically.</div>
         ) : visible.length === 0 ? (
           <div style={s.empty}>Nothing matches this view.</div>
         ) : (
           <div style={s.list}>
             {visible.map(r => {
               const open = expanded.has(r.id);
-              const sc = STATUS_COLOR[r.status];
+              const st = bookingState(r);
+              const sc = STATE_COLOR[st] || "#9A938D";
+              const done = completedCount(r);
+              const isPkg = r.sessions_total > 1;
+              const sortedSessions = [...(r.sessions || [])].sort((a, b) => a.seq - b.seq);
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
                   <div className="g51-row" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
@@ -412,13 +550,15 @@ export default function Admin() {
                       <div style={s.sub}>
                         {cap(r.service_type.replace("_", " "))}
                         <span style={s.dotSep}>·</span>
-                        {new Date(r.created_at).toLocaleDateString()}
+                        {nextLabel(r)}
                         {r.selection && <><span style={s.dotSep}>·</span>{r.selection}</>}
                       </div>
                     </div>
                     <div style={s.headRight}>
+                      {isPkg && <span style={s.progress}>{done}/{r.sessions_total}</span>}
                       {r.estimated_value > 0 && <span style={s.amount}>{aed(r.estimated_value)}</span>}
-                      <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{r.status}</span>
+                      {r.paid_at && <span style={{ ...s.pill, color: PAID_COLOR, borderColor: PAID_COLOR + "66", background: PAID_COLOR + "1c" }}>paid</span>}
+                      <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
                       <Chevron open={open} />
                     </div>
                   </div>
@@ -428,7 +568,11 @@ export default function Admin() {
                       <div style={s.contact}>
                         <a href={`tel:${r.phone}`} style={s.link}>{r.phone}</a>
                         {r.email && <span style={s.muted2}>{r.email}</span>}
-                        {r.preferred_date && <span style={s.muted2}>Prefers {r.preferred_date}</span>}
+                        {r.refund_due && (
+                          <span style={s.refund}>Refund due
+                            <button onClick={() => clearRefund(r)} className="g51-btn" style={s.refundClear}>Mark refunded</button>
+                          </span>
+                        )}
                       </div>
 
                       {r.selection && (
@@ -439,14 +583,54 @@ export default function Admin() {
                       )}
 
                       <div style={s.controls}>
-                        <label style={s.ctrl}><span style={s.ctrlLabel}>Status</span>
-                          <select className="g51-input" value={r.status} onChange={e => edit(r.id, { status: e.target.value })} style={s.input}>
-                            {STATUSES.map(st => <option key={st} value={st}>{st}</option>)}
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Stage</span>
+                          <select className="g51-input" value={r.stage} onChange={e => edit(r.id, { stage: e.target.value })} style={s.input}>
+                            {STAGES.map(stg => <option key={stg} value={stg}>{stg}</option>)}
                           </select></label>
                         <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
                           <input className="g51-input" type="number" value={r.estimated_value} onChange={e => edit(r.id, { estimated_value: Number(e.target.value) })} style={s.input} /></label>
-                        <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
-                          <input className="g51-input" type="datetime-local" value={r.booking_at || ""} onChange={e => edit(r.id, { booking_at: e.target.value })} style={s.input} /></label>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Payment</span>
+                          <button onClick={() => togglePaid(r)} className="g51-btn g51-ghost" style={{ ...s.input, cursor: "pointer", textAlign: "left", color: r.paid_at ? PAID_COLOR : "#B5AEA8" }}>
+                            {r.paid_at ? "Paid ✓ · tap to undo" : "Mark as paid"}
+                          </button></label>
+                      </div>
+
+                      <div style={s.sesWrap}>
+                        <div style={s.sesHead}>
+                          <span style={s.sesTitle}>Sessions · {done} of {r.sessions_total} done</span>
+                          <label style={s.sesTotal}>
+                            <span style={s.ctrlLabel}>Package size</span>
+                            <input className="g51-input" type="number" min={1} value={r.sessions_total}
+                              onChange={e => edit(r.id, { sessions_total: Math.max(1, Number(e.target.value) || 1) })}
+                              style={{ ...s.input, width: 70, padding: "6px 8px" }} />
+                          </label>
+                        </div>
+                        {sortedSessions.map(ss => (
+                          <div key={ss.id} style={s.sesRow}>
+                            <span style={s.sesSeq}>#{ss.seq}</span>
+                            <input className="g51-input" type="datetime-local"
+                              value={isoToLocalInput(ss.scheduled_at)}
+                              onChange={e => {
+                                const iso = localInputToIso(e.target.value);
+                                editSessionLocal(r.id, ss.id, { scheduled_at: iso });
+                                persistSession(ss.id, { scheduled_at: iso });
+                              }}
+                              style={{ ...s.input, flex: "1 1 180px" }} />
+                            <select className="g51-input" value={ss.status}
+                              onChange={e => {
+                                const v = e.target.value;
+                                editSessionLocal(r.id, ss.id, { status: v });
+                                persistSession(ss.id, { status: v });
+                              }}
+                              style={{ ...s.input, flex: "0 0 130px" }}>
+                              {SESSION_STATUSES.map(v => <option key={v} value={v}>{v.replace("_", " ")}</option>)}
+                            </select>
+                            <span style={{ ...s.sesState, color: sessionDone(ss) ? "#2FBF71" : "#9A938D" }}>{sessionLabel(ss)}</span>
+                          </div>
+                        ))}
+                        {sortedSessions.length < r.sessions_total && (
+                          <button onClick={() => addSession(r)} className="g51-btn g51-ghost" style={s.addSes}>+ Add session</button>
+                        )}
                       </div>
 
                       {r.service_type === "workshop" && (
@@ -475,7 +659,7 @@ export default function Admin() {
                         {r.service_type === "workshop" && (
                           <button onClick={() => printJobCard(r)} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
                         )}
-                        {r.status === "booked" && !r.payment_link && (
+                        {r.stage === "booked" && !r.payment_link && (
                           <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} className="g51-btn" style={s.payBtn}>
                             {linkBusy === r.id ? "Creating…" : "Create payment link"}
                           </button>
@@ -537,15 +721,18 @@ const s: Record<string, CSSProperties> = {
   cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer" },
   headMain: { flex: 1, minWidth: 0 },
   name: { fontWeight: 600, fontSize: 15.5 },
-  sub: { fontSize: 12.5, color: "#9A938D", marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  sub: { fontSize: 12.5, color: "#9A938D", marginTop: 3, lineHeight: 1.45, wordBreak: "break-word" },
   dotSep: { margin: "0 7px", opacity: 0.5 },
   headRight: { display: "flex", alignItems: "center", gap: 11, flexShrink: 0 },
+  progress: { fontSize: 11.5, fontWeight: 700, color: "#C9C2BC", background: "#2C2824", borderRadius: 20, padding: "2px 9px" },
   amount: { fontWeight: 700, fontSize: 14.5 },
   pill: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" },
   cardBody: { padding: "2px 17px 17px", borderTop: "1px solid #2A2623" },
   contact: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", margin: "14px 0" },
   link: { color: "#F4F2EF", textDecoration: "none", fontWeight: 500, fontSize: 14 },
   muted2: { color: "#8C857F", fontSize: 13 },
+  refund: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 12, fontWeight: 700, color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E14", borderRadius: 20, padding: "3px 6px 3px 12px" },
+  refundClear: { background: "#2C2824", color: "#C9C2BC", border: "none", borderRadius: 16, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap" },
   ctrl: { display: "grid", gap: 5, flex: "1 1 160px", marginBottom: 13 },
   ctrlLabel: { fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9A938D" },
@@ -553,6 +740,14 @@ const s: Record<string, CSSProperties> = {
   selBox: { display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap", background: "#1B1816", border: "1px solid " + RED + "33", borderRadius: 9, padding: "9px 12px", marginBottom: 13 },
   selLabel: { fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D", flexShrink: 0 },
   selText: { fontSize: 13.5, color: "#F4F2EF", fontWeight: 500 },
+  sesWrap: { background: "#1B1816", border: "1px solid #2F2B27", borderRadius: 11, padding: "12px 13px", marginBottom: 13 },
+  sesHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 12, marginBottom: 10, flexWrap: "wrap" },
+  sesTitle: { fontSize: 12.5, fontWeight: 700, color: "#C9C2BC", letterSpacing: "0.03em" },
+  sesTotal: { display: "grid", gap: 4, justifyItems: "start" },
+  sesRow: { display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap", marginBottom: 8 },
+  sesSeq: { fontSize: 12, fontWeight: 700, color: "#8C857F", width: 26, flexShrink: 0 },
+  sesState: { fontSize: 12, fontWeight: 600, flex: "0 0 auto" },
+  addSes: { marginTop: 2, fontSize: 12.5, padding: "7px 12px" },
   actions: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 4 },
   save: { background: RED, color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontWeight: 700, fontSize: 13.5, cursor: "pointer" },
   saved: { color: "#2FBF71", fontSize: 13, fontWeight: 600 },

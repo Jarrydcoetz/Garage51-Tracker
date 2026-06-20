@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   ) {
     await supabase
       .from("enquiries")
-      .update({ status: "paid" })
+      .update({ paid_at: new Date().toISOString(), status: "paid" })
       .eq("payment_intent_id", payload.data.id);
   }
 

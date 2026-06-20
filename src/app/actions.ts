@@ -9,9 +9,11 @@ const supabase = createClient(
 
 export type EnquiryInput = {
   customer_name: string;
-  phone: string;
+  whatsapp: string;
+  country?: string | null;
   email?: string;
   service_type: string;
+  sessions_total?: number;
   rider_category?: string | null;
   own_gear?: boolean | null;
   selection?: string | null;
@@ -28,17 +30,49 @@ export type EnquiryInput = {
 export async function submitEnquiry(
   data: EnquiryInput
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!data.customer_name?.trim() || !data.phone?.trim()) {
-    return { ok: false, error: "Name and phone are required." };
+  const name = data.customer_name?.trim();
+  const whatsapp = data.whatsapp?.trim();
+  if (!name || !whatsapp) {
+    return { ok: false, error: "Name and WhatsApp number are required." };
+  }
+  const email = data.email?.trim() || null;
+  const country = data.country?.trim() || null;
+
+  // 1. Find or create the client by WhatsApp number (so returning
+  //    customers attach to their existing record instead of duplicating).
+  let clientId: string | null = null;
+  const existing = await supabase
+    .from("clients").select("id").eq("whatsapp", whatsapp).maybeSingle();
+
+  if (existing.data) {
+    clientId = existing.data.id;
+  } else {
+    const created = await supabase
+      .from("clients")
+      .insert({ name, whatsapp, country, email })
+      .select("id").single();
+    if (created.error) {
+      // Another submission may have created it a moment ago — read it back.
+      const retry = await supabase
+        .from("clients").select("id").eq("whatsapp", whatsapp).maybeSingle();
+      if (retry.data) clientId = retry.data.id;
+      else return { ok: false, error: created.error.message };
+    } else {
+      clientId = created.data.id;
+    }
   }
 
+  // 2. Create the booking (enquiry), linked to that client.
   const { error } = await supabase.from("enquiries").insert({
-    customer_name: data.customer_name.trim(),
-    phone: data.phone.trim(),
-    email: data.email?.trim() || null,
+    client_id: clientId,
+    customer_name: name,
+    phone: whatsapp,
+    email,
     service_type: data.service_type,
     source: "form",
     status: "new",
+    stage: "new",
+    sessions_total: data.sessions_total ?? 1,
     rider_category: data.rider_category ?? null,
     own_gear: data.own_gear ?? null,
     selection: data.selection ?? null,

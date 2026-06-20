@@ -8,6 +8,66 @@ import { submitEnquiry } from "./actions";
 const RED = "#ED1C24";
 const aed = (n: number) => "AED " + n.toLocaleString();
 
+type Country = { iso: string; dial: string; flag: string; name: string };
+const COUNTRIES: Country[] = [
+  { iso: "AE", dial: "+971", flag: "🇦🇪", name: "United Arab Emirates" },
+  { iso: "SA", dial: "+966", flag: "🇸🇦", name: "Saudi Arabia" },
+  { iso: "QA", dial: "+974", flag: "🇶🇦", name: "Qatar" },
+  { iso: "KW", dial: "+965", flag: "🇰🇼", name: "Kuwait" },
+  { iso: "BH", dial: "+973", flag: "🇧🇭", name: "Bahrain" },
+  { iso: "OM", dial: "+968", flag: "🇴🇲", name: "Oman" },
+  { iso: "GB", dial: "+44", flag: "🇬🇧", name: "United Kingdom" },
+  { iso: "US", dial: "+1", flag: "🇺🇸", name: "United States" },
+  { iso: "CA", dial: "+1", flag: "🇨🇦", name: "Canada" },
+  { iso: "IE", dial: "+353", flag: "🇮🇪", name: "Ireland" },
+  { iso: "DE", dial: "+49", flag: "🇩🇪", name: "Germany" },
+  { iso: "FR", dial: "+33", flag: "🇫🇷", name: "France" },
+  { iso: "ES", dial: "+34", flag: "🇪🇸", name: "Spain" },
+  { iso: "IT", dial: "+39", flag: "🇮🇹", name: "Italy" },
+  { iso: "NL", dial: "+31", flag: "🇳🇱", name: "Netherlands" },
+  { iso: "BE", dial: "+32", flag: "🇧🇪", name: "Belgium" },
+  { iso: "CH", dial: "+41", flag: "🇨🇭", name: "Switzerland" },
+  { iso: "AT", dial: "+43", flag: "🇦🇹", name: "Austria" },
+  { iso: "SE", dial: "+46", flag: "🇸🇪", name: "Sweden" },
+  { iso: "NO", dial: "+47", flag: "🇳🇴", name: "Norway" },
+  { iso: "DK", dial: "+45", flag: "🇩🇰", name: "Denmark" },
+  { iso: "FI", dial: "+358", flag: "🇫🇮", name: "Finland" },
+  { iso: "PT", dial: "+351", flag: "🇵🇹", name: "Portugal" },
+  { iso: "PL", dial: "+48", flag: "🇵🇱", name: "Poland" },
+  { iso: "GR", dial: "+30", flag: "🇬🇷", name: "Greece" },
+  { iso: "RU", dial: "+7", flag: "🇷🇺", name: "Russia" },
+  { iso: "TR", dial: "+90", flag: "🇹🇷", name: "Turkey" },
+  { iso: "IN", dial: "+91", flag: "🇮🇳", name: "India" },
+  { iso: "PK", dial: "+92", flag: "🇵🇰", name: "Pakistan" },
+  { iso: "BD", dial: "+880", flag: "🇧🇩", name: "Bangladesh" },
+  { iso: "LK", dial: "+94", flag: "🇱🇰", name: "Sri Lanka" },
+  { iso: "NP", dial: "+977", flag: "🇳🇵", name: "Nepal" },
+  { iso: "PH", dial: "+63", flag: "🇵🇭", name: "Philippines" },
+  { iso: "ID", dial: "+62", flag: "🇮🇩", name: "Indonesia" },
+  { iso: "MY", dial: "+60", flag: "🇲🇾", name: "Malaysia" },
+  { iso: "SG", dial: "+65", flag: "🇸🇬", name: "Singapore" },
+  { iso: "TH", dial: "+66", flag: "🇹🇭", name: "Thailand" },
+  { iso: "VN", dial: "+84", flag: "🇻🇳", name: "Vietnam" },
+  { iso: "CN", dial: "+86", flag: "🇨🇳", name: "China" },
+  { iso: "JP", dial: "+81", flag: "🇯🇵", name: "Japan" },
+  { iso: "KR", dial: "+82", flag: "🇰🇷", name: "South Korea" },
+  { iso: "HK", dial: "+852", flag: "🇭🇰", name: "Hong Kong" },
+  { iso: "AU", dial: "+61", flag: "🇦🇺", name: "Australia" },
+  { iso: "NZ", dial: "+64", flag: "🇳🇿", name: "New Zealand" },
+  { iso: "ZA", dial: "+27", flag: "🇿🇦", name: "South Africa" },
+  { iso: "EG", dial: "+20", flag: "🇪🇬", name: "Egypt" },
+  { iso: "MA", dial: "+212", flag: "🇲🇦", name: "Morocco" },
+  { iso: "NG", dial: "+234", flag: "🇳🇬", name: "Nigeria" },
+  { iso: "KE", dial: "+254", flag: "🇰🇪", name: "Kenya" },
+  { iso: "JO", dial: "+962", flag: "🇯🇴", name: "Jordan" },
+  { iso: "LB", dial: "+961", flag: "🇱🇧", name: "Lebanon" },
+  { iso: "IQ", dial: "+964", flag: "🇮🇶", name: "Iraq" },
+  { iso: "IL", dial: "+972", flag: "🇮🇱", name: "Israel" },
+  { iso: "BR", dial: "+55", flag: "🇧🇷", name: "Brazil" },
+  { iso: "MX", dial: "+52", flag: "🇲🇽", name: "Mexico" },
+  { iso: "AR", dial: "+54", flag: "🇦🇷", name: "Argentina" },
+];
+
 type Pkg = { key: string; label: string; price: number | null; perRider?: boolean };
 
 const ACADEMY_OWNGEAR: Pkg[] = [
@@ -90,6 +150,7 @@ export default function EnquiryForm() {
   // contact
   const [preferredDate, setPreferredDate] = useState("");
   const [name, setName] = useState("");
+  const [countryIso, setCountryIso] = useState("AE");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
   const [notes, setNotes] = useState("");
@@ -158,15 +219,23 @@ export default function EnquiryForm() {
   }
 
   async function submit() {
-    if (!name.trim() || !phone.trim()) { setErr("Please add your name and phone number."); return; }
+    const natl = phone.replace(/\D/g, "").replace(/^0+/, "");
+    if (!name.trim() || !natl) { setErr("Please add your name and WhatsApp number."); return; }
     setSubmitting(true); setErr("");
+    const cc = COUNTRIES.find(c => c.iso === countryIso) || COUNTRIES[0];
+    const whatsapp = cc.dial + natl;
     const q = quote();
     const isGroup = service === "academy" && academyList.find(x => x.key === pkg)?.perRider;
+    const sessionsTotal =
+      service === "academy" && pkg === "pack5" ? 5 :
+      service === "academy" && pkg === "pack3" ? 3 : 1;
     const res = await submitEnquiry({
       customer_name: name,
-      phone,
+      whatsapp,
+      country: countryIso,
       email,
       service_type: service,
+      sessions_total: sessionsTotal,
       rider_category: service === "academy" ? cat : null,
       own_gear: service === "academy" ? ownGear : null,
       selection: q.selection || null,
@@ -318,8 +387,18 @@ export default function EnquiryForm() {
               <input type="date" value={preferredDate} onChange={e => setPreferredDate(e.target.value)} style={s.input} /></label>
             <label style={s.field}><span style={s.label}>Your name *</span>
               <input value={name} onChange={e => setName(e.target.value)} style={s.input} /></label>
-            <label style={s.field}><span style={s.label}>Phone *</span>
-              <input value={phone} onChange={e => setPhone(e.target.value)} placeholder="e.g. 05x xxx xxxx" style={s.input} /></label>
+            <label style={s.field}><span style={s.label}>WhatsApp number *</span>
+              <div style={s.phoneRow}>
+                <select value={countryIso} onChange={e => setCountryIso(e.target.value)} style={s.dial}>
+                  {COUNTRIES.map(c => (
+                    <option key={c.iso} value={c.iso}>{c.flag} {c.dial}  {c.name}</option>
+                  ))}
+                </select>
+                <input value={phone} onChange={e => setPhone(e.target.value)} inputMode="tel"
+                  placeholder="50 123 4567" style={{ ...s.input, flex: 1 }} />
+              </div>
+              <span style={s.hint}>We send your booking confirmation and payment link here on WhatsApp.</span>
+            </label>
             <label style={s.field}><span style={s.label}>Email</span>
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} style={s.input} /></label>
             <label style={s.field}><span style={s.label}>Anything else?</span>
@@ -398,6 +477,9 @@ const s: Record<string, CSSProperties> = {
   field: { display: "grid", gap: 6, marginBottom: 14 },
   label: { fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#9A938D" },
   input: { width: "100%", boxSizing: "border-box", background: "#151311", border: "1px solid #3A332E", borderRadius: 9, color: "#F4F2EF", fontSize: 15, padding: "11px 13px", fontFamily: "inherit" },
+  phoneRow: { display: "flex", gap: 8 },
+  dial: { flex: "0 0 132px", boxSizing: "border-box", background: "#151311", border: "1px solid #3A332E", borderRadius: 9, color: "#F4F2EF", fontSize: 15, padding: "11px 10px", fontFamily: "inherit" },
+  hint: { fontSize: 11.5, color: "#7E776F", marginTop: 5, lineHeight: 1.4 },
   summary: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, background: "#242120", border: "1px solid " + RED + "55", borderRadius: 12, padding: "14px 16px", marginTop: 16 },
   summaryLabel: { fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#9A938D" },
   summaryText: { fontSize: 14, marginTop: 3 },
