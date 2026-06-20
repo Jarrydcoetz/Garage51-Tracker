@@ -44,7 +44,11 @@ type Enquiry = {
   payment_link: string | null;
   payment_intent_id: string | null;
   sessions: Session[];
+  client: ClientLite | null;
 };
+
+type ClientLite = { id: string; name: string | null; whatsapp: string | null; assigned_to: string | null };
+type Profile = { id: string; name: string | null; role: string; active: boolean };
 
 const RED = "#ED1C24";
 const STAGES = ["new", "contacted", "booked", "lost", "cancelled"];
@@ -224,13 +228,23 @@ export default function Admin() {
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK });
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
+  const [me, setMe] = useState<Profile | null>(null);
+  const [staff, setStaff] = useState<Profile[]>([]);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
+      const [{ data: prof }, { data: people }] = await Promise.all([
+        supabase.from("profiles").select("id, name, role, active").eq("id", data.session.user.id).single(),
+        supabase.from("profiles").select("id, name, role, active").eq("active", true).order("name"),
+      ]);
+      setMe((prof as Profile) || null);
+      setStaff((people as Profile[]) || []);
       setReady(true);
       const { data: rowsData } = await supabase
-        .from("enquiries").select("*, sessions(*)").order("created_at", { ascending: false });
+        .from("enquiries")
+        .select("*, sessions(*), client:clients(id, name, whatsapp, assigned_to)")
+        .order("created_at", { ascending: false });
       setRows((rowsData as Enquiry[]) || []);
       setLoading(false);
     });
@@ -287,6 +301,15 @@ export default function Admin() {
   async function clearRefund(row: Enquiry) {
     await supabase.from("enquiries").update({ refund_due: false }).eq("id", row.id);
     edit(row.id, { refund_due: false });
+  }
+
+  async function assignClient(row: Enquiry, profileId: string) {
+    if (!row.client?.id) { alert("This booking has no client record yet, so it can't be assigned."); return; }
+    const assigned = profileId || null;
+    const clientId = row.client.id;
+    await supabase.from("clients").update({ assigned_to: assigned }).eq("id", clientId);
+    setRows(prev => prev.map(r =>
+      r.client?.id === clientId ? { ...r, client: { ...(r.client as ClientLite), assigned_to: assigned } } : r));
   }
 
   async function persistSession(sessId: string, patch: Partial<Session>) {
@@ -381,11 +404,12 @@ export default function Admin() {
   }
 
   function exportCsv() {
+    const data = me?.role === "admin" ? rows : rows.filter(r => r.client?.assigned_to === me?.id);
     const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Notes"];
     const esc = (v: unknown) => `"${(v == null ? "" : String(v)).replace(/"/g, '""')}"`;
     const lines = [
       headers.join(","),
-      ...rows.map(r => [
+      ...data.map(r => [
         new Date(r.created_at).toLocaleDateString(), r.customer_name, r.phone,
         r.email || "", r.service_type, r.selection || "", r.stage, r.paid_at ? "yes" : "no",
         completedCount(r), r.sessions_total, r.estimated_value,
@@ -408,9 +432,11 @@ export default function Admin() {
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
-  const pipeline = rows.filter(r => ["new", "contacted"].includes(r.stage)).reduce((a, r) => a + (r.estimated_value || 0), 0);
-  const booked = rows.filter(r => r.stage === "booked" && !r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
-  const earned = rows.filter(r => !!r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
+  const scoped = me?.role === "admin" ? rows : rows.filter(r => r.client?.assigned_to === me?.id);
+
+  const pipeline = scoped.filter(r => ["new", "contacted"].includes(r.stage)).reduce((a, r) => a + (r.estimated_value || 0), 0);
+  const booked = scoped.filter(r => r.stage === "booked" && !r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
+  const earned = scoped.filter(r => !!r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
 
   const matches = (r: Enquiry, f: string) => {
     if (f === "all") return true;
@@ -420,10 +446,10 @@ export default function Admin() {
   };
 
   const counts: Record<string, number> = {};
-  FILTER_OPTS.forEach(o => { counts[o.key] = rows.filter(r => matches(r, o.key)).length; });
+  FILTER_OPTS.forEach(o => { counts[o.key] = scoped.filter(r => matches(r, o.key)).length; });
 
   const q = query.trim().toLowerCase();
-  let visible = rows.filter(r => matches(r, filter));
+  let visible = scoped.filter(r => matches(r, filter));
   if (q) visible = visible.filter(r =>
     r.customer_name.toLowerCase().includes(q) ||
     (r.phone || "").toLowerCase().includes(q) ||
@@ -443,6 +469,9 @@ export default function Admin() {
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
         <div style={s.headerActions}>
           <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New booking</button>
+          {me?.role === "admin" && (
+            <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
+          )}
           <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
           <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
         </div>
@@ -533,7 +562,7 @@ export default function Admin() {
 
         {loading ? (
           <p style={s.muted}>Loading bookings…</p>
-        ) : rows.length === 0 ? (
+        ) : scoped.length === 0 ? (
           <div style={s.empty}>No bookings yet. New web submissions appear here automatically.</div>
         ) : visible.length === 0 ? (
           <div style={s.empty}>Nothing matches this view.</div>
@@ -579,6 +608,26 @@ export default function Admin() {
                           </span>
                         )}
                       </div>
+
+                      {(me?.role === "admin" || r.client?.assigned_to) && (
+                        <div style={s.assignRow}>
+                          <span style={s.assignLabel}>Assigned to</span>
+                          {me?.role === "admin" ? (
+                            <>
+                              <select className="g51-input" value={r.client?.assigned_to || ""} disabled={!r.client}
+                                onChange={e => assignClient(r, e.target.value)} style={s.assignSelect}>
+                                <option value="">Unassigned</option>
+                                {staff.filter(p => p.role !== "admin").map(p => (
+                                  <option key={p.id} value={p.id}>{p.name || "(no name)"} · {p.role}</option>
+                                ))}
+                              </select>
+                              {!r.client && <span style={s.assignNote}>no client record yet</span>}
+                            </>
+                          ) : (
+                            <span style={s.assignVal}>{staff.find(p => p.id === r.client?.assigned_to)?.name || "—"}</span>
+                          )}
+                        </div>
+                      )}
 
                       {r.preferred_date && (
                         <div style={s.prefRow}>
@@ -746,6 +795,11 @@ const s: Record<string, CSSProperties> = {
   prefRow: { display: "flex", alignItems: "center", gap: 10, margin: "0 0 13px" },
   prefLabel: { fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D" },
   prefVal: { fontSize: 13.5, fontWeight: 600, color: "#FFB02E" },
+  assignRow: { display: "flex", alignItems: "center", gap: 10, margin: "0 0 13px", flexWrap: "wrap" },
+  assignLabel: { fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D" },
+  assignSelect: { background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 13.5, fontWeight: 600, padding: "8px 10px", fontFamily: "inherit", maxWidth: 260 },
+  assignVal: { fontSize: 13.5, fontWeight: 600, color: "#5BB0FF" },
+  assignNote: { fontSize: 11.5, color: "#7E776F" },
   refund: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 12, fontWeight: 700, color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E14", borderRadius: 20, padding: "3px 6px 3px 12px" },
   refundClear: { background: "#2C2824", color: "#C9C2BC", border: "none", borderRadius: 16, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap" },
