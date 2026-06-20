@@ -867,7 +867,7 @@ const s: Record<string, CSSProperties> = {
   menuItem: { width: "100%", display: "flex", alignItems: "center", gap: 10, background: "transparent", border: "none", borderRadius: 8, padding: "9px 11px", cursor: "pointer", color: "#C9C2BC", fontSize: 13.5, fontFamily: "inherit" },
   menuCount: { fontSize: 12, color: "#8C857F" },
   list: { display: "flex", flexDirection: "column", gap: 10 },
-  card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14, overflow: "hidden" },
+card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14, overflow: "visible" },
   cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer" },
   headMain: { flex: 1, minWidth: 0 },
   name: { fontWeight: 600, fontSize: 15.5 },
