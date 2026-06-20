@@ -43,6 +43,7 @@ type Enquiry = {
   bike_hours: string | null;
   payment_link: string | null;
   payment_intent_id: string | null;
+  payment_link_sent_at: string | null;
   sessions: Session[];
   client: ClientLite | null;
 };
@@ -238,6 +239,7 @@ export default function Admin() {
   const [pwBusy, setPwBusy] = useState(false);
   const [pwMsg, setPwMsg] = useState("");
   const [pwErr, setPwErr] = useState("");
+  const [payMenuId, setPayMenuId] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -350,8 +352,8 @@ export default function Admin() {
       });
       const data = await res.json();
       if (!res.ok || !data.url) { alert(data.error || "Could not create the payment link."); return; }
-      await supabase.from("enquiries").update({ payment_link: data.url, payment_intent_id: data.id }).eq("id", row.id);
-      edit(row.id, { payment_link: data.url, payment_intent_id: data.id });
+      await supabase.from("enquiries").update({ payment_link: data.url, payment_intent_id: data.id, payment_link_sent_at: null }).eq("id", row.id);
+      edit(row.id, { payment_link: data.url, payment_intent_id: data.id, payment_link_sent_at: null });
     } catch {
       alert("Could not reach the payment service. Check your connection and try again.");
     } finally {
@@ -364,15 +366,26 @@ export default function Admin() {
     else { window.prompt("Copy this payment link:", url); }
   }
 
-  function whatsappLink(phone: string, name: string, link: string) {
+  function waNumber(phone: string) {
     const raw = (phone || "").trim();
     let n = raw.replace(/\D/g, "");
     if (!raw.startsWith("+")) {
       if (n.startsWith("00")) n = n.slice(2);
       if (n.startsWith("0")) n = "971" + n.slice(1);
     }
+    return n;
+  }
+  function whatsappLink(phone: string, name: string, link: string) {
     const msg = `Hi ${name}, here is your Garage51 booking payment link: ${link}`;
-    return `https://wa.me/${n}?text=${encodeURIComponent(msg)}`;
+    return `https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`;
+  }
+  function waChat(phone: string) {
+    return `https://wa.me/${waNumber(phone)}`;
+  }
+  async function markLinkSent(row: Enquiry) {
+    const now = new Date().toISOString();
+    await supabase.from("enquiries").update({ payment_link_sent_at: now }).eq("id", row.id);
+    edit(row.id, { payment_link_sent_at: now });
   }
 
   async function connectWebhook() {
@@ -776,18 +789,38 @@ export default function Admin() {
                         {r.service_type === "workshop" && (
                           <button onClick={() => printJobCard(r)} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
                         )}
+                        {r.phone && (
+                          <a href={waChat(r.phone)} target="_blank" rel="noreferrer" className="g51-btn" style={s.waBtn}>WhatsApp</a>
+                        )}
                         {r.stage === "booked" && !r.payment_link && (
                           <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} className="g51-btn" style={s.payBtn}>
                             {linkBusy === r.id ? "Creating…" : "Create payment link"}
                           </button>
                         )}
                         {r.payment_link && (
-                          <>
-                            <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer" className="g51-btn" style={s.waBtn}>Send on WhatsApp</a>
-                            <a href={r.payment_link} target="_blank" rel="noreferrer" className="g51-btn g51-ghost" style={s.ghostBtn}>Open link</a>
-                            <button onClick={() => copyLink(r.payment_link!)} className="g51-btn g51-ghost" style={s.ghostBtn}>Copy link</button>
-                            <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} className="g51-btn g51-ghost" style={s.ghostBtn}>{linkBusy === r.id ? "…" : "New link"}</button>
-                          </>
+                          <div style={s.payWrap}>
+                            <button onClick={() => setPayMenuId(payMenuId === r.id ? null : r.id)} className="g51-btn" style={{ ...s.payBtn, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                              Payment link{r.payment_link_sent_at ? " · sent" : ""}
+                              <Chevron open={payMenuId === r.id} />
+                            </button>
+                            {payMenuId === r.id && (
+                              <>
+                                <div style={s.overlay} onClick={() => setPayMenuId(null)} />
+                                <div style={s.payMenu}>
+                                  {!r.payment_link_sent_at ? (
+                                    <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer"
+                                      onClick={() => { markLinkSent(r); setPayMenuId(null); }}
+                                      className="g51-item" style={s.payItemWa}>Send link on WhatsApp</a>
+                                  ) : (
+                                    <div style={s.paySent}>Link sent {new Date(r.payment_link_sent_at).toLocaleDateString()}</div>
+                                  )}
+                                  <a href={r.payment_link} target="_blank" rel="noreferrer" onClick={() => setPayMenuId(null)} className="g51-item" style={s.payItem}>Open link</a>
+                                  <button onClick={() => { copyLink(r.payment_link!); setPayMenuId(null); }} className="g51-item" style={s.payItem}>Copy link</button>
+                                  <button onClick={() => { createPaymentLink(r); setPayMenuId(null); }} disabled={linkBusy === r.id} className="g51-item" style={s.payItem}>{linkBusy === r.id ? "Generating…" : "Generate new link"}</button>
+                                </div>
+                              </>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>
@@ -878,6 +911,11 @@ const s: Record<string, CSSProperties> = {
   saved: { color: "#2FBF71", fontSize: 13, fontWeight: 600 },
   payBtn: { background: "#FFC400", color: "#1A1817", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13.5, cursor: "pointer" },
   waBtn: { background: "#25D366", color: "#0B2E13", border: "none", borderRadius: 9, padding: "9px 16px", fontWeight: 700, fontSize: 13.5, cursor: "pointer", textDecoration: "none" },
+  payWrap: { position: "relative" },
+  payMenu: { position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 50, minWidth: 212, background: "#26221F", border: "1px solid #38332E", borderRadius: 12, padding: 6, boxShadow: "0 16px 40px rgba(0,0,0,0.5)" },
+  payItem: { width: "100%", textAlign: "left", background: "transparent", border: "none", borderRadius: 8, padding: "10px 11px", cursor: "pointer", color: "#C9C2BC", fontSize: 13.5, fontFamily: "inherit", textDecoration: "none", display: "block" },
+  payItemWa: { width: "100%", textAlign: "left", background: "transparent", border: "none", borderRadius: 8, padding: "10px 11px", cursor: "pointer", color: "#25D366", fontWeight: 700, fontSize: 13.5, fontFamily: "inherit", textDecoration: "none", display: "block" },
+  paySent: { padding: "9px 11px", fontSize: 12, color: "#9A938D", borderBottom: "1px solid #322E2A", marginBottom: 4 },
   muted: { color: "#9A938D", textAlign: "center", padding: "30px 0" },
   empty: { color: "#8C857F", textAlign: "center", padding: "40px 20px", border: "1px dashed #322E2A", borderRadius: 14, fontSize: 14 },
   addError: { color: "#FF6B6B", fontSize: 13, margin: "0 0 10px" },
