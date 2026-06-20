@@ -230,10 +230,19 @@ export default function Admin() {
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [me, setMe] = useState<Profile | null>(null);
   const [staff, setStaff] = useState<Profile[]>([]);
+  const [myEmail, setMyEmail] = useState("");
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [pwOpen, setPwOpen] = useState(false);
+  const [newPw, setNewPw] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwMsg, setPwMsg] = useState("");
+  const [pwErr, setPwErr] = useState("");
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
+      setMyEmail(data.session.user.email || "");
       const [{ data: prof }, { data: people }] = await Promise.all([
         supabase.from("profiles").select("id, name, role, active").eq("id", data.session.user.id).single(),
         supabase.from("profiles").select("id, name, role, active").eq("active", true).order("name"),
@@ -430,6 +439,16 @@ export default function Admin() {
     router.replace("/login");
   }
 
+  async function changePassword() {
+    if (newPw.length < 8) { setPwErr("Use at least 8 characters."); setPwMsg(""); return; }
+    if (newPw !== confirmPw) { setPwErr("The passwords don't match."); setPwMsg(""); return; }
+    setPwBusy(true); setPwErr("");
+    const { error } = await supabase.auth.updateUser({ password: newPw });
+    setPwBusy(false);
+    if (error) { setPwErr(error.message); return; }
+    setPwMsg("Password updated."); setNewPw(""); setConfirmPw("");
+  }
+
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
   const scoped = me?.role === "admin" ? rows : rows.filter(r => r.client?.assigned_to === me?.id);
@@ -459,6 +478,8 @@ export default function Admin() {
 
   const currentLabel = FILTER_OPTS.find(o => o.key === filter)?.label ?? "All";
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
+  const roleColor = (r?: string) => (r === "admin" ? RED : r === "mechanic" ? "#FFB02E" : "#3B9EFF");
+  const initials = ((me?.name || myEmail || "?").trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
 
   return (
     <main style={s.page}>
@@ -473,7 +494,42 @@ export default function Admin() {
             <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
           )}
           <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
-          <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
+          <div style={s.profileWrap}>
+            <button onClick={() => setProfileOpen(o => !o)} className="g51-btn g51-ghost" style={s.profileBtn} aria-label="Account">
+              <span style={{ ...s.avatar, background: roleColor(me?.role) }}>{initials}</span>
+              <Chevron open={profileOpen} />
+            </button>
+            {profileOpen && (
+              <>
+                <div style={s.overlay} onClick={() => { setProfileOpen(false); setPwOpen(false); }} />
+                <div style={s.profileMenu}>
+                  <div style={s.pmHead}>
+                    <span style={{ ...s.avatarLg, background: roleColor(me?.role) }}>{initials}</span>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={s.pmName}>{me?.name || "Account"}</div>
+                      <div style={s.pmEmail}>{myEmail}</div>
+                      <span style={{ ...s.pmRole, color: roleColor(me?.role), borderColor: roleColor(me?.role) + "66", background: roleColor(me?.role) + "1c" }}>{me?.role}</span>
+                    </div>
+                  </div>
+                  {!pwOpen ? (
+                    <button onClick={() => { setPwOpen(true); setPwMsg(""); setPwErr(""); }} className="g51-item" style={s.pmItem}>Change password</button>
+                  ) : (
+                    <div style={s.pmForm}>
+                      <input className="g51-input" type="password" placeholder="New password" value={newPw} onChange={e => setNewPw(e.target.value)} style={s.pmInput} />
+                      <input className="g51-input" type="password" placeholder="Confirm password" value={confirmPw} onChange={e => setConfirmPw(e.target.value)} style={s.pmInput} />
+                      {pwErr && <div style={s.pmErr}>{pwErr}</div>}
+                      {pwMsg && <div style={s.pmOk}>{pwMsg}</div>}
+                      <div style={s.pmFormBtns}>
+                        <button onClick={changePassword} disabled={pwBusy} className="g51-btn g51-primary" style={s.pmSave}>{pwBusy ? "Saving…" : "Save"}</button>
+                        <button onClick={() => { setPwOpen(false); setNewPw(""); setConfirmPw(""); }} className="g51-btn g51-ghost" style={s.pmCancel}>Cancel</button>
+                      </div>
+                    </div>
+                  )}
+                  <button onClick={logout} className="g51-item" style={{ ...s.pmItem, color: "#FF7A7A" }}>Log out</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
@@ -827,4 +883,21 @@ const s: Record<string, CSSProperties> = {
   addError: { color: "#FF6B6B", fontSize: 13, margin: "0 0 10px" },
   footer: { maxWidth: 860, margin: "30px auto 0", padding: "18px 20px", borderTop: "1px solid #2A2623", display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" },
   footerNote: { fontSize: 12, color: "#6F6862" },
+  profileWrap: { position: "relative" },
+  profileBtn: { display: "inline-flex", alignItems: "center", gap: 7, padding: "5px 9px 5px 6px" },
+  avatar: { width: 26, height: 26, borderRadius: "50%", display: "grid", placeItems: "center", color: "#fff", fontSize: 11, fontWeight: 800 },
+  avatarLg: { width: 40, height: 40, borderRadius: "50%", display: "grid", placeItems: "center", color: "#fff", fontSize: 15, fontWeight: 800, flexShrink: 0 },
+  profileMenu: { position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 50, width: 262, background: "#26221F", border: "1px solid #38332E", borderRadius: 12, padding: 8, boxShadow: "0 16px 40px rgba(0,0,0,0.5)" },
+  pmHead: { display: "flex", gap: 11, alignItems: "center", padding: "8px 9px 12px", borderBottom: "1px solid #322E2A", marginBottom: 6 },
+  pmName: { fontWeight: 700, fontSize: 14.5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  pmEmail: { fontSize: 12, color: "#9A938D", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: 1 },
+  pmRole: { display: "inline-block", marginTop: 6, fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", border: "1px solid", borderRadius: 20, padding: "2px 9px" },
+  pmItem: { width: "100%", textAlign: "left", background: "transparent", border: "none", borderRadius: 8, padding: "10px 11px", cursor: "pointer", color: "#C9C2BC", fontSize: 13.5, fontFamily: "inherit" },
+  pmForm: { padding: "6px 9px 9px", display: "grid", gap: 8 },
+  pmInput: { width: "100%", boxSizing: "border-box", background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 14, padding: "9px 11px", fontFamily: "inherit" },
+  pmFormBtns: { display: "flex", gap: 8 },
+  pmSave: { flex: 1, background: RED, color: "#fff", border: "none", borderRadius: 9, padding: "9px 14px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
+  pmCancel: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "9px 14px", fontSize: 13, cursor: "pointer" },
+  pmErr: { color: "#FF6B6B", fontSize: 12.5 },
+  pmOk: { color: "#2FBF71", fontSize: 12.5 },
 };
