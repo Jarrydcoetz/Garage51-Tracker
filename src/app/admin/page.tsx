@@ -342,6 +342,11 @@ export default function Admin() {
     setSavedId(row.id);
     setTimeout(() => setSavedId(null), 1500);
     showToast("Booking saved.");
+    if (row.stage === "cancelled") {
+      for (const ss of row.sessions || []) {
+        if (ss.google_event_id) syncSessionToCalendar(row, { ...ss, scheduled_at: null });
+      }
+    }
   }
 
   async function togglePaid(row: Enquiry) {
@@ -368,6 +373,44 @@ export default function Admin() {
     await supabase.from("sessions").update(patch).eq("id", sessId);
   }
 
+  // Pushes a session's current schedule/status to Google Calendar (create, update,
+  // or remove the event as appropriate), then saves the returned event ID. Failures
+  // are surfaced as a toast but never block the Supabase save that already happened.
+  async function syncSessionToCalendar(row: Enquiry, ss: Session) {
+    try {
+      const res = await fetch("/api/calendar/sync-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session: {
+            id: ss.id,
+            scheduled_at: ss.scheduled_at,
+            status: ss.status,
+            google_event_id: ss.google_event_id,
+          },
+          enquiry: {
+            id: row.id,
+            customer_name: row.customer_name,
+            phone: row.phone,
+            service_type: row.service_type,
+            notes: row.notes,
+            work_required: row.work_required,
+            bike_details: row.bike_details,
+          },
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Could not sync this session to the calendar.", "err"); return; }
+      const googleEventId = (data.google_event_id ?? null) as string | null;
+      if (googleEventId !== ss.google_event_id) {
+        editSessionLocal(row.id, ss.id, { google_event_id: googleEventId });
+        await supabase.from("sessions").update({ google_event_id: googleEventId }).eq("id", ss.id);
+      }
+    } catch {
+      showToast("Could not reach the calendar service.", "err");
+    }
+  }
+
   async function addSession(row: Enquiry) {
     const nextSeq = (row.sessions || []).reduce((m, ss) => Math.max(m, ss.seq), 0) + 1;
     const scheduled_at =
@@ -378,7 +421,9 @@ export default function Admin() {
       .insert({ enquiry_id: row.id, seq: nextSeq, status: "scheduled", scheduled_at })
       .select().single();
     if (error || !data) { showToast(error?.message || "Could not add session.", "err"); return; }
-    edit(row.id, { sessions: [...(row.sessions || []), data as Session] });
+    const newSession = data as Session;
+    edit(row.id, { sessions: [...(row.sessions || []), newSession] });
+    syncSessionToCalendar(row, newSession);
   }
 
   async function createPaymentLink(row: Enquiry) {
@@ -458,7 +503,10 @@ export default function Admin() {
       const { data: ses } = await supabase.from("sessions")
         .insert({ enquiry_id: enq.id, seq: 1, scheduled_at: localInputToIso(form.booking_at) })
         .select().single();
-      if (ses) enq.sessions = [...(enq.sessions || []), ses as Session];
+      if (ses) {
+        enq.sessions = [...(enq.sessions || []), ses as Session];
+        syncSessionToCalendar(enq, ses as Session);
+      }
     }
     setCreating(false);
     setRows(prev => [enq, ...prev]);
@@ -831,6 +879,7 @@ export default function Admin() {
                                 const iso = localInputToIso(e.target.value);
                                 editSessionLocal(r.id, ss.id, { scheduled_at: iso });
                                 persistSession(ss.id, { scheduled_at: iso });
+                                syncSessionToCalendar(r, { ...ss, scheduled_at: iso });
                               }}
                               style={{ ...s.input, flex: "1 1 180px" }} />
                             <select className="g51-input" value={ss.status}
@@ -838,6 +887,7 @@ export default function Admin() {
                                 const v = e.target.value;
                                 editSessionLocal(r.id, ss.id, { status: v });
                                 persistSession(ss.id, { status: v });
+                                syncSessionToCalendar(r, { ...ss, status: v });
                               }}
                               style={{ ...s.input, flex: "0 0 130px" }}>
                               {SESSION_STATUSES.map(v => <option key={v} value={v}>{v.replace("_", " ")}</option>)}
