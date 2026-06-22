@@ -54,6 +54,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ google_event_id: googleEventId });
   } catch (err) {
     console.error("Calendar sync failed:", err);
-    return NextResponse.json({ error: "Could not sync this session to Google Calendar." }, { status: 500 });
+    return NextResponse.json({
+      error: "Could not sync this session to Google Calendar.",
+      debug: err instanceof Error ? err.message : String(err),
+    }, { status: 500 });
   }
 }
