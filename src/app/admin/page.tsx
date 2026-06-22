@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
@@ -263,6 +263,9 @@ export default function Admin() {
   const [pwMsg, setPwMsg] = useState("");
   const [pwErr, setPwErr] = useState("");
   const [payMenuId, setPayMenuId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
+  const [dirty, setDirty] = useState<Set<string>>(new Set());
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -286,6 +289,18 @@ export default function Admin() {
 
   function edit(id: string, patch: Partial<Enquiry>) {
     setRows(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
+  }
+  function showToast(msg: string, kind: "ok" | "err" = "ok") {
+    setToast({ msg, kind });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3400);
+  }
+  function editStaged(id: string, patch: Partial<Enquiry>) {
+    edit(id, patch);
+    setDirty(prev => { const n = new Set(prev); n.add(id); return n; });
+  }
+  function clearDirty(id: string) {
+    setDirty(prev => { const n = new Set(prev); n.delete(id); return n; });
   }
   function editSessionLocal(enqId: string, sessId: string, patch: Partial<Session>) {
     setRows(prev => prev.map(r =>
@@ -317,13 +332,16 @@ export default function Admin() {
       patch.cancelled_at = null;
       patch.refund_due = false;
     }
-    await supabase.from("enquiries").update(patch).eq("id", row.id);
+    const { error } = await supabase.from("enquiries").update(patch).eq("id", row.id);
+    if (error) { showToast(error.message || "Could not save the booking.", "err"); return; }
     edit(row.id, {
       cancelled_at: patch.cancelled_at as string | null,
       refund_due: patch.refund_due as boolean,
     });
+    clearDirty(row.id);
     setSavedId(row.id);
     setTimeout(() => setSavedId(null), 1500);
+    showToast("Booking saved.");
   }
 
   async function togglePaid(row: Enquiry) {
@@ -338,7 +356,7 @@ export default function Admin() {
   }
 
   async function assignClient(row: Enquiry, profileId: string) {
-    if (!row.client?.id) { alert("This booking has no client record yet, so it can't be assigned."); return; }
+    if (!row.client?.id) { showToast("This booking has no client record yet, so it can't be assigned.", "err"); return; }
     const assigned = profileId || null;
     const clientId = row.client.id;
     await supabase.from("clients").update({ assigned_to: assigned }).eq("id", clientId);
@@ -359,13 +377,13 @@ export default function Admin() {
     const { data, error } = await supabase.from("sessions")
       .insert({ enquiry_id: row.id, seq: nextSeq, status: "scheduled", scheduled_at })
       .select().single();
-    if (error || !data) { alert(error?.message || "Could not add session."); return; }
+    if (error || !data) { showToast(error?.message || "Could not add session.", "err"); return; }
     edit(row.id, { sessions: [...(row.sessions || []), data as Session] });
   }
 
   async function createPaymentLink(row: Enquiry) {
     const amount = Number(row.estimated_value) || 0;
-    if (amount < 2) { alert("Set an estimated value of at least AED 2 before creating a payment link."); return; }
+    if (amount < 2) { showToast("Set an estimated value of at least AED 2 before creating a payment link.", "err"); return; }
     setLinkBusy(row.id);
     try {
       const res = await fetch("/api/payment-link", {
@@ -374,18 +392,18 @@ export default function Admin() {
         body: JSON.stringify({ amount, message: `Garage51 - ${row.customer_name}` }),
       });
       const data = await res.json();
-      if (!res.ok || !data.url) { alert(data.error || "Could not create the payment link."); return; }
+      if (!res.ok || !data.url) { showToast(data.error || "Could not create the payment link.", "err"); return; }
       await supabase.from("enquiries").update({ payment_link: data.url, payment_intent_id: data.id, payment_link_sent_at: null }).eq("id", row.id);
       edit(row.id, { payment_link: data.url, payment_intent_id: data.id, payment_link_sent_at: null });
     } catch {
-      alert("Could not reach the payment service. Check your connection and try again.");
+      showToast("Could not reach the payment service. Check your connection and try again.", "err");
     } finally {
       setLinkBusy(null);
     }
   }
 
   function copyLink(url: string) {
-    if (navigator.clipboard) { navigator.clipboard.writeText(url); alert("Payment link copied."); }
+    if (navigator.clipboard) { navigator.clipboard.writeText(url); showToast("Payment link copied."); }
     else { window.prompt("Copy this payment link:", url); }
   }
 
@@ -415,9 +433,9 @@ export default function Admin() {
     try {
       const res = await fetch("/api/setup-webhook", { method: "POST" });
       const data = await res.json();
-      if (!res.ok || !data.ok) { alert(data.error || "Could not connect the webhook."); return; }
-      alert("Payment webhook connected. Paid bookings will now update automatically.");
-    } catch { alert("Could not reach the server to connect the webhook."); }
+      if (!res.ok || !data.ok) { showToast(data.error || "Could not connect the webhook.", "err"); return; }
+      showToast("Payment webhook connected. Paid bookings will now update automatically.");
+    } catch { showToast("Could not reach the server to connect the webhook.", "err"); }
   }
 
   async function createEnquiry() {
@@ -677,6 +695,7 @@ export default function Admin() {
                       <div style={s.nameRow}>
                         <span style={s.name}>{r.customer_name}</span>
                         <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
+                        {dirty.has(r.id) && <span style={s.unsaved}>unsaved</span>}
                       </div>
                       <div style={s.sub}>
                         {cap(r.service_type.replace("_", " "))}
@@ -782,11 +801,11 @@ export default function Admin() {
 
                       <div style={s.controls}>
                         <label style={s.ctrl}><span style={s.ctrlLabel}>Stage</span>
-                          <select className="g51-input" value={r.stage} onChange={e => edit(r.id, { stage: e.target.value })} style={s.input}>
+                          <select className="g51-input" value={r.stage} onChange={e => editStaged(r.id, { stage: e.target.value })} style={s.input}>
                             {STAGES.map(stg => <option key={stg} value={stg}>{stg}</option>)}
                           </select></label>
                         <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
-                          <input className="g51-input" type="number" value={r.estimated_value} onChange={e => edit(r.id, { estimated_value: Number(e.target.value) })} style={s.input} /></label>
+                          <input className="g51-input" type="number" value={r.estimated_value} onChange={e => editStaged(r.id, { estimated_value: Number(e.target.value) })} style={s.input} /></label>
                         <label style={s.ctrl}><span style={s.ctrlLabel}>Payment</span>
                           <button onClick={() => togglePaid(r)} className="g51-btn g51-ghost" style={{ ...s.input, cursor: "pointer", textAlign: "left", color: r.paid_at ? PAID_COLOR : "#B5AEA8" }}>
                             {r.paid_at ? "Paid ✓ · tap to undo" : "Mark as paid"}
@@ -799,7 +818,7 @@ export default function Admin() {
                           <label style={s.sesTotal}>
                             <span style={s.ctrlLabel}>Package size</span>
                             <input className="g51-input" type="number" min={1} value={r.sessions_total}
-                              onChange={e => edit(r.id, { sessions_total: Math.max(1, Number(e.target.value) || 1) })}
+                              onChange={e => editStaged(r.id, { sessions_total: Math.max(1, Number(e.target.value) || 1) })}
                               style={{ ...s.input, width: 70, padding: "6px 8px" }} />
                           </label>
                         </div>
@@ -835,24 +854,25 @@ export default function Admin() {
                         <>
                           <div style={s.controls}>
                             <label style={s.ctrl}><span style={s.ctrlLabel}>Bike (make / model)</span>
-                              <input className="g51-input" value={r.bike_details || ""} onChange={e => edit(r.id, { bike_details: e.target.value })} style={s.input} /></label>
+                              <input className="g51-input" value={r.bike_details || ""} onChange={e => editStaged(r.id, { bike_details: e.target.value })} style={s.input} /></label>
                           </div>
                           <div style={s.controls}>
                             <label style={s.ctrl}><span style={s.ctrlLabel}>Year</span>
-                              <input className="g51-input" value={r.bike_year || ""} onChange={e => edit(r.id, { bike_year: e.target.value })} style={s.input} /></label>
+                              <input className="g51-input" value={r.bike_year || ""} onChange={e => editStaged(r.id, { bike_year: e.target.value })} style={s.input} /></label>
                             <label style={s.ctrl}><span style={s.ctrlLabel}>Hours / mileage</span>
-                              <input className="g51-input" value={r.bike_hours || ""} onChange={e => edit(r.id, { bike_hours: e.target.value })} style={s.input} /></label>
+                              <input className="g51-input" value={r.bike_hours || ""} onChange={e => editStaged(r.id, { bike_hours: e.target.value })} style={s.input} /></label>
                           </div>
                           <label style={s.ctrl}><span style={s.ctrlLabel}>Work required</span>
-                            <textarea className="g51-input" value={r.work_required || ""} onChange={e => edit(r.id, { work_required: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+                            <textarea className="g51-input" value={r.work_required || ""} onChange={e => editStaged(r.id, { work_required: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
                         </>
                       )}
 
                       <label style={s.ctrl}><span style={s.ctrlLabel}>Notes</span>
-                        <textarea className="g51-input" value={r.notes || ""} onChange={e => edit(r.id, { notes: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+                        <textarea className="g51-input" value={r.notes || ""} onChange={e => editStaged(r.id, { notes: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
 
                       <div style={s.actions}>
                         <button onClick={() => save(r)} className="g51-btn g51-primary" style={s.save}>Save</button>
+                        {dirty.has(r.id) && <span style={s.unsavedText}>Unsaved changes</span>}
                         {savedId === r.id && <span style={s.saved}>Saved ✓</span>}
                         {r.service_type === "workshop" && (
                           <button onClick={() => printJobCard(r)} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
@@ -871,6 +891,10 @@ export default function Admin() {
         <button onClick={connectWebhook} className="g51-btn g51-ghost" style={s.ghostBtn}>Connect payment webhook</button>
         <span style={s.footerNote}>One-time setup · run on the live site</span>
       </footer>
+
+      {toast && (
+        <div style={{ ...s.toast, ...(toast.kind === "err" ? s.toastErr : s.toastOk) }}>{toast.msg}</div>
+      )}
     </main>
   );
 }
@@ -914,6 +938,11 @@ const s: Record<string, CSSProperties> = {
   amount: { fontWeight: 700, fontSize: 14.5 },
   pill: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" },
   nameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  unsaved: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E18", borderRadius: 20, padding: "2px 8px" },
+  unsavedText: { fontSize: 12.5, fontWeight: 600, color: "#FFB02E" },
+  toast: { position: "fixed", left: "50%", bottom: 22, transform: "translateX(-50%)", zIndex: 100, maxWidth: "calc(100vw - 32px)", padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.45)", border: "1px solid", textAlign: "center" },
+  toastOk: { background: "#10301C", color: "#7CE0A6", borderColor: "#2FBF7155" },
+  toastErr: { background: "#3A1518", color: "#FF9B9B", borderColor: "#ED1C2455" },
   quick: { display: "flex", gap: 8, flexWrap: "wrap", padding: "0 17px 14px" },
   quickBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "#2A2624", color: "#D7D0CA", border: "1px solid #38332E", borderRadius: 9, padding: "11px 15px", fontSize: 13.5, fontWeight: 600, cursor: "pointer", textDecoration: "none" },
   quickPaid: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: "#2FBF71", border: "1px solid #2FBF7140", borderRadius: 9, padding: "11px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
