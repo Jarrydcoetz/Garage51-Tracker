@@ -511,14 +511,9 @@ export default function Admin() {
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
 
       <header style={s.header}>
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <div style={s.headerActions}>
-          <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New booking</button>
-          {me?.role === "admin" && (
-            <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
-          )}
-          <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
+        <div style={s.headerBar}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
           <div style={s.profileWrap}>
             <button onClick={() => setProfileOpen(o => !o)} className="g51-btn g51-ghost" style={s.profileBtn} aria-label="Account">
               <span style={{ ...s.avatar, background: roleColor(me?.role) }}>{initials}</span>
@@ -555,6 +550,13 @@ export default function Admin() {
               </>
             )}
           </div>
+        </div>
+        <div style={s.headerActions}>
+          <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New booking</button>
+          {me?.role === "admin" && (
+            <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
+          )}
+          <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
         </div>
       </header>
 
@@ -661,21 +663,62 @@ export default function Admin() {
                   <div className="g51-row g51-card-head" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
                     <span style={{ width: 9, height: 9, borderRadius: "50%", background: sc, flexShrink: 0 }} />
                     <div style={s.headMain}>
-                      <div style={s.name}>{r.customer_name}</div>
+                      <div style={s.nameRow}>
+                        <span style={s.name}>{r.customer_name}</span>
+                        <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
+                      </div>
                       <div style={s.sub}>
                         {cap(r.service_type.replace("_", " "))}
                         <span style={s.dotSep}>·</span>
                         {nextLabel(r)}
                         {r.selection && <><span style={s.dotSep}>·</span>{r.selection}</>}
+                        {isPkg && <><span style={s.dotSep}>·</span>session {done}/{r.sessions_total}</>}
                       </div>
                     </div>
                     <div className="g51-head-right" style={s.headRight}>
-                      {isPkg && <span style={s.progress}>{done}/{r.sessions_total}</span>}
                       {r.estimated_value > 0 && <span style={s.amount}>{aed(r.estimated_value)}</span>}
-                      {r.paid_at && <span style={{ ...s.pill, color: PAID_COLOR, borderColor: PAID_COLOR + "66", background: PAID_COLOR + "1c" }}>paid</span>}
-                      <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
                       <Chevron open={open} />
                     </div>
+                  </div>
+
+                  <div style={s.quick}>
+                    <button onClick={() => togglePaid(r)} className="g51-btn" style={r.paid_at ? s.quickPaid : s.quickBtn}>
+                      {r.paid_at ? "Paid ✓" : "Mark paid"}
+                    </button>
+                    {r.phone && (
+                      <a href={waChat(r.phone)} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>Message</a>
+                    )}
+                    {(r.stage === "booked" || r.payment_link) && (
+                      <div style={s.payWrap}>
+                        {!r.payment_link ? (
+                          <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} className="g51-btn" style={s.quickBtn}>
+                            {linkBusy === r.id ? "Creating…" : "Payment link"}
+                          </button>
+                        ) : (
+                          <button onClick={() => setPayMenuId(payMenuId === r.id ? null : r.id)} className="g51-btn" style={s.quickBtn}>
+                            Payment link{r.payment_link_sent_at && <span style={s.sentTick}>✓</span>}
+                            <Chevron open={payMenuId === r.id} />
+                          </button>
+                        )}
+                        {payMenuId === r.id && r.payment_link && (
+                          <>
+                            <div style={s.overlay} onClick={() => setPayMenuId(null)} />
+                            <div className="g51-sheet" style={s.payMenu}>
+                              {!r.payment_link_sent_at ? (
+                                <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer"
+                                  onClick={() => { markLinkSent(r); setPayMenuId(null); }}
+                                  className="g51-item" style={s.payItemWa}>Send link on WhatsApp</a>
+                              ) : (
+                                <div style={s.paySent}>Link sent {new Date(r.payment_link_sent_at).toLocaleDateString()}</div>
+                              )}
+                              <a href={r.payment_link} target="_blank" rel="noreferrer" onClick={() => setPayMenuId(null)} className="g51-item" style={s.payItem}>Open link</a>
+                              <button onClick={() => { copyLink(r.payment_link!); setPayMenuId(null); }} className="g51-item" style={s.payItem}>Copy link</button>
+                              <button onClick={() => { createPaymentLink(r); setPayMenuId(null); }} disabled={linkBusy === r.id} className="g51-item" style={s.payItem}>{linkBusy === r.id ? "Generating…" : "Generate new link"}</button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {open && (
@@ -801,39 +844,6 @@ export default function Admin() {
                         {r.service_type === "workshop" && (
                           <button onClick={() => printJobCard(r)} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
                         )}
-                        {r.phone && (
-                          <a href={waChat(r.phone)} target="_blank" rel="noreferrer" className="g51-btn" style={s.waBtn}>WhatsApp</a>
-                        )}
-                        {r.stage === "booked" && !r.payment_link && (
-                          <button onClick={() => createPaymentLink(r)} disabled={linkBusy === r.id} className="g51-btn" style={s.payBtn}>
-                            {linkBusy === r.id ? "Creating…" : "Create payment link"}
-                          </button>
-                        )}
-                        {r.payment_link && (
-                          <div style={s.payWrap}>
-                            <button onClick={() => setPayMenuId(payMenuId === r.id ? null : r.id)} className="g51-btn" style={{ ...s.payBtn, display: "inline-flex", alignItems: "center", gap: 6 }}>
-                              Payment link{r.payment_link_sent_at ? " · sent" : ""}
-                              <Chevron open={payMenuId === r.id} />
-                            </button>
-                            {payMenuId === r.id && (
-                              <>
-                                <div style={s.overlay} onClick={() => setPayMenuId(null)} />
-                                <div className="g51-sheet" style={s.payMenu}>
-                                  {!r.payment_link_sent_at ? (
-                                    <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer"
-                                      onClick={() => { markLinkSent(r); setPayMenuId(null); }}
-                                      className="g51-item" style={s.payItemWa}>Send link on WhatsApp</a>
-                                  ) : (
-                                    <div style={s.paySent}>Link sent {new Date(r.payment_link_sent_at).toLocaleDateString()}</div>
-                                  )}
-                                  <a href={r.payment_link} target="_blank" rel="noreferrer" onClick={() => setPayMenuId(null)} className="g51-item" style={s.payItem}>Open link</a>
-                                  <button onClick={() => { copyLink(r.payment_link!); setPayMenuId(null); }} className="g51-item" style={s.payItem}>Copy link</button>
-                                  <button onClick={() => { createPaymentLink(r); setPayMenuId(null); }} disabled={linkBusy === r.id} className="g51-item" style={s.payItem}>{linkBusy === r.id ? "Generating…" : "Generate new link"}</button>
-                                </div>
-                              </>
-                            )}
-                          </div>
-                        )}
                       </div>
                     </div>
                   )}
@@ -855,7 +865,8 @@ export default function Admin() {
 const s: Record<string, CSSProperties> = {
   loading: { minHeight: "100vh", background: "#181615", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
   page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50 },
-  header: { position: "sticky", top: 0, zIndex: 30, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "13px 20px", background: "rgba(24,22,21,0.82)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderBottom: "1px solid #2A2623" },
+  header: { position: "sticky", top: 0, zIndex: 30, display: "flex", flexDirection: "column", gap: 11, padding: "12px 18px", background: "rgba(24,22,21,0.82)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderBottom: "1px solid #2A2623" },
+  headerBar: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
   logo: { height: 30, width: "auto" },
   headerActions: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   primaryBtn: { background: RED, color: "#fff", border: "none", borderRadius: 9, padding: "9px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
@@ -879,8 +890,8 @@ const s: Record<string, CSSProperties> = {
   menuItem: { width: "100%", display: "flex", alignItems: "center", gap: 10, background: "transparent", border: "none", borderRadius: 8, padding: "9px 11px", cursor: "pointer", color: "#C9C2BC", fontSize: 13.5, fontFamily: "inherit" },
   menuCount: { fontSize: 12, color: "#8C857F" },
   list: { display: "flex", flexDirection: "column", gap: 10 },
-  card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14, overflow: "hidden" },
-  cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer" },
+  card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14 },
+  cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer", borderTopLeftRadius: 14, borderTopRightRadius: 14 },
   headMain: { flex: 1, minWidth: 0 },
   name: { fontWeight: 600, fontSize: 15.5 },
   sub: { fontSize: 12.5, color: "#9A938D", marginTop: 3, lineHeight: 1.45, wordBreak: "break-word" },
@@ -889,6 +900,11 @@ const s: Record<string, CSSProperties> = {
   progress: { fontSize: 11.5, fontWeight: 700, color: "#C9C2BC", background: "#2C2824", borderRadius: 20, padding: "2px 9px" },
   amount: { fontWeight: 700, fontSize: 14.5 },
   pill: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" },
+  nameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  quick: { display: "flex", gap: 8, flexWrap: "wrap", padding: "0 17px 14px" },
+  quickBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "#2A2624", color: "#D7D0CA", border: "1px solid #38332E", borderRadius: 9, padding: "8px 13px", fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none" },
+  quickPaid: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: "#2FBF71", border: "1px solid #2FBF7140", borderRadius: 9, padding: "8px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer" },
+  sentTick: { display: "inline-grid", placeItems: "center", width: 15, height: 15, borderRadius: "50%", background: "#25D366", color: "#06270F", fontSize: 10, fontWeight: 900 },
   cardBody: { padding: "2px 17px 17px", borderTop: "1px solid #2A2623" },
   contact: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", margin: "14px 0" },
   link: { color: "#F4F2EF", textDecoration: "none", fontWeight: 500, fontSize: 14 },
