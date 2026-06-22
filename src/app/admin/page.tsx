@@ -194,6 +194,18 @@ const CSS = `
 .g51-expand{animation:g51fade .18s ease;}
 .g51-btn:disabled{opacity:.55;cursor:default;}
 @keyframes g51fade{from{opacity:0;transform:translateY(-4px);}to{opacity:1;transform:none;}}
+@media (max-width: 640px) {
+  .g51-card-head { flex-wrap: wrap; }
+  .g51-head-right { flex-basis: 100%; justify-content: flex-end; margin-top: 8px; }
+  .g51-stat { flex: 1 1 100% !important; }
+  .g51-sheet {
+    position: fixed !important; left: 0 !important; right: 0 !important;
+    bottom: 0 !important; top: auto !important; width: auto !important;
+    min-width: 0 !important; border-radius: 16px 16px 0 0 !important;
+    max-height: 78vh; overflow-y: auto;
+  }
+  .g51-sheet .g51-item, .g51-sheet .g51-menu-item { padding-top: 13px; padding-bottom: 13px; }
+}
 `;
 
 function Chevron({ open }: { open: boolean }) {
@@ -206,7 +218,7 @@ function Chevron({ open }: { open: boolean }) {
 
 function Stat({ label, sub, value, color }: { label: string; sub: string; value: string; color: string }) {
   return (
-    <div style={s.stat}>
+    <div className="g51-stat" style={s.stat}>
       <div style={s.statLabel}>{label}</div>
       <div style={{ ...s.statValue, color }}>{value}</div>
       <div style={s.statSub}>{sub}</div>
@@ -515,7 +527,7 @@ export default function Admin() {
             {profileOpen && (
               <>
                 <div style={s.overlay} onClick={() => { setProfileOpen(false); setPwOpen(false); }} />
-                <div style={s.profileMenu}>
+                <div className="g51-sheet" style={s.profileMenu}>
                   <div style={s.pmHead}>
                     <span style={{ ...s.avatarLg, background: roleColor(me?.role) }}>{initials}</span>
                     <div style={{ minWidth: 0 }}>
@@ -614,7 +626,7 @@ export default function Admin() {
             {filterOpen && (
               <>
                 <div style={s.overlay} onClick={() => setFilterOpen(false)} />
-                <div style={s.menu}>
+                <div className="g51-sheet" style={s.menu}>
                   {FILTER_OPTS.map(opt => (
                     <button key={opt.key} className="g51-item" onClick={() => { setFilter(opt.key); setFilterOpen(false); }}
                       style={{ ...s.menuItem, ...(filter === opt.key ? { color: "#F4F2EF", background: "#2C2723" } : {}) }}>
@@ -646,7 +658,7 @@ export default function Admin() {
               const sortedSessions = [...(r.sessions || [])].sort((a, b) => a.seq - b.seq);
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
-                  <div className="g51-row" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
+                  <div className="g51-row g51-card-head" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
                     <span style={{ width: 9, height: 9, borderRadius: "50%", background: sc, flexShrink: 0 }} />
                     <div style={s.headMain}>
                       <div style={s.name}>{r.customer_name}</div>
@@ -657,7 +669,7 @@ export default function Admin() {
                         {r.selection && <><span style={s.dotSep}>·</span>{r.selection}</>}
                       </div>
                     </div>
-                    <div style={s.headRight}>
+                    <div className="g51-head-right" style={s.headRight}>
                       {isPkg && <span style={s.progress}>{done}/{r.sessions_total}</span>}
                       {r.estimated_value > 0 && <span style={s.amount}>{aed(r.estimated_value)}</span>}
                       {r.paid_at && <span style={{ ...s.pill, color: PAID_COLOR, borderColor: PAID_COLOR + "66", background: PAID_COLOR + "1c" }}>paid</span>}
@@ -806,7 +818,7 @@ export default function Admin() {
                             {payMenuId === r.id && (
                               <>
                                 <div style={s.overlay} onClick={() => setPayMenuId(null)} />
-                                <div style={s.payMenu}>
+                                <div className="g51-sheet" style={s.payMenu}>
                                   {!r.payment_link_sent_at ? (
                                     <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer"
                                       onClick={() => { markLinkSent(r); setPayMenuId(null); }}
@@ -867,7 +879,7 @@ const s: Record<string, CSSProperties> = {
   menuItem: { width: "100%", display: "flex", alignItems: "center", gap: 10, background: "transparent", border: "none", borderRadius: 8, padding: "9px 11px", cursor: "pointer", color: "#C9C2BC", fontSize: 13.5, fontFamily: "inherit" },
   menuCount: { fontSize: 12, color: "#8C857F" },
   list: { display: "flex", flexDirection: "column", gap: 10 },
-card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14, overflow: "visible" },
+  card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14, overflow: "hidden" },
   cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer" },
   headMain: { flex: 1, minWidth: 0 },
   name: { fontWeight: 600, fontSize: 15.5 },
