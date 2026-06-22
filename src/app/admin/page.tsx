@@ -140,8 +140,16 @@ function localInputToIso(v: string): string | null {
 }
 
 function printJobCard(r: Enquiry) {
-  const w = window.open("", "_blank", "width=820,height=1000");
-  if (!w) { alert("Allow pop-ups to print the job card."); return; }
+  const frame = document.createElement("iframe");
+  frame.style.position = "fixed";
+  frame.style.right = "0";
+  frame.style.bottom = "0";
+  frame.style.width = "0";
+  frame.style.height = "0";
+  frame.style.border = "0";
+  document.body.appendChild(frame);
+  const w = frame.contentWindow;
+  if (!w) { frame.remove(); return; }
   const esc = (v: string | null) => (v || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Job Card - ${esc(r.customer_name)}</title>
 <style>
@@ -176,8 +184,11 @@ function printJobCard(r: Enquiry) {
   <div class="sign"><div>Mechanic signature</div><div>Date completed</div></div>
   <script>window.onload=function(){setTimeout(function(){window.print();},350);};</script>
 </body></html>`;
+  w.document.open();
   w.document.write(html);
   w.document.close();
+  w.onafterprint = () => { try { frame.remove(); } catch {} };
+  setTimeout(() => { try { frame.remove(); } catch {} }, 60000);
 }
 
 const CSS = `
@@ -522,7 +533,7 @@ export default function Admin() {
             {profileOpen && (
               <>
                 <div style={s.overlay} onClick={() => { setProfileOpen(false); setPwOpen(false); }} />
-                <div style={s.profileMenu}>
+                <div className="g51-sheet" style={s.profileMenu}>
                   <div style={s.pmHead}>
                     <span style={{ ...s.avatarLg, background: roleColor(me?.role) }}>{initials}</span>
                     <div style={{ minWidth: 0 }}>
@@ -682,9 +693,11 @@ export default function Admin() {
                   </div>
 
                   <div style={s.quick}>
-                    <button onClick={() => togglePaid(r)} className="g51-btn" style={r.paid_at ? s.quickPaid : s.quickBtn}>
-                      {r.paid_at ? "Paid ✓" : "Mark paid"}
-                    </button>
+                    {(r.paid_at || !["cancelled", "lost"].includes(r.stage)) && (
+                      <button onClick={() => togglePaid(r)} className="g51-btn" style={r.paid_at ? s.quickPaid : s.quickBtn}>
+                        {r.paid_at ? "Paid ✓" : "Mark paid"}
+                      </button>
+                    )}
                     {r.phone && (
                       <a href={waChat(r.phone)} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>Message</a>
                     )}
@@ -865,7 +878,7 @@ export default function Admin() {
 const s: Record<string, CSSProperties> = {
   loading: { minHeight: "100vh", background: "#181615", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
   page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50 },
-  header: { position: "sticky", top: 0, zIndex: 30, display: "flex", flexDirection: "column", gap: 11, padding: "12px 18px", background: "rgba(24,22,21,0.82)", backdropFilter: "blur(10px)", WebkitBackdropFilter: "blur(10px)", borderBottom: "1px solid #2A2623" },
+  header: { position: "sticky", top: 0, zIndex: 30, display: "flex", flexDirection: "column", gap: 11, padding: "12px 18px", background: "#1A1817", borderBottom: "1px solid #2A2623" },
   headerBar: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 },
   logo: { height: 30, width: "auto" },
   headerActions: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
@@ -902,8 +915,8 @@ const s: Record<string, CSSProperties> = {
   pill: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" },
   nameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   quick: { display: "flex", gap: 8, flexWrap: "wrap", padding: "0 17px 14px" },
-  quickBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "#2A2624", color: "#D7D0CA", border: "1px solid #38332E", borderRadius: 9, padding: "8px 13px", fontSize: 13, fontWeight: 600, cursor: "pointer", textDecoration: "none" },
-  quickPaid: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: "#2FBF71", border: "1px solid #2FBF7140", borderRadius: 9, padding: "8px 13px", fontSize: 13, fontWeight: 700, cursor: "pointer" },
+  quickBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "#2A2624", color: "#D7D0CA", border: "1px solid #38332E", borderRadius: 9, padding: "11px 15px", fontSize: 13.5, fontWeight: 600, cursor: "pointer", textDecoration: "none" },
+  quickPaid: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: "#2FBF71", border: "1px solid #2FBF7140", borderRadius: 9, padding: "11px 15px", fontSize: 13.5, fontWeight: 700, cursor: "pointer" },
   sentTick: { display: "inline-grid", placeItems: "center", width: 15, height: 15, borderRadius: "50%", background: "#25D366", color: "#06270F", fontSize: 10, fontWeight: 900 },
   cardBody: { padding: "2px 17px 17px", borderTop: "1px solid #2A2623" },
   contact: { display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", margin: "14px 0" },
