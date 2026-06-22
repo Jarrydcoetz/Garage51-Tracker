@@ -16,6 +16,14 @@ type Body = {
     notes?: string | null;
     work_required?: string | null;
     bike_details?: string | null;
+    bike_year?: string | null;
+    bike_hours?: string | null;
+    selection?: string | null;
+    estimated_value?: number | null;
+    assigned_staff_name?: string | null;
+    rider_category?: string | null;
+    rider_count?: number | null;
+    own_gear?: boolean | null;
   };
 };
 
@@ -47,6 +55,14 @@ export async function POST(req: Request) {
     notes: enquiry.notes ?? null,
     workRequired: enquiry.work_required ?? null,
     bikeDetails: enquiry.bike_details ?? null,
+    bikeYear: enquiry.bike_year ?? null,
+    bikeHours: enquiry.bike_hours ?? null,
+    selection: enquiry.selection ?? null,
+    estimatedValue: enquiry.estimated_value ?? null,
+    assignedStaffName: enquiry.assigned_staff_name ?? null,
+    riderCategory: enquiry.rider_category ?? null,
+    riderCount: enquiry.rider_count ?? null,
+    ownGear: enquiry.own_gear ?? null,
   };
 
   try {
