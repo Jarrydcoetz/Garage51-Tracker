@@ -44,6 +44,14 @@ export type CalendarEnquiryInput = {
   notes?: string | null;
   workRequired?: string | null;
   bikeDetails?: string | null;
+  bikeYear?: string | null;
+  bikeHours?: string | null;
+  selection?: string | null;
+  estimatedValue?: number | null;
+  assignedStaffName?: string | null;
+  riderCategory?: string | null;
+  riderCount?: number | null;
+  ownGear?: boolean | null;
 };
 
 // ---- helpers --------------------------------------------------------------
@@ -53,15 +61,23 @@ function buildEventBody(session: CalendarSessionInput, enquiry: CalendarEnquiryI
   const minutes = session.durationMinutes ?? 60;
   const end = new Date(start.getTime() + minutes * 60000);
 
-  const descriptionParts = [
-    `Phone: ${enquiry.phone}`,
-    enquiry.bikeDetails ? `Bike: ${enquiry.bikeDetails}` : null,
-    enquiry.workRequired ? `Work required: ${enquiry.workRequired}` : null,
-    enquiry.notes ? `Notes: ${enquiry.notes}` : null,
-  ].filter(Boolean) as string[];
+  const descriptionParts: string[] = [`Phone: ${enquiry.phone}`];
+  if (enquiry.assignedStaffName) descriptionParts.push(`Assigned to: ${enquiry.assignedStaffName}`);
+  if (enquiry.selection) descriptionParts.push(`Requested: ${enquiry.selection}`);
+  if (enquiry.riderCategory) descriptionParts.push(`Rider category: ${enquiry.riderCategory}`);
+  if (enquiry.riderCount) descriptionParts.push(`Riders: ${enquiry.riderCount}`);
+  if (enquiry.ownGear != null) descriptionParts.push(`Own gear: ${enquiry.ownGear ? "Yes" : "No"}`);
+  if (enquiry.bikeDetails) descriptionParts.push(`Bike: ${enquiry.bikeDetails}`);
+  if (enquiry.bikeYear) descriptionParts.push(`Year: ${enquiry.bikeYear}`);
+  if (enquiry.bikeHours) descriptionParts.push(`Hours/mileage: ${enquiry.bikeHours}`);
+  if (enquiry.workRequired) descriptionParts.push(`Work required: ${enquiry.workRequired}`);
+  if (enquiry.estimatedValue) descriptionParts.push(`Estimated value: AED ${enquiry.estimatedValue.toLocaleString()}`);
+  if (enquiry.notes) descriptionParts.push(`Notes: ${enquiry.notes}`);
+
+  const titleSuffix = enquiry.assignedStaffName ? ` · ${enquiry.assignedStaffName}` : "";
 
   return {
-    summary: `${enquiry.customerName} — ${enquiry.serviceType.replace("_", " ")}`,
+    summary: `${enquiry.customerName} — ${enquiry.serviceType.replace("_", " ")}${titleSuffix}`,
     description: descriptionParts.join("\n"),
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },

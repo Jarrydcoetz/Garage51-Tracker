@@ -365,8 +365,17 @@ export default function Admin() {
     const assigned = profileId || null;
     const clientId = row.client.id;
     await supabase.from("clients").update({ assigned_to: assigned }).eq("id", clientId);
+    const updatedClient = { ...(row.client as ClientLite), assigned_to: assigned };
     setRows(prev => prev.map(r =>
-      r.client?.id === clientId ? { ...r, client: { ...(r.client as ClientLite), assigned_to: assigned } } : r));
+      r.client?.id === clientId ? { ...r, client: updatedClient } : r));
+    // A client can have several bookings — re-sync every session on every one of
+    // them so the calendar's "Assigned to" reflects the new staff member right away.
+    for (const r of rows) {
+      if (r.client?.id !== clientId) continue;
+      for (const ss of r.sessions || []) {
+        syncSessionToCalendar({ ...r, client: updatedClient }, ss);
+      }
+    }
   }
 
   async function persistSession(sessId: string, patch: Partial<Session>) {
@@ -378,6 +387,7 @@ export default function Admin() {
   // are surfaced as a toast but never block the Supabase save that already happened.
   async function syncSessionToCalendar(row: Enquiry, ss: Session) {
     try {
+      const staffName = staff.find(p => p.id === row.client?.assigned_to)?.name || null;
       const res = await fetch("/api/calendar/sync-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -396,6 +406,14 @@ export default function Admin() {
             notes: row.notes,
             work_required: row.work_required,
             bike_details: row.bike_details,
+            bike_year: row.bike_year,
+            bike_hours: row.bike_hours,
+            selection: row.selection,
+            estimated_value: row.estimated_value,
+            assigned_staff_name: staffName,
+            rider_category: row.rider_category,
+            rider_count: row.rider_count,
+            own_gear: row.own_gear,
           },
         }),
       });
