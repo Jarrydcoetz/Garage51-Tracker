@@ -62,8 +62,8 @@ const SOURCES = [
   { v: "form", label: "Web form" },
 ];
 const STATE_COLOR: Record<string, string> = {
-  new: "#3B9EFF", contacted: "#FFB02E", booked: "#ED1C24",
-  completed: "#2FBF71", cancelled: "#7A746E", lost: "#7A746E",
+  new: "#3B9EFF", contacted: "#FFB02E", booked: "#A78BFA",
+  completed: "#2FBF71", cancelled: "#C77B6B", lost: "#6E6862",
 };
 const PAID_COLOR = "#FFC400";
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
@@ -592,7 +592,7 @@ export default function Admin() {
       <div style={s.bodyWrap}>
         <div style={s.stats}>
           <Stat label="In pipeline" sub="New + contacted" value={aed(pipeline)} color="#5BB0FF" />
-          <Stat label="Booked" sub="Awaiting payment" value={aed(booked)} color={RED} />
+          <Stat label="Booked" sub="Awaiting payment" value={aed(booked)} color="#A78BFA" />
           <Stat label="Earned" sub="Paid" value={aed(earned)} color="#2FBF71" />
         </div>
 
