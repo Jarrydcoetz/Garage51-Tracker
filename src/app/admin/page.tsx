@@ -522,7 +522,7 @@ export default function Admin() {
             {profileOpen && (
               <>
                 <div style={s.overlay} onClick={() => { setProfileOpen(false); setPwOpen(false); }} />
-                <div className="g51-sheet" style={s.profileMenu}>
+                <div style={s.profileMenu}>
                   <div style={s.pmHead}>
                     <span style={{ ...s.avatarLg, background: roleColor(me?.role) }}>{initials}</span>
                     <div style={{ minWidth: 0 }}>
