@@ -29,7 +29,7 @@ async function requireAdmin(accessToken: string): Promise<string | null> {
 
 export async function inviteStaff(
   accessToken: string,
-  input: { name: string; email: string; role: string }
+  input: { name: string; email: string; role: string; whatsapp?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const adminId = await requireAdmin(accessToken);
   if (!adminId) return { ok: false, error: "Not authorised." };
@@ -37,13 +37,22 @@ export async function inviteStaff(
   const name = input.name?.trim();
   const email = input.email?.trim().toLowerCase();
   const role = ROLES.includes(input.role) ? input.role : "coach";
+  const whatsapp = input.whatsapp?.trim() || null;
   if (!name || !email) return { ok: false, error: "Name and email are required." };
 
-  const { error } = await admin.auth.admin.inviteUserByEmail(email, {
-    data: { name, role },
+  const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
+    data: { name, role, whatsapp },
     redirectTo: `${SITE_URL}/welcome`,
   });
   if (error) return { ok: false, error: error.message };
+
+  // The trigger that creates the profile row only copies name/role today, so
+  // set the number directly here too rather than relying on it picking up
+  // an extra metadata field it doesn't yet know about.
+  if (whatsapp && data.user) {
+    await admin.from("profiles").update({ whatsapp }).eq("id", data.user.id);
+  }
+
   return { ok: true };
 }
 
@@ -72,6 +81,21 @@ export async function setStaffRole(
   if (!ROLES.includes(role)) return { ok: false, error: "Invalid role." };
 
   const { error } = await admin.from("profiles").update({ role }).eq("id", id);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export async function setStaffWhatsapp(
+  accessToken: string,
+  id: string,
+  whatsapp: string | null
+): Promise<{ ok: boolean; error?: string }> {
+  const adminId = await requireAdmin(accessToken);
+  if (!adminId) return { ok: false, error: "Not authorised." };
+  // No self-edit restriction here — unlike role/active, there's no safety
+  // reason an admin shouldn't be able to set their own number too.
+
+  const { error } = await admin.from("profiles").update({ whatsapp }).eq("id", id);
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }

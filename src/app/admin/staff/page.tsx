@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
-import { inviteStaff, setStaffActive, setStaffRole } from "./actions";
+import { inviteStaff, setStaffActive, setStaffRole, setStaffWhatsapp } from "./actions";
 
 const RED = "#ED1C24";
 const ROLES = ["admin", "coach", "mechanic"];
@@ -16,6 +16,7 @@ type Profile = {
   email: string | null;
   role: string;
   active: boolean;
+  whatsapp: string | null;
   created_at: string;
 };
 
@@ -42,7 +43,7 @@ export default function StaffScreen() {
   const [token, setToken] = useState("");
   const [meId, setMeId] = useState("");
   const [staff, setStaff] = useState<Profile[]>([]);
-  const [form, setForm] = useState({ name: "", email: "", role: "coach" });
+  const [form, setForm] = useState({ name: "", email: "", role: "coach", whatsapp: "" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -83,7 +84,7 @@ export default function StaffScreen() {
     setBusy(false);
     if (!res.ok) { setErr(res.error || "Could not send the invite."); return; }
     setMsg(`Invite sent to ${form.email.trim()}.`);
-    setForm({ name: "", email: "", role: "coach" });
+    setForm({ name: "", email: "", role: "coach", whatsapp: "" });
     await load();
   }
 
@@ -98,6 +99,16 @@ export default function StaffScreen() {
     setStaff(prev => prev.map(x => (x.id === p.id ? { ...x, active: next } : x)));
     const res = await setStaffActive(token, p.id, next);
     if (!res.ok) { setErr(res.error || "Could not update."); await load(); }
+  }
+
+  function editWhatsappLocal(p: Profile, value: string) {
+    setStaff(prev => prev.map(x => (x.id === p.id ? { ...x, whatsapp: value } : x)));
+  }
+
+  async function saveWhatsapp(p: Profile, value: string) {
+    const cleaned = value.trim() || null;
+    const res = await setStaffWhatsapp(token, p.id, cleaned);
+    if (!res.ok) { setErr(res.error || "Could not save the WhatsApp number."); await load(); }
   }
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
@@ -187,6 +198,8 @@ export default function StaffScreen() {
                 <option value="mechanic">mechanic</option>
                 <option value="admin">admin</option>
               </select></label>
+            <label style={s.ctrl}><span style={s.ctrlLabel}>WhatsApp</span>
+              <input className="g51-input" value={form.whatsapp} onChange={e => set("whatsapp", e.target.value)} placeholder="+9715XXXXXXX" style={s.input} /></label>
           </div>
           <div style={s.actions}>
             <button onClick={invite} disabled={busy} className="g51-btn g51-primary" style={s.primaryBtn}>{busy ? "Sending…" : "Send invite"}</button>
@@ -204,6 +217,14 @@ export default function StaffScreen() {
                 <div style={s.rowMain}>
                   <div style={s.name}>{p.name || "(no name)"}{isMe && <span style={s.youTag}>you</span>}</div>
                   <div style={s.email}>{p.email}</div>
+                  <input
+                    className="g51-input"
+                    value={p.whatsapp || ""}
+                    onChange={e => editWhatsappLocal(p, e.target.value)}
+                    onBlur={e => saveWhatsapp(p, e.target.value)}
+                    placeholder="WhatsApp: +9715XXXXXXX"
+                    style={s.whatsappInput}
+                  />
                 </div>
                 <div style={s.rowRight}>
                   {!p.active && <span style={s.inactive}>inactive</span>}
@@ -251,6 +272,7 @@ const s: Record<string, CSSProperties> = {
   name: { fontWeight: 600, fontSize: 15, display: "flex", alignItems: "center", gap: 8 },
   youTag: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#9A938D", background: "#2C2824", borderRadius: 20, padding: "2px 8px" },
   email: { fontSize: 13, color: "#9A938D", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  whatsappInput: { width: "100%", maxWidth: 220, boxSizing: "border-box", background: "#141211", border: "1px solid #322E2A", borderRadius: 7, color: "#F4F2EF", fontSize: 12.5, padding: "6px 9px", fontFamily: "inherit", marginTop: 7 },
   rowRight: { display: "flex", alignItems: "center", gap: 9, flexShrink: 0 },
   inactive: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "#9A938D", border: "1px solid #4A443E", borderRadius: 20, padding: "3px 9px" },
   roleSelect: { background: "#141211", border: "1px solid #322E2A", borderRadius: 9, fontSize: 13, fontWeight: 700, padding: "8px 10px", fontFamily: "inherit" },
