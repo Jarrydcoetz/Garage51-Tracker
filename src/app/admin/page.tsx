@@ -46,9 +46,10 @@ type Enquiry = {
   payment_link_sent_at: string | null;
   sessions: Session[];
   client: ClientLite | null;
+  assigned_to: string | null;
 };
 
-type ClientLite = { id: string; name: string | null; whatsapp: string | null; assigned_to: string | null };
+type ClientLite = { id: string; name: string | null; whatsapp: string | null };
 type Profile = { id: string; name: string | null; role: string; active: boolean };
 
 const RED = "#ED1C24";
@@ -66,10 +67,14 @@ const STATE_COLOR: Record<string, string> = {
   completed: "#2FBF71", cancelled: "#C77B6B", lost: "#6E6862",
 };
 const PAID_COLOR = "#FFC400";
+// Sessions don't store a duration today, so conflict checks (and the Calendar
+// push) both assume this. If durations start varying a lot by service type,
+// this is the constant to replace with a real per-booking value.
+const SESSION_DURATION_MINUTES = 60;
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
 const dotColor = (k: string) =>
-  STATE_COLOR[k] || (k === "needs_payment" ? PAID_COLOR : k === "sent" ? "#2FBF71" : "#9A938D");
+  STATE_COLOR[k] || (k === "needs_payment" ? PAID_COLOR : k === "sent" ? "#2FBF71" : k === "conflict" ? "#FF6B6B" : "#9A938D");
 
 const FILTER_OPTS = [
   { key: "all", label: "All bookings" },
@@ -81,6 +86,7 @@ const FILTER_OPTS = [
   { key: "lost", label: "Lost" },
   { key: "needs_payment", label: "Needs payment" },
   { key: "sent", label: "Payment link sent" },
+  { key: "conflict", label: "Has conflict" },
 ];
 
 const BLANK = {
@@ -124,6 +130,34 @@ function nextLabel(r: Enquiry): string {
   }
   if (r.preferred_date) return new Date(r.preferred_date).toLocaleDateString();
   return new Date(r.created_at).toLocaleDateString();
+}
+
+function isActiveSession(ss: Session): boolean {
+  return !!ss.scheduled_at && ss.status !== "cancelled" && ss.status !== "no_show";
+}
+
+// Finds the first other active session assigned to the same staff member whose
+// time range overlaps this one. Returns the conflicting booking, or null.
+// Every session is assumed to run SESSION_DURATION_MINUTES — see that constant.
+function findConflict(allRows: Enquiry[], forRow: Enquiry, forSession: Session): Enquiry | null {
+  if (!forRow.assigned_to || !isActiveSession(forSession)) return null;
+  const start = new Date(forSession.scheduled_at as string).getTime();
+  const end = start + SESSION_DURATION_MINUTES * 60000;
+
+  for (const r of allRows) {
+    if (r.assigned_to !== forRow.assigned_to) continue;
+    for (const ss of r.sessions || []) {
+      if (ss.id === forSession.id || !isActiveSession(ss)) continue;
+      const oStart = new Date(ss.scheduled_at as string).getTime();
+      const oEnd = oStart + SESSION_DURATION_MINUTES * 60000;
+      if (start < oEnd && oStart < end) return r;
+    }
+  }
+  return null;
+}
+
+function bookingHasConflict(allRows: Enquiry[], row: Enquiry): boolean {
+  return (row.sessions || []).some(ss => !!findConflict(allRows, row, ss));
 }
 function isoToLocalInput(iso: string | null): string {
   if (!iso) return "";
@@ -280,7 +314,7 @@ export default function Admin() {
       setReady(true);
       const { data: rowsData } = await supabase
         .from("enquiries")
-        .select("*, sessions(*), client:clients(id, name, whatsapp, assigned_to)")
+        .select("*, sessions(*), client:clients(id, name, whatsapp)")
         .order("created_at", { ascending: false });
       setRows((rowsData as Enquiry[]) || []);
       setLoading(false);
@@ -360,21 +394,15 @@ export default function Admin() {
     edit(row.id, { refund_due: false });
   }
 
-  async function assignClient(row: Enquiry, profileId: string) {
-    if (!row.client?.id) { showToast("This booking has no client record yet, so it can't be assigned.", "err"); return; }
+  async function assignBooking(row: Enquiry, profileId: string) {
     const assigned = profileId || null;
-    const clientId = row.client.id;
-    await supabase.from("clients").update({ assigned_to: assigned }).eq("id", clientId);
-    const updatedClient = { ...(row.client as ClientLite), assigned_to: assigned };
-    setRows(prev => prev.map(r =>
-      r.client?.id === clientId ? { ...r, client: updatedClient } : r));
-    // A client can have several bookings — re-sync every session on every one of
-    // them so the calendar's "Assigned to" reflects the new staff member right away.
-    for (const r of rows) {
-      if (r.client?.id !== clientId) continue;
-      for (const ss of r.sessions || []) {
-        syncSessionToCalendar({ ...r, client: updatedClient }, ss);
-      }
+    await supabase.from("enquiries").update({ assigned_to: assigned }).eq("id", row.id);
+    edit(row.id, { assigned_to: assigned });
+    // Re-sync this booking's sessions so the calendar's "Assigned to" reflects
+    // the new staff member right away. Other bookings are untouched — each
+    // one is assigned independently now, even for the same customer.
+    for (const ss of row.sessions || []) {
+      syncSessionToCalendar({ ...row, assigned_to: assigned }, ss);
     }
   }
 
@@ -387,7 +415,7 @@ export default function Admin() {
   // are surfaced as a toast but never block the Supabase save that already happened.
   async function syncSessionToCalendar(row: Enquiry, ss: Session) {
     try {
-      const staffName = staff.find(p => p.id === row.client?.assigned_to)?.name || null;
+      const staffName = staff.find(p => p.id === row.assigned_to)?.name || null;
       const res = await fetch("/api/calendar/sync-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -533,7 +561,7 @@ export default function Admin() {
   }
 
   function exportCsv() {
-    const data = me?.role === "admin" ? rows : rows.filter(r => r.client?.assigned_to === me?.id);
+    const data = me?.role === "admin" ? rows : rows.filter(r => r.assigned_to === me?.id);
     const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Notes"];
     const esc = (v: unknown) => `"${(v == null ? "" : String(v)).replace(/"/g, '""')}"`;
     const lines = [
@@ -571,7 +599,7 @@ export default function Admin() {
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
-  const scoped = me?.role === "admin" ? rows : rows.filter(r => r.client?.assigned_to === me?.id);
+  const scoped = me?.role === "admin" ? rows : rows.filter(r => r.assigned_to === me?.id);
 
   const pipeline = scoped.filter(r => ["new", "contacted"].includes(r.stage)).reduce((a, r) => a + (r.estimated_value || 0), 0);
   const booked = scoped.filter(r => r.stage === "booked" && !r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
@@ -581,6 +609,7 @@ export default function Admin() {
     if (f === "all") return true;
     if (f === "needs_payment") return r.stage === "booked" && !r.paid_at;
     if (f === "sent") return !!r.payment_link;
+    if (f === "conflict") return bookingHasConflict(rows, r);
     return bookingState(r) === f;
   };
 
@@ -752,6 +781,7 @@ export default function Admin() {
               const sc = STATE_COLOR[st] || "#9A938D";
               const done = completedCount(r);
               const isPkg = r.sessions_total > 1;
+              const conflicted = bookingHasConflict(rows, r);
               const sortedSessions = [...(r.sessions || [])].sort((a, b) => a.seq - b.seq);
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
@@ -761,6 +791,7 @@ export default function Admin() {
                       <div style={s.nameRow}>
                         <span style={s.name}>{r.customer_name}</span>
                         <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
+                        {conflicted && <span style={s.conflictBadge} title="One of this booking's sessions overlaps another booking for the same staff member">⚠ Conflict</span>}
                         {dirty.has(r.id) && <span style={s.unsaved}>unsaved</span>}
                       </div>
                       <div style={s.sub}>
@@ -831,22 +862,19 @@ export default function Admin() {
                         )}
                       </div>
 
-                      {(me?.role === "admin" || r.client?.assigned_to) && (
+                      {(me?.role === "admin" || r.assigned_to) && (
                         <div style={s.assignRow}>
                           <span style={s.assignLabel}>Assigned to</span>
                           {me?.role === "admin" ? (
-                            <>
-                              <select className="g51-input" value={r.client?.assigned_to || ""} disabled={!r.client}
-                                onChange={e => assignClient(r, e.target.value)} style={s.assignSelect}>
-                                <option value="">Unassigned</option>
-                                {staff.filter(p => p.role !== "admin").map(p => (
-                                  <option key={p.id} value={p.id}>{p.name || "(no name)"} · {p.role}</option>
-                                ))}
-                              </select>
-                              {!r.client && <span style={s.assignNote}>no client record yet</span>}
-                            </>
+                            <select className="g51-input" value={r.assigned_to || ""}
+                              onChange={e => assignBooking(r, e.target.value)} style={s.assignSelect}>
+                              <option value="">Unassigned</option>
+                              {staff.map(p => (
+                                <option key={p.id} value={p.id}>{p.name || "(no name)"} · {p.role}</option>
+                              ))}
+                            </select>
                           ) : (
-                            <span style={s.assignVal}>{staff.find(p => p.id === r.client?.assigned_to)?.name || "—"}</span>
+                            <span style={s.assignVal}>{staff.find(p => p.id === r.assigned_to)?.name || "—"}</span>
                           )}
                         </div>
                       )}
@@ -888,7 +916,9 @@ export default function Admin() {
                               style={{ ...s.input, width: 70, padding: "6px 8px" }} />
                           </label>
                         </div>
-                        {sortedSessions.map(ss => (
+                        {sortedSessions.map(ss => {
+                          const conflict = findConflict(rows, r, ss);
+                          return (
                           <div key={ss.id} style={s.sesRow}>
                             <span style={s.sesSeq}>#{ss.seq}</span>
                             <input className="g51-input" type="datetime-local"
@@ -911,8 +941,14 @@ export default function Admin() {
                               {SESSION_STATUSES.map(v => <option key={v} value={v}>{v.replace("_", " ")}</option>)}
                             </select>
                             <span style={{ ...s.sesState, color: sessionDone(ss) ? "#2FBF71" : "#9A938D" }}>{sessionLabel(ss)}</span>
+                            {conflict && (
+                              <span style={s.conflictBadge} title={`Overlaps with ${conflict.customer_name}'s ${conflict.service_type.replace("_", " ")} booking`}>
+                                ⚠ Conflicts with {conflict.customer_name}
+                              </span>
+                            )}
                           </div>
-                        ))}
+                          );
+                        })}
                         {sortedSessions.length < r.sessions_total && (
                           <button onClick={() => addSession(r)} className="g51-btn g51-ghost" style={s.addSes}>+ Add session</button>
                         )}
@@ -1026,7 +1062,7 @@ const s: Record<string, CSSProperties> = {
   assignLabel: { fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D" },
   assignSelect: { background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 13.5, fontWeight: 600, padding: "8px 10px", fontFamily: "inherit", maxWidth: 260 },
   assignVal: { fontSize: 13.5, fontWeight: 600, color: "#5BB0FF" },
-  assignNote: { fontSize: 11.5, color: "#7E776F" },
+  conflictBadge: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#FF6B6B", border: "1px solid #FF6B6B55", background: "#FF6B6B18", borderRadius: 20, padding: "2px 8px" },
   refund: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 12, fontWeight: 700, color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E14", borderRadius: 20, padding: "3px 6px 3px 12px" },
   refundClear: { background: "#2C2824", color: "#C9C2BC", border: "none", borderRadius: 16, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap" },
