@@ -50,7 +50,7 @@ type Enquiry = {
 };
 
 type ClientLite = { id: string; name: string | null; whatsapp: string | null };
-type Profile = { id: string; name: string | null; role: string; active: boolean };
+type Profile = { id: string; name: string | null; role: string; active: boolean; whatsapp: string | null };
 
 const RED = "#ED1C24";
 const STAGES = ["new", "contacted", "booked", "lost", "cancelled"];
@@ -306,8 +306,8 @@ export default function Admin() {
       if (!data.session) { router.replace("/login"); return; }
       setMyEmail(data.session.user.email || "");
       const [{ data: prof }, { data: people }] = await Promise.all([
-        supabase.from("profiles").select("id, name, role, active").eq("id", data.session.user.id).single(),
-        supabase.from("profiles").select("id, name, role, active").eq("active", true).order("name"),
+        supabase.from("profiles").select("id, name, role, active, whatsapp").eq("id", data.session.user.id).single(),
+        supabase.from("profiles").select("id, name, role, active, whatsapp").eq("active", true).order("name"),
       ]);
       setMe((prof as Profile) || null);
       setStaff((people as Profile[]) || []);
@@ -380,6 +380,8 @@ export default function Admin() {
       for (const ss of row.sessions || []) {
         if (ss.google_event_id) syncSessionToCalendar(row, { ...ss, scheduled_at: null });
       }
+      sendStaffWhatsApp(row.assigned_to, name =>
+        `Hi ${name}, the ${row.service_type.replace("_", " ")} booking with ${row.customer_name} has been cancelled.`);
     }
   }
 
@@ -403,6 +405,14 @@ export default function Admin() {
     // one is assigned independently now, even for the same customer.
     for (const ss of row.sessions || []) {
       syncSessionToCalendar({ ...row, assigned_to: assigned }, ss);
+    }
+    if (assigned) {
+      const nextSession = (row.sessions || []).find(isActiveSession);
+      const timeNote = nextSession?.scheduled_at
+        ? ` It's set for ${formatSessionTime(nextSession.scheduled_at)}.`
+        : " No time has been set yet.";
+      sendStaffWhatsApp(assigned, name =>
+        `Hi ${name}, you've been assigned a new ${row.service_type.replace("_", " ")} booking with ${row.customer_name}.${timeNote}`);
     }
   }
 
@@ -457,6 +467,40 @@ export default function Admin() {
     }
   }
 
+  // Sends a WhatsApp message to whichever staff member holds staffId, if they
+  // have a number on file. buildMessage receives that person's name (or a
+  // generic fallback) so every message is personalized without repeating the
+  // lookup at each call site. Silently does nothing if unassigned or no number
+  // is set — this is a supplementary nice-to-have, not something that should
+  // ever block the booking flow itself.
+  async function sendStaffWhatsApp(staffId: string | null, buildMessage: (name: string) => string) {
+    if (!staffId) return;
+    const person = staff.find(p => p.id === staffId);
+    if (!person?.whatsapp) return;
+    const message = buildMessage(person.name || "there");
+    try {
+      const res = await fetch("/api/whatsapp/notify-staff", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: person.whatsapp, message }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        showToast(data.error || `Could not WhatsApp ${person.name || "staff"}.`, "err");
+        return;
+      }
+      showToast(`WhatsApp sent to ${person.name || "staff"}.`);
+    } catch {
+      showToast("Could not reach the WhatsApp service.", "err");
+    }
+  }
+
+  function formatSessionTime(iso: string): string {
+    return new Date(iso).toLocaleString(undefined, {
+      weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit",
+    });
+  }
+
   async function addSession(row: Enquiry) {
     const nextSeq = (row.sessions || []).reduce((m, ss) => Math.max(m, ss.seq), 0) + 1;
     const scheduled_at =
@@ -470,6 +514,10 @@ export default function Admin() {
     const newSession = data as Session;
     edit(row.id, { sessions: [...(row.sessions || []), newSession] });
     syncSessionToCalendar(row, newSession);
+    if (newSession.scheduled_at) {
+      sendStaffWhatsApp(row.assigned_to, name =>
+        `Hi ${name}, your ${row.service_type.replace("_", " ")} booking with ${row.customer_name} is set for ${formatSessionTime(newSession.scheduled_at as string)}.`);
+    }
   }
 
   async function createPaymentLink(row: Enquiry) {
@@ -928,6 +976,10 @@ export default function Admin() {
                                 editSessionLocal(r.id, ss.id, { scheduled_at: iso });
                                 persistSession(ss.id, { scheduled_at: iso });
                                 syncSessionToCalendar(r, { ...ss, scheduled_at: iso });
+                                if (iso) {
+                                  sendStaffWhatsApp(r.assigned_to, name =>
+                                    `Hi ${name}, your ${r.service_type.replace("_", " ")} booking with ${r.customer_name} is now set for ${formatSessionTime(iso)}.`);
+                                }
                               }}
                               style={{ ...s.input, flex: "1 1 180px" }} />
                             <select className="g51-input" value={ss.status}
@@ -936,6 +988,10 @@ export default function Admin() {
                                 editSessionLocal(r.id, ss.id, { status: v });
                                 persistSession(ss.id, { status: v });
                                 syncSessionToCalendar(r, { ...ss, status: v });
+                                if (v === "cancelled") {
+                                  sendStaffWhatsApp(r.assigned_to, name =>
+                                    `Hi ${name}, your ${r.service_type.replace("_", " ")} booking with ${r.customer_name} has been cancelled.`);
+                                }
                               }}
                               style={{ ...s.input, flex: "0 0 130px" }}>
                               {SESSION_STATUSES.map(v => <option key={v} value={v}>{v.replace("_", " ")}</option>)}
