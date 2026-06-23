@@ -5,6 +5,7 @@ type Body = {
   session?: {
     id?: string;
     scheduled_at?: string | null;
+    duration_minutes?: number | null;
     status?: string;
     google_event_id?: string | null;
   };
@@ -20,6 +21,7 @@ type Body = {
     bike_hours?: string | null;
     selection?: string | null;
     estimated_value?: number | null;
+    assigned_staff_id?: string | null;
     assigned_staff_name?: string | null;
     rider_category?: string | null;
     rider_count?: number | null;
@@ -43,6 +45,7 @@ export async function POST(req: Request) {
   const sessionInput: CalendarSessionInput = {
     sessionId: session.id,
     scheduledAt: session.scheduled_at ?? null,
+    durationMinutes: session.duration_minutes ?? undefined,
     status: session.status ?? "scheduled",
     googleEventId: session.google_event_id ?? null,
   };
@@ -59,6 +62,7 @@ export async function POST(req: Request) {
     bikeHours: enquiry.bike_hours ?? null,
     selection: enquiry.selection ?? null,
     estimatedValue: enquiry.estimated_value ?? null,
+    assignedStaffId: enquiry.assigned_staff_id ?? null,
     assignedStaffName: enquiry.assigned_staff_name ?? null,
     riderCategory: enquiry.rider_category ?? null,
     riderCount: enquiry.rider_count ?? null,

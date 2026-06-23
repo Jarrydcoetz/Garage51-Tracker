@@ -33,7 +33,7 @@ export type CalendarSessionInput = {
   scheduledAt: string | null; // ISO string, or null = unscheduled
   status: string; // "scheduled" | "completed" | "no_show" | "cancelled"
   googleEventId: string | null;
-  durationMinutes?: number; // defaults to 60
+  durationMinutes?: number; // defaults to 120 (2 hours) — sessions normally carry their own real value now
 };
 
 export type CalendarEnquiryInput = {
@@ -48,17 +48,34 @@ export type CalendarEnquiryInput = {
   bikeHours?: string | null;
   selection?: string | null;
   estimatedValue?: number | null;
+  assignedStaffId?: string | null;
   assignedStaffName?: string | null;
   riderCategory?: string | null;
   riderCount?: number | null;
   ownGear?: boolean | null;
 };
 
+// Google Calendar's fixed event-color palette: valid colorId values are the
+// strings "1" through "11", each a distinct, stable color in the Calendar UI.
+const EVENT_COLOR_IDS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11"];
+
+// Deterministically maps a staff member to one of those 11 colors, so the
+// same person's bookings always render the same color without needing any
+// manual color-picker UI. Unassigned bookings get no colorId at all, so they
+// fall back to the calendar's default color — visually distinct from "assigned."
+function colorIdForStaff(staffId: string): string {
+  let hash = 0;
+  for (let i = 0; i < staffId.length; i++) {
+    hash = (hash * 31 + staffId.charCodeAt(i)) >>> 0;
+  }
+  return EVENT_COLOR_IDS[hash % EVENT_COLOR_IDS.length];
+}
+
 // ---- helpers --------------------------------------------------------------
 
 function buildEventBody(session: CalendarSessionInput, enquiry: CalendarEnquiryInput) {
   const start = new Date(session.scheduledAt as string);
-  const minutes = session.durationMinutes ?? 60;
+  const minutes = session.durationMinutes ?? 120;
   const end = new Date(start.getTime() + minutes * 60000);
 
   const descriptionParts: string[] = [`Phone: ${enquiry.phone}`];
@@ -81,6 +98,7 @@ function buildEventBody(session: CalendarSessionInput, enquiry: CalendarEnquiryI
     description: descriptionParts.join("\n"),
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },
+    colorId: enquiry.assignedStaffId ? colorIdForStaff(enquiry.assignedStaffId) : undefined,
     extendedProperties: {
       private: {
         enquiryId: enquiry.enquiryId,

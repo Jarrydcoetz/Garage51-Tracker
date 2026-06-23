@@ -10,6 +10,7 @@ type Session = {
   enquiry_id: string;
   seq: number;
   scheduled_at: string | null;
+  duration_minutes: number | null;
   status: string;
   google_event_id: string | null;
   notes: string | null;
@@ -67,10 +68,10 @@ const STATE_COLOR: Record<string, string> = {
   completed: "#2FBF71", cancelled: "#C77B6B", lost: "#6E6862",
 };
 const PAID_COLOR = "#FFC400";
-// Sessions don't store a duration today, so conflict checks (and the Calendar
-// push) both assume this. If durations start varying a lot by service type,
-// this is the constant to replace with a real per-booking value.
-const SESSION_DURATION_MINUTES = 60;
+// Sessions now carry their own real duration_minutes (auto-populated by a DB
+// trigger, editable per booking). This is only a fallback for the rare
+// session that somehow still has none set.
+const SESSION_DURATION_MINUTES = 120;
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
 const dotColor = (k: string) =>
@@ -138,18 +139,20 @@ function isActiveSession(ss: Session): boolean {
 
 // Finds the first other active session assigned to the same staff member whose
 // time range overlaps this one. Returns the conflicting booking, or null.
-// Every session is assumed to run SESSION_DURATION_MINUTES — see that constant.
+// Uses each session's own duration_minutes now that it's a real, editable
+// field — SESSION_DURATION_MINUTES is only a fallback for the rare session
+// that somehow still has none set.
 function findConflict(allRows: Enquiry[], forRow: Enquiry, forSession: Session): Enquiry | null {
   if (!forRow.assigned_to || !isActiveSession(forSession)) return null;
   const start = new Date(forSession.scheduled_at as string).getTime();
-  const end = start + SESSION_DURATION_MINUTES * 60000;
+  const end = start + (forSession.duration_minutes ?? SESSION_DURATION_MINUTES) * 60000;
 
   for (const r of allRows) {
     if (r.assigned_to !== forRow.assigned_to) continue;
     for (const ss of r.sessions || []) {
       if (ss.id === forSession.id || !isActiveSession(ss)) continue;
       const oStart = new Date(ss.scheduled_at as string).getTime();
-      const oEnd = oStart + SESSION_DURATION_MINUTES * 60000;
+      const oEnd = oStart + (ss.duration_minutes ?? SESSION_DURATION_MINUTES) * 60000;
       if (start < oEnd && oStart < end) return r;
     }
   }
@@ -433,6 +436,7 @@ export default function Admin() {
           session: {
             id: ss.id,
             scheduled_at: ss.scheduled_at,
+            duration_minutes: ss.duration_minutes,
             status: ss.status,
             google_event_id: ss.google_event_id,
           },
@@ -448,6 +452,7 @@ export default function Admin() {
             bike_hours: row.bike_hours,
             selection: row.selection,
             estimated_value: row.estimated_value,
+            assigned_staff_id: row.assigned_to,
             assigned_staff_name: staffName,
             rider_category: row.rider_category,
             rider_count: row.rider_count,
@@ -982,6 +987,19 @@ export default function Admin() {
                                 }
                               }}
                               style={{ ...s.input, flex: "1 1 180px" }} />
+                            <span style={s.durationWrap}>
+                              <input className="g51-input" type="number" min={60} max={240} step={15}
+                                value={ss.duration_minutes ?? SESSION_DURATION_MINUTES}
+                                title="Duration in minutes (1–4 hours)"
+                                onChange={e => {
+                                  const minutes = Math.max(60, Math.min(240, Number(e.target.value) || SESSION_DURATION_MINUTES));
+                                  editSessionLocal(r.id, ss.id, { duration_minutes: minutes });
+                                  persistSession(ss.id, { duration_minutes: minutes });
+                                  syncSessionToCalendar(r, { ...ss, duration_minutes: minutes });
+                                }}
+                                style={{ ...s.input, width: 64, padding: "8px 6px", textAlign: "center" }} />
+                              <span style={s.durationUnit}>min</span>
+                            </span>
                             <select className="g51-input" value={ss.status}
                               onChange={e => {
                                 const v = e.target.value;
@@ -1134,6 +1152,8 @@ const s: Record<string, CSSProperties> = {
   sesTotal: { display: "grid", gap: 4, justifyItems: "start" },
   sesRow: { display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap", marginBottom: 8 },
   sesSeq: { fontSize: 12, fontWeight: 700, color: "#8C857F", width: 26, flexShrink: 0 },
+  durationWrap: { display: "inline-flex", alignItems: "center", gap: 5, flex: "0 0 auto" },
+  durationUnit: { fontSize: 12, color: "#9A938D" },
   sesState: { fontSize: 12, fontWeight: 600, flex: "0 0 auto" },
   addSes: { marginTop: 2, fontSize: 12.5, padding: "7px 12px" },
   actions: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 4 },
