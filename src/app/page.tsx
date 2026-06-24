@@ -7,6 +7,16 @@ import { submitEnquiry } from "./actions";
 
 const RED = "#ED1C24";
 const aed = (n: number) => "AED " + n.toLocaleString();
+// Mirrors STORAGE_RATES in the admin app (src/app/admin/page.tsx) — if pricing
+// changes, both copies need updating, since this page doesn't share a module
+// with the admin dashboard.
+const STORAGE_RATES: Record<string, Record<string, number>> = {
+  adult: { month_to_month: 550, three_plus: 450 },
+  junior: { month_to_month: 450, three_plus: 350 },
+};
+function storageRate(category: string, term: string): number {
+  return STORAGE_RATES[category]?.[term] ?? 0;
+}
 
 type Country = { iso: string; dial: string; flag: string; name: string };
 const COUNTRIES: Country[] = [
@@ -118,6 +128,7 @@ const SERVICES = [
   { key: "rental", label: "Bike Rental", desc: "Rent a bike for our tracks and facilities" },
   { key: "desert_tour", label: "Desert Tour", desc: "Guided desert rides" },
   { key: "workshop", label: "Workshop", desc: "Service, repairs and maintenance" },
+  { key: "motorcycle_storage", label: "Motorcycle Storage", desc: "Secure monthly storage for your bike" },
 ];
 
 export default function EnquiryForm() {
@@ -147,6 +158,12 @@ export default function EnquiryForm() {
   const [wsHours, setWsHours] = useState("");
   const [wsWork, setWsWork] = useState("");
 
+  // storage
+  const [stCategory, setStCategory] = useState<"" | "adult" | "junior">("");
+  const [stTerm, setStTerm] = useState<"" | "month_to_month" | "three_plus">("");
+  const [stMake, setStMake] = useState("");
+  const [stModel, setStModel] = useState("");
+
   // contact
   const [preferredDate, setPreferredDate] = useState("");
   const [name, setName] = useState("");
@@ -171,7 +188,7 @@ export default function EnquiryForm() {
   function pickGear(g: boolean) { setOwnGear(g); setPkg(""); }
   function pickBike(b: string) { setBike(b); setDur(""); setRentalCustom(false); }
 
-  function quote(): { price: number | null; selection: string; custom: boolean } {
+  function quote(): { price: number | null; selection: string; custom: boolean; perMonth?: boolean } {
     if (service === "academy") {
       const p = academyList.find(x => x.key === pkg);
       if (!p) return { price: null, selection: "", custom: false };
@@ -198,6 +215,14 @@ export default function EnquiryForm() {
     if (service === "workshop") {
       return { price: null, selection: `Workshop / ${wsMake} ${wsModel}`.trim(), custom: true };
     }
+    if (service === "motorcycle_storage") {
+      if (!stCategory || !stTerm) return { price: null, selection: "", custom: false };
+      const rate = storageRate(stCategory, stTerm);
+      const catLabel = stCategory === "adult" ? "Adult" : "Junior";
+      const termLabel = stTerm === "three_plus" ? "3+ months (paid upfront)" : "Month-to-month";
+      const bikeLabel = (stMake || stModel) ? ` — ${stMake} ${stModel}`.trim() : "";
+      return { price: rate, selection: `Storage / ${catLabel} / ${termLabel}${bikeLabel}`, custom: false, perMonth: true };
+    }
     return { price: null, selection: "", custom: false };
   }
 
@@ -215,6 +240,7 @@ export default function EnquiryForm() {
     }
     if (service === "desert_tour") return !!desert;
     if (service === "workshop") return !!wsMake.trim() && !!wsModel.trim() && !!wsWork.trim();
+    if (service === "motorcycle_storage") return !!stCategory && !!stTerm;
     return false;
   }
 
@@ -229,6 +255,11 @@ export default function EnquiryForm() {
     const sessionsTotal =
       service === "academy" && pkg === "pack5" ? 5 :
       service === "academy" && pkg === "pack3" ? 3 : 1;
+    const isStorage = service === "motorcycle_storage";
+    const bikeDetails =
+      service === "workshop" ? `${wsMake} ${wsModel}`.trim() :
+      isStorage ? (`${stMake} ${stModel}`.trim() || null) :
+      null;
     const res = await submitEnquiry({
       customer_name: name,
       whatsapp,
@@ -240,11 +271,14 @@ export default function EnquiryForm() {
       own_gear: service === "academy" ? ownGear : null,
       selection: q.selection || null,
       rider_count: isGroup ? Math.max(2, riderCount) : null,
-      preferred_date: preferredDate || null,
-      bike_details: service === "workshop" ? `${wsMake} ${wsModel}`.trim() : null,
+      preferred_date: isStorage ? null : (preferredDate || null),
+      bike_details: bikeDetails,
       bike_year: service === "workshop" ? wsYear || null : null,
       bike_hours: service === "workshop" ? wsHours || null : null,
       work_required: service === "workshop" ? wsWork || null : null,
+      bike_category: isStorage ? stCategory || null : null,
+      storage_term: isStorage ? stTerm || null : null,
+      storage_start_date: isStorage ? (preferredDate || null) : null,
       estimated_value: q.price ?? 0,
       notes,
     });
@@ -380,10 +414,37 @@ export default function EnquiryForm() {
           </section>
         )}
 
+        {step === 2 && service === "motorcycle_storage" && (
+          <section style={s.card}>
+            <div style={s.q}>What size is the bike?</div>
+            <div style={s.row}>
+              <Opt active={stCategory === "adult"} onClick={() => setStCategory("adult")} title="Adult" sub="85cc and over" half />
+              <Opt active={stCategory === "junior"} onClick={() => setStCategory("junior")} title="Junior" sub="65cc and under" half />
+            </div>
+            {stCategory && (
+              <>
+                <div style={s.q}>How long would you like to store it?</div>
+                <Opt active={stTerm === "month_to_month"} onClick={() => setStTerm("month_to_month")}
+                  title="Month-to-month" price={storageRate(stCategory, "month_to_month")} perMonth />
+                <Opt active={stTerm === "three_plus"} onClick={() => setStTerm("three_plus")}
+                  title="3+ months" sub="Paid upfront for a lower rate" price={storageRate(stCategory, "three_plus")} perMonth />
+              </>
+            )}
+            {stCategory && stTerm && (
+              <div style={s.row}>
+                <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Make</span>
+                  <input value={stMake} onChange={e => setStMake(e.target.value)} placeholder="e.g. KTM" style={s.input} /></label>
+                <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Model</span>
+                  <input value={stModel} onChange={e => setStModel(e.target.value)} placeholder="e.g. 350 SX-F" style={s.input} /></label>
+              </div>
+            )}
+          </section>
+        )}
+
         {/* STEP 3 — date + contact */}
         {step === 3 && (
           <section style={s.card}>
-            <label style={s.field}><span style={s.label}>Preferred date</span>
+            <label style={s.field}><span style={s.label}>{service === "motorcycle_storage" ? "Drop-off date" : "Preferred date"}</span>
               <input type="date" value={preferredDate} onChange={e => setPreferredDate(e.target.value)} style={s.input} /></label>
             <label style={s.field}><span style={s.label}>Your name *</span>
               <input value={name} onChange={e => setName(e.target.value)} style={s.input} /></label>
@@ -414,7 +475,9 @@ export default function EnquiryForm() {
               <div style={s.summaryText}>{q.selection}</div>
             </div>
             <div style={s.summaryPrice}>
-              {q.custom || q.price === null ? <span style={s.poa}>We will confirm your quote</span> : aed(q.price)}
+              {q.custom || q.price === null
+                ? <span style={s.poa}>We will confirm your quote</span>
+                : <>{aed(q.price)}{q.perMonth && <span style={s.perMonthTag}> /month</span>}</>}
             </div>
           </div>
         )}
@@ -435,9 +498,9 @@ export default function EnquiryForm() {
   );
 }
 
-function Opt({ active, onClick, title, sub, price, custom, perRider, half }: {
+function Opt({ active, onClick, title, sub, price, custom, perRider, perMonth, half }: {
   active: boolean; onClick: () => void; title: string; sub?: string;
-  price?: number | null; custom?: boolean; perRider?: boolean; half?: boolean;
+  price?: number | null; custom?: boolean; perRider?: boolean; perMonth?: boolean; half?: boolean;
 }) {
   return (
     <button type="button" onClick={onClick} style={{ ...s.opt, ...(half ? { flex: 1 } : {}), ...(active ? s.optOn : {}) }}>
@@ -445,7 +508,7 @@ function Opt({ active, onClick, title, sub, price, custom, perRider, half }: {
         <span style={s.optTitle}>{title}</span>
         {sub && <span style={s.optSub}>{sub}</span>}
       </span>
-      {price != null && <span style={s.optPrice}>{aed(price)}{perRider ? " /rider" : ""}</span>}
+      {price != null && <span style={s.optPrice}>{aed(price)}{perRider ? " /rider" : perMonth ? " /month" : ""}</span>}
       {custom && <span style={s.optPoa}>POA</span>}
     </button>
   );
@@ -485,6 +548,7 @@ const s: Record<string, CSSProperties> = {
   summaryText: { fontSize: 14, marginTop: 3 },
   summaryPrice: { fontSize: 18, fontWeight: 800, color: RED, whiteSpace: "nowrap" },
   poa: { fontSize: 13, fontWeight: 600, color: "#FFB02E" },
+  perMonthTag: { fontSize: 12, fontWeight: 600, color: "#9A938D" },
   err: { color: "#FF6B6B", fontSize: 14, marginTop: 14 },
   nav: { display: "flex", gap: 10, marginTop: 20 },
   back: { flex: "0 0 auto", background: "transparent", color: "#9A938D", border: "1px solid #3A332E", borderRadius: 10, padding: "13px 22px", fontSize: 15, cursor: "pointer" },
