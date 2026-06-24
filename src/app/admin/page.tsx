@@ -42,6 +42,10 @@ type Enquiry = {
   rider_count: number | null;
   bike_year: string | null;
   bike_hours: string | null;
+  storage_start_date: string | null;
+  storage_end_date: string | null;
+  bike_category: string | null;
+  storage_term: string | null;
   payment_link: string | null;
   payment_intent_id: string | null;
   payment_link_sent_at: string | null;
@@ -72,6 +76,15 @@ const PAID_COLOR = "#FFC400";
 // trigger, editable per booking). This is only a fallback for the rare
 // session that somehow still has none set.
 const SESSION_DURATION_MINUTES = 120;
+// Motorcycle storage monthly rates (AED), by bike size category and commitment term.
+// Update here if pricing changes — this is the single source of truth.
+const STORAGE_RATES: Record<string, Record<string, number>> = {
+  adult: { month_to_month: 550, three_plus: 450 },
+  junior: { month_to_month: 450, three_plus: 350 },
+};
+function storageRate(category: string, term: string): number {
+  return STORAGE_RATES[category]?.[term] ?? 0;
+}
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
 const dotColor = (k: string) =>
@@ -93,6 +106,7 @@ const FILTER_OPTS = [
 const BLANK = {
   customer_name: "", phone: "", email: "", service_type: "academy",
   source: "whatsapp", stage: "new", estimated_value: 0, booking_at: "", notes: "",
+  storage_start_date: "", storage_end_date: "", bike_category: "adult", storage_term: "month_to_month",
 };
 
 // ---- session / state helpers ----------------------------------------------
@@ -115,10 +129,20 @@ function bookingState(r: Enquiry): string {
   if (r.stage === "lost") return "lost";
   if (r.stage === "new") return "new";
   if (r.stage === "contacted") return "contacted";
+  if (r.service_type === "motorcycle_storage") {
+    return r.storage_end_date && new Date(r.storage_end_date) < new Date() ? "completed" : "booked";
+  }
   if (r.sessions_total > 0 && completedCount(r) >= r.sessions_total) return "completed";
   return "booked";
 }
 function nextLabel(r: Enquiry): string {
+  if (r.service_type === "motorcycle_storage") {
+    if (r.storage_start_date && r.storage_end_date) {
+      return `${new Date(r.storage_start_date).toLocaleDateString()} – ${new Date(r.storage_end_date).toLocaleDateString()}`;
+    }
+    if (r.storage_start_date) return `From ${new Date(r.storage_start_date).toLocaleDateString()}`;
+    return new Date(r.created_at).toLocaleDateString();
+  }
   const dated = (r.sessions || []).filter(ss => ss.scheduled_at);
   if (dated.length) {
     const now = Date.now();
@@ -361,6 +385,10 @@ export default function Admin() {
       work_required: row.work_required || null,
       bike_year: row.bike_year || null,
       bike_hours: row.bike_hours || null,
+      storage_start_date: row.storage_start_date || null,
+      storage_end_date: row.storage_end_date || null,
+      bike_category: row.bike_category || null,
+      storage_term: row.storage_term || null,
     };
     if (row.stage === "cancelled") {
       patch.cancelled_at = row.cancelled_at || new Date().toISOString();
@@ -507,6 +535,7 @@ export default function Admin() {
   }
 
   async function addSession(row: Enquiry) {
+    if (row.service_type === "motorcycle_storage") return; // storage uses a date range, not sessions
     const nextSeq = (row.sessions || []).reduce((m, ss) => Math.max(m, ss.seq), 0) + 1;
     const scheduled_at =
       (row.sessions || []).length === 0 && row.preferred_date
@@ -585,6 +614,7 @@ export default function Admin() {
   async function createEnquiry() {
     if (!form.customer_name.trim() || !form.phone.trim()) { setAddError("Name and phone are required."); return; }
     setCreating(true); setAddError("");
+    const isStorage = form.service_type === "motorcycle_storage";
     const { data, error } = await supabase.from("enquiries").insert({
       customer_name: form.customer_name,
       phone: form.phone,
@@ -593,12 +623,16 @@ export default function Admin() {
       source: form.source,
       stage: form.stage,
       estimated_value: Number(form.estimated_value) || 0,
-      booking_at: form.booking_at || null,
+      booking_at: isStorage ? null : (form.booking_at || null),
+      storage_start_date: isStorage ? (form.storage_start_date || null) : null,
+      storage_end_date: isStorage ? (form.storage_end_date || null) : null,
+      bike_category: isStorage ? form.bike_category : null,
+      storage_term: isStorage ? form.storage_term : null,
       notes: form.notes || "",
     }).select("*, sessions(*)").single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not create booking."); return; }
     const enq = data as Enquiry;
-    if (form.booking_at) {
+    if (!isStorage && form.booking_at) {
       const { data: ses } = await supabase.from("sessions")
         .insert({ enquiry_id: enq.id, seq: 1, scheduled_at: localInputToIso(form.booking_at) })
         .select().single();
@@ -615,7 +649,7 @@ export default function Admin() {
 
   function exportCsv() {
     const data = me?.role === "admin" ? rows : rows.filter(r => r.assigned_to === me?.id);
-    const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Notes"];
+    const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Bike category", "Storage term", "Storage start", "Storage end", "Notes"];
     const esc = (v: unknown) => `"${(v == null ? "" : String(v)).replace(/"/g, '""')}"`;
     const lines = [
       headers.join(","),
@@ -623,7 +657,8 @@ export default function Admin() {
         new Date(r.created_at).toLocaleDateString(), r.customer_name, r.phone,
         r.email || "", r.service_type, r.selection || "", r.stage, r.paid_at ? "yes" : "no",
         completedCount(r), r.sessions_total, r.estimated_value,
-        r.bike_details || "", r.bike_year || "", r.bike_hours || "", r.work_required || "", r.notes || "",
+        r.bike_details || "", r.bike_year || "", r.bike_hours || "", r.work_required || "",
+        r.bike_category || "", r.storage_term || "", r.storage_start_date || "", r.storage_end_date || "", r.notes || "",
       ].map(esc).join(",")),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -680,6 +715,14 @@ export default function Admin() {
 
   const currentLabel = FILTER_OPTS.find(o => o.key === filter)?.label ?? "All";
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
+  const setStorageCategory = (category: string) =>
+    setForm(prev => ({ ...prev, bike_category: category, estimated_value: storageRate(category, prev.storage_term) }));
+  const setStorageTerm = (term: string) =>
+    setForm(prev => ({ ...prev, storage_term: term, estimated_value: storageRate(prev.bike_category, term) }));
+  const setRowStorageCategory = (r: Enquiry, category: string) =>
+    editStaged(r.id, { bike_category: category, estimated_value: storageRate(category, r.storage_term || "month_to_month") });
+  const setRowStorageTerm = (r: Enquiry, term: string) =>
+    editStaged(r.id, { storage_term: term, estimated_value: storageRate(r.bike_category || "adult", term) });
   const roleColor = (r?: string) => (r === "admin" ? RED : r === "mechanic" ? "#FFB02E" : "#3B9EFF");
   const initials = ((me?.name || myEmail || "?").trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
 
@@ -762,6 +805,7 @@ export default function Admin() {
                   <option value="rental">rental</option>
                   <option value="desert_tour">desert_tour</option>
                   <option value="workshop">workshop</option>
+                  <option value="motorcycle_storage">motorcycle_storage</option>
                 </select></label>
             </div>
             <div style={s.controls}>
@@ -774,11 +818,34 @@ export default function Admin() {
                   {STAGES.map(st => <option key={st} value={st}>{st}</option>)}
                 </select></label>
             </div>
+            {form.service_type === "motorcycle_storage" && (
+              <div style={s.controls}>
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Bike category</span>
+                  <select className="g51-input" value={form.bike_category} onChange={e => setStorageCategory(e.target.value)} style={s.input}>
+                    <option value="adult">Adult (≥85cc)</option>
+                    <option value="junior">Junior (≤65cc)</option>
+                  </select></label>
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Term</span>
+                  <select className="g51-input" value={form.storage_term} onChange={e => setStorageTerm(e.target.value)} style={s.input}>
+                    <option value="month_to_month">Month-to-month</option>
+                    <option value="three_plus">3+ months</option>
+                  </select></label>
+              </div>
+            )}
             <div style={s.controls}>
-              <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>{form.service_type === "motorcycle_storage" ? "Monthly rate (AED)" : "Est. value (AED)"}</span>
                 <input className="g51-input" type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
-              <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
-                <input className="g51-input" type="datetime-local" value={form.booking_at} onChange={e => set("booking_at", e.target.value)} style={s.input} /></label>
+              {form.service_type === "motorcycle_storage" ? (
+                <>
+                  <label style={s.ctrl}><span style={s.ctrlLabel}>Drop-off date</span>
+                    <input className="g51-input" type="date" value={form.storage_start_date} onChange={e => set("storage_start_date", e.target.value)} style={s.input} /></label>
+                  <label style={s.ctrl}><span style={s.ctrlLabel}>Pick-up date</span>
+                    <input className="g51-input" type="date" value={form.storage_end_date} onChange={e => set("storage_end_date", e.target.value)} style={s.input} /></label>
+                </>
+              ) : (
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
+                  <input className="g51-input" type="datetime-local" value={form.booking_at} onChange={e => set("booking_at", e.target.value)} style={s.input} /></label>
+              )}
             </div>
             <label style={s.ctrl}><span style={s.ctrlLabel}>Notes</span>
               <textarea className="g51-input" value={form.notes} onChange={e => set("notes", e.target.value)} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
@@ -915,7 +982,7 @@ export default function Admin() {
                         )}
                       </div>
 
-                      {(me?.role === "admin" || r.assigned_to) && (
+                      {r.service_type !== "motorcycle_storage" && (me?.role === "admin" || r.assigned_to) && (
                         <div style={s.assignRow}>
                           <span style={s.assignLabel}>Assigned to</span>
                           {me?.role === "admin" ? (
@@ -951,7 +1018,7 @@ export default function Admin() {
                           <select className="g51-input" value={r.stage} onChange={e => editStaged(r.id, { stage: e.target.value })} style={s.input}>
                             {STAGES.map(stg => <option key={stg} value={stg}>{stg}</option>)}
                           </select></label>
-                        <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>{r.service_type === "motorcycle_storage" ? "Monthly rate (AED)" : "Est. value (AED)"}</span>
                           <input className="g51-input" type="number" value={r.estimated_value} onChange={e => editStaged(r.id, { estimated_value: Number(e.target.value) })} style={s.input} /></label>
                         <label style={s.ctrl}><span style={s.ctrlLabel}>Payment</span>
                           <button onClick={() => togglePaid(r)} className="g51-btn g51-ghost" style={{ ...s.input, cursor: "pointer", textAlign: "left", color: r.paid_at ? PAID_COLOR : "#B5AEA8" }}>
@@ -959,6 +1026,7 @@ export default function Admin() {
                           </button></label>
                       </div>
 
+                      {r.service_type !== "motorcycle_storage" && (
                       <div style={s.sesWrap}>
                         <div style={s.sesHead}>
                           <span style={s.sesTitle}>Sessions · {done} of {r.sessions_total} done</span>
@@ -1027,6 +1095,34 @@ export default function Admin() {
                           <button onClick={() => addSession(r)} className="g51-btn g51-ghost" style={s.addSes}>+ Add session</button>
                         )}
                       </div>
+                      )}
+
+                      {r.service_type === "motorcycle_storage" && (
+                        <>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Bike (make / model)</span>
+                              <input className="g51-input" value={r.bike_details || ""} onChange={e => editStaged(r.id, { bike_details: e.target.value })} style={s.input} /></label>
+                          </div>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Bike category</span>
+                              <select className="g51-input" value={r.bike_category || "adult"} onChange={e => setRowStorageCategory(r, e.target.value)} style={s.input}>
+                                <option value="adult">Adult (≥85cc)</option>
+                                <option value="junior">Junior (≤65cc)</option>
+                              </select></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Term</span>
+                              <select className="g51-input" value={r.storage_term || "month_to_month"} onChange={e => setRowStorageTerm(r, e.target.value)} style={s.input}>
+                                <option value="month_to_month">Month-to-month</option>
+                                <option value="three_plus">3+ months</option>
+                              </select></label>
+                          </div>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Drop-off date</span>
+                              <input className="g51-input" type="date" value={r.storage_start_date || ""} onChange={e => editStaged(r.id, { storage_start_date: e.target.value || null })} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Pick-up date</span>
+                              <input className="g51-input" type="date" value={r.storage_end_date || ""} onChange={e => editStaged(r.id, { storage_end_date: e.target.value || null })} style={s.input} /></label>
+                          </div>
+                        </>
+                      )}
 
                       {r.service_type === "workshop" && (
                         <>
