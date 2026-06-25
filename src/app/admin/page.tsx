@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
+import { STORAGE_TERMS, storageTermMonths, storageTotalPrice, addMonths } from "../../lib/storagePricing";
 
 type Session = {
   id: string;
@@ -76,15 +77,9 @@ const PAID_COLOR = "#FFC400";
 // trigger, editable per booking). This is only a fallback for the rare
 // session that somehow still has none set.
 const SESSION_DURATION_MINUTES = 120;
-// Motorcycle storage monthly rates (AED), by bike size category and commitment term.
-// Update here if pricing changes — this is the single source of truth.
-const STORAGE_RATES: Record<string, Record<string, number>> = {
-  adult: { month_to_month: 550, three_plus: 450 },
-  junior: { month_to_month: 450, three_plus: 350 },
-};
-function storageRate(category: string, term: string): number {
-  return STORAGE_RATES[category]?.[term] ?? 0;
-}
+// How close to (or past) a storage booking's end date before it gets
+// flagged as needing attention — adjust if 7 days feels too tight or loose.
+const STORAGE_RENEWAL_WINDOW_DAYS = 7;
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
 const dotColor = (k: string) =>
@@ -101,6 +96,7 @@ const FILTER_OPTS = [
   { key: "needs_payment", label: "Needs payment" },
   { key: "sent", label: "Payment link sent" },
   { key: "conflict", label: "Has conflict" },
+  { key: "storage_due", label: "Storage renewal/removal due" },
 ];
 
 const BLANK = {
@@ -185,6 +181,20 @@ function findConflict(allRows: Enquiry[], forRow: Enquiry, forSession: Session):
 
 function bookingHasConflict(allRows: Enquiry[], row: Enquiry): boolean {
   return (row.sessions || []).some(ss => !!findConflict(allRows, row, ss));
+}
+
+// Flags a storage booking whose committed term has ended ("overdue" — the
+// bike may still need picking up or the term renewing) or is about to end
+// within STORAGE_RENEWAL_WINDOW_DAYS ("due_soon"). Applies to any storage
+// booking with a known end date, however that date was set — auto-computed
+// from a fixed term, or manually entered for a month-to-month customer.
+function storageRenewalStatus(r: Enquiry): "overdue" | "due_soon" | null {
+  if (r.service_type !== "motorcycle_storage" || !r.storage_end_date) return null;
+  if (r.stage === "cancelled" || r.stage === "lost") return null;
+  const days = Math.ceil((new Date(r.storage_end_date).getTime() - Date.now()) / 86400000);
+  if (days < 0) return "overdue";
+  if (days <= STORAGE_RENEWAL_WINDOW_DAYS) return "due_soon";
+  return null;
 }
 function isoToLocalInput(iso: string | null): string {
   if (!iso) return "";
@@ -698,6 +708,7 @@ export default function Admin() {
     if (f === "needs_payment") return r.stage === "booked" && !r.paid_at;
     if (f === "sent") return !!r.payment_link;
     if (f === "conflict") return bookingHasConflict(rows, r);
+    if (f === "storage_due") return storageRenewalStatus(r) !== null;
     return bookingState(r) === f;
   };
 
@@ -716,13 +727,39 @@ export default function Admin() {
   const currentLabel = FILTER_OPTS.find(o => o.key === filter)?.label ?? "All";
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
   const setStorageCategory = (category: string) =>
-    setForm(prev => ({ ...prev, bike_category: category, estimated_value: storageRate(category, prev.storage_term) }));
+    setForm(prev => ({ ...prev, bike_category: category, estimated_value: storageTotalPrice(category, prev.storage_term) }));
   const setStorageTerm = (term: string) =>
-    setForm(prev => ({ ...prev, storage_term: term, estimated_value: storageRate(prev.bike_category, term) }));
+    setForm(prev => {
+      const estimated_value = storageTotalPrice(prev.bike_category, term);
+      const storage_end_date = term !== "month_to_month" && prev.storage_start_date
+        ? addMonths(prev.storage_start_date, storageTermMonths(term))
+        : prev.storage_end_date;
+      return { ...prev, storage_term: term, estimated_value, storage_end_date };
+    });
+  const setStorageStartDate = (value: string) =>
+    setForm(prev => {
+      const storage_end_date = value && prev.storage_term !== "month_to_month"
+        ? addMonths(value, storageTermMonths(prev.storage_term))
+        : prev.storage_end_date;
+      return { ...prev, storage_start_date: value, storage_end_date };
+    });
   const setRowStorageCategory = (r: Enquiry, category: string) =>
-    editStaged(r.id, { bike_category: category, estimated_value: storageRate(category, r.storage_term || "month_to_month") });
-  const setRowStorageTerm = (r: Enquiry, term: string) =>
-    editStaged(r.id, { storage_term: term, estimated_value: storageRate(r.bike_category || "adult", term) });
+    editStaged(r.id, { bike_category: category, estimated_value: storageTotalPrice(category, r.storage_term || "month_to_month") });
+  const setRowStorageTerm = (r: Enquiry, term: string) => {
+    const category = r.bike_category || "adult";
+    const patch: Partial<Enquiry> = { storage_term: term, estimated_value: storageTotalPrice(category, term) };
+    if (term !== "month_to_month" && r.storage_start_date) {
+      patch.storage_end_date = addMonths(r.storage_start_date, storageTermMonths(term));
+    }
+    editStaged(r.id, patch);
+  };
+  const setRowStorageStartDate = (r: Enquiry, value: string) => {
+    const patch: Partial<Enquiry> = { storage_start_date: value || null };
+    if (value && r.storage_term && r.storage_term !== "month_to_month") {
+      patch.storage_end_date = addMonths(value, storageTermMonths(r.storage_term));
+    }
+    editStaged(r.id, patch);
+  };
   const roleColor = (r?: string) => (r === "admin" ? RED : r === "mechanic" ? "#FFB02E" : "#3B9EFF");
   const initials = ((me?.name || myEmail || "?").trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
 
@@ -827,19 +864,18 @@ export default function Admin() {
                   </select></label>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Term</span>
                   <select className="g51-input" value={form.storage_term} onChange={e => setStorageTerm(e.target.value)} style={s.input}>
-                    <option value="month_to_month">Month-to-month</option>
-                    <option value="three_plus">3+ months</option>
+                    {STORAGE_TERMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
                   </select></label>
               </div>
             )}
             <div style={s.controls}>
-              <label style={s.ctrl}><span style={s.ctrlLabel}>{form.service_type === "motorcycle_storage" ? "Monthly rate (AED)" : "Est. value (AED)"}</span>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>{form.service_type === "motorcycle_storage" ? (form.storage_term === "month_to_month" ? "Monthly rate (AED)" : "Total for term (AED)") : "Est. value (AED)"}</span>
                 <input className="g51-input" type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
               {form.service_type === "motorcycle_storage" ? (
                 <>
                   <label style={s.ctrl}><span style={s.ctrlLabel}>Drop-off date</span>
-                    <input className="g51-input" type="date" value={form.storage_start_date} onChange={e => set("storage_start_date", e.target.value)} style={s.input} /></label>
-                  <label style={s.ctrl}><span style={s.ctrlLabel}>Pick-up date</span>
+                    <input className="g51-input" type="date" value={form.storage_start_date} onChange={e => setStorageStartDate(e.target.value)} style={s.input} /></label>
+                  <label style={s.ctrl}><span style={s.ctrlLabel}>Pick-up / renewal date</span>
                     <input className="g51-input" type="date" value={form.storage_end_date} onChange={e => set("storage_end_date", e.target.value)} style={s.input} /></label>
                 </>
               ) : (
@@ -902,6 +938,7 @@ export default function Admin() {
               const done = completedCount(r);
               const isPkg = r.sessions_total > 1;
               const conflicted = bookingHasConflict(rows, r);
+              const renewal = storageRenewalStatus(r);
               const sortedSessions = [...(r.sessions || [])].sort((a, b) => a.seq - b.seq);
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
@@ -912,6 +949,8 @@ export default function Admin() {
                         <span style={s.name}>{r.customer_name}</span>
                         <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
                         {conflicted && <span style={s.conflictBadge} title="One of this booking's sessions overlaps another booking for the same staff member">⚠ Conflict</span>}
+                        {renewal === "overdue" && <span style={s.conflictBadge} title="This storage term has ended — confirm renewal payment or arrange bike pick-up">⚠ Pick-up overdue</span>}
+                        {renewal === "due_soon" && <span style={s.renewalDueBadge} title="This storage term ends soon — confirm renewal or pick-up">⏰ Renewal due</span>}
                         {dirty.has(r.id) && <span style={s.unsaved}>unsaved</span>}
                       </div>
                       <div style={s.sub}>
@@ -1018,7 +1057,7 @@ export default function Admin() {
                           <select className="g51-input" value={r.stage} onChange={e => editStaged(r.id, { stage: e.target.value })} style={s.input}>
                             {STAGES.map(stg => <option key={stg} value={stg}>{stg}</option>)}
                           </select></label>
-                        <label style={s.ctrl}><span style={s.ctrlLabel}>{r.service_type === "motorcycle_storage" ? "Monthly rate (AED)" : "Est. value (AED)"}</span>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>{r.service_type === "motorcycle_storage" ? (r.storage_term === "month_to_month" || !r.storage_term ? "Monthly rate (AED)" : "Total for term (AED)") : "Est. value (AED)"}</span>
                           <input className="g51-input" type="number" value={r.estimated_value} onChange={e => editStaged(r.id, { estimated_value: Number(e.target.value) })} style={s.input} /></label>
                         <label style={s.ctrl}><span style={s.ctrlLabel}>Payment</span>
                           <button onClick={() => togglePaid(r)} className="g51-btn g51-ghost" style={{ ...s.input, cursor: "pointer", textAlign: "left", color: r.paid_at ? PAID_COLOR : "#B5AEA8" }}>
@@ -1111,14 +1150,13 @@ export default function Admin() {
                               </select></label>
                             <label style={s.ctrl}><span style={s.ctrlLabel}>Term</span>
                               <select className="g51-input" value={r.storage_term || "month_to_month"} onChange={e => setRowStorageTerm(r, e.target.value)} style={s.input}>
-                                <option value="month_to_month">Month-to-month</option>
-                                <option value="three_plus">3+ months</option>
+                                {STORAGE_TERMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
                               </select></label>
                           </div>
                           <div style={s.controls}>
                             <label style={s.ctrl}><span style={s.ctrlLabel}>Drop-off date</span>
-                              <input className="g51-input" type="date" value={r.storage_start_date || ""} onChange={e => editStaged(r.id, { storage_start_date: e.target.value || null })} style={s.input} /></label>
-                            <label style={s.ctrl}><span style={s.ctrlLabel}>Pick-up date</span>
+                              <input className="g51-input" type="date" value={r.storage_start_date || ""} onChange={e => setRowStorageStartDate(r, e.target.value)} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Pick-up / renewal date</span>
                               <input className="g51-input" type="date" value={r.storage_end_date || ""} onChange={e => editStaged(r.id, { storage_end_date: e.target.value || null })} style={s.input} /></label>
                           </div>
                         </>
@@ -1233,6 +1271,7 @@ const s: Record<string, CSSProperties> = {
   assignSelect: { background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 13.5, fontWeight: 600, padding: "8px 10px", fontFamily: "inherit", maxWidth: 260 },
   assignVal: { fontSize: 13.5, fontWeight: 600, color: "#5BB0FF" },
   conflictBadge: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#FF6B6B", border: "1px solid #FF6B6B55", background: "#FF6B6B18", borderRadius: 20, padding: "2px 8px" },
+  renewalDueBadge: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E18", borderRadius: 20, padding: "2px 8px" },
   refund: { display: "inline-flex", alignItems: "center", gap: 9, fontSize: 12, fontWeight: 700, color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E14", borderRadius: 20, padding: "3px 6px 3px 12px" },
   refundClear: { background: "#2C2824", color: "#C9C2BC", border: "none", borderRadius: 16, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
   controls: { display: "flex", gap: 12, flexWrap: "wrap" },

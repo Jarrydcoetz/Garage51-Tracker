@@ -26,6 +26,7 @@ export type EnquiryInput = {
   bike_category?: string | null;
   storage_term?: string | null;
   storage_start_date?: string | null;
+  storage_end_date?: string | null;
   estimated_value?: number;
   notes?: string | null;
 };
@@ -88,6 +89,7 @@ export async function submitEnquiry(
     bike_category: data.bike_category ?? null,
     storage_term: data.storage_term ?? null,
     storage_start_date: data.storage_start_date ?? null,
+    storage_end_date: data.storage_end_date ?? null,
     estimated_value: data.estimated_value ?? 0,
     notes: data.notes ?? "",
   });

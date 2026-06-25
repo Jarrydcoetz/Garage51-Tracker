@@ -4,19 +4,10 @@ import { useState } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { submitEnquiry } from "./actions";
+import { STORAGE_TERMS, storageMonthlyRate, storageTotalPrice, storageTermMonths, addMonths } from "../lib/storagePricing";
 
 const RED = "#ED1C24";
 const aed = (n: number) => "AED " + n.toLocaleString();
-// Mirrors STORAGE_RATES in the admin app (src/app/admin/page.tsx) — if pricing
-// changes, both copies need updating, since this page doesn't share a module
-// with the admin dashboard.
-const STORAGE_RATES: Record<string, Record<string, number>> = {
-  adult: { month_to_month: 550, three_plus: 450 },
-  junior: { month_to_month: 450, three_plus: 350 },
-};
-function storageRate(category: string, term: string): number {
-  return STORAGE_RATES[category]?.[term] ?? 0;
-}
 
 type Country = { iso: string; dial: string; flag: string; name: string };
 const COUNTRIES: Country[] = [
@@ -160,7 +151,7 @@ export default function EnquiryForm() {
 
   // storage
   const [stCategory, setStCategory] = useState<"" | "adult" | "junior">("");
-  const [stTerm, setStTerm] = useState<"" | "month_to_month" | "three_plus">("");
+  const [stTerm, setStTerm] = useState<"" | "month_to_month" | "3_months" | "6_months" | "12_months">("");
   const [stMake, setStMake] = useState("");
   const [stModel, setStModel] = useState("");
 
@@ -217,11 +208,17 @@ export default function EnquiryForm() {
     }
     if (service === "motorcycle_storage") {
       if (!stCategory || !stTerm) return { price: null, selection: "", custom: false };
-      const rate = storageRate(stCategory, stTerm);
+      const total = storageTotalPrice(stCategory, stTerm);
       const catLabel = stCategory === "adult" ? "Adult" : "Junior";
-      const termLabel = stTerm === "three_plus" ? "3+ months (paid upfront)" : "Month-to-month";
+      const termInfo = STORAGE_TERMS.find(t => t.key === stTerm);
+      const termLabel = termInfo ? (termInfo.key === "month_to_month" ? termInfo.label : `${termInfo.label} (paid upfront)`) : stTerm;
       const bikeLabel = (stMake || stModel) ? ` — ${stMake} ${stModel}`.trim() : "";
-      return { price: rate, selection: `Storage / ${catLabel} / ${termLabel}${bikeLabel}`, custom: false, perMonth: true };
+      return {
+        price: total,
+        selection: `Storage / ${catLabel} / ${termLabel}${bikeLabel}`,
+        custom: false,
+        perMonth: stTerm === "month_to_month",
+      };
     }
     return { price: null, selection: "", custom: false };
   }
@@ -279,6 +276,9 @@ export default function EnquiryForm() {
       bike_category: isStorage ? stCategory || null : null,
       storage_term: isStorage ? stTerm || null : null,
       storage_start_date: isStorage ? (preferredDate || null) : null,
+      storage_end_date: isStorage && stTerm && stTerm !== "month_to_month" && preferredDate
+        ? addMonths(preferredDate, storageTermMonths(stTerm))
+        : null,
       estimated_value: q.price ?? 0,
       notes,
     });
@@ -424,10 +424,13 @@ export default function EnquiryForm() {
             {stCategory && (
               <>
                 <div style={s.q}>How long would you like to store it?</div>
-                <Opt active={stTerm === "month_to_month"} onClick={() => setStTerm("month_to_month")}
-                  title="Month-to-month" price={storageRate(stCategory, "month_to_month")} perMonth />
-                <Opt active={stTerm === "three_plus"} onClick={() => setStTerm("three_plus")}
-                  title="3+ months" sub="Paid upfront for a lower rate" price={storageRate(stCategory, "three_plus")} perMonth />
+                {STORAGE_TERMS.map(t => (
+                  <Opt key={t.key} active={stTerm === t.key} onClick={() => setStTerm(t.key)}
+                    title={t.label}
+                    sub={t.key === "month_to_month" ? undefined : `${aed(storageMonthlyRate(stCategory, t.key))}/month \u2014 paid upfront for ${t.months} months`}
+                    price={storageTotalPrice(stCategory, t.key)}
+                    perMonth={t.key === "month_to_month"} />
+                ))}
               </>
             )}
             {stCategory && stTerm && (
