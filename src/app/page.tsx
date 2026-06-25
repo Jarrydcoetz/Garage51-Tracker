@@ -308,7 +308,8 @@ export default function EnquiryForm() {
           <section style={s.card}>
             <div style={s.q}>What can we help you with?</div>
             {SERVICES.map(sv => (
-              <Opt key={sv.key} active={service === sv.key} onClick={() => pickService(sv.key)} title={sv.label} sub={sv.desc} />
+              <Opt key={sv.key} active={service === sv.key} onClick={() => pickService(sv.key)} title={sv.label} sub={sv.desc}
+                icon={<ServiceIcon service={sv.key} />} />
             ))}
           </section>
         )}
@@ -501,15 +502,65 @@ export default function EnquiryForm() {
   );
 }
 
-function Opt({ active, onClick, title, sub, price, custom, perRider, perMonth, half }: {
+function ServiceIcon({ service }: { service: string }) {
+  const common = {
+    width: 22, height: 22, viewBox: "0 0 24 24", fill: "none",
+    stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const,
+  };
+  if (service === "academy") return (
+    <svg {...common}>
+      <path d="M4.5 13C4.5 7.5 7.9 3.5 12 3.5S19.5 7.5 19.5 13" />
+      <path d="M3.5 13.2h17" />
+      <path d="M5.2 13.2v2.3a2.5 2.5 0 0 0 2.5 2.5h8.6a2.5 2.5 0 0 0 2.5-2.5v-2.3" />
+      <path d="M8.3 16.6h7.4" />
+    </svg>
+  );
+  if (service === "rental") return (
+    <svg {...common}>
+      <circle cx="6.5" cy="12" r="3" />
+      <path d="M9.5 12H20" />
+      <path d="M14.5 12v2.3" />
+      <path d="M17.5 12v3.3" />
+    </svg>
+  );
+  if (service === "desert_tour") return (
+    <svg {...common}>
+      <circle cx="17.5" cy="6.3" r="2.1" />
+      <path d="M17.5 2.3v1.1" />
+      <path d="M21.3 6.3h-1.1" />
+      <path d="M20.1 3.1l-0.9 0.9" />
+      <path d="M2.5 18.5c1.8-5.5 5-5.5 6.8 0" />
+      <path d="M8 18.5c2.2-7 6-7 8.2 0" />
+      <path d="M15 18.5c1.6-4.3 3.8-4.3 5.4 0" />
+    </svg>
+  );
+  if (service === "workshop") return (
+    <svg {...common}>
+      <path d="M14.7 6.3a4 4 0 1 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2-.7-.7-2 2.1-2.1z" />
+    </svg>
+  );
+  if (service === "motorcycle_storage") return (
+    <svg {...common}>
+      <path d="M4 11 12 4l8 7" />
+      <path d="M5.5 11v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-8" />
+      <path d="M9 20v-5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v5" />
+    </svg>
+  );
+  return null;
+}
+
+function Opt({ active, onClick, title, sub, price, custom, perRider, perMonth, half, icon }: {
   active: boolean; onClick: () => void; title: string; sub?: string;
-  price?: number | null; custom?: boolean; perRider?: boolean; perMonth?: boolean; half?: boolean;
+  price?: number | null; custom?: boolean; perRider?: boolean; perMonth?: boolean; half?: boolean; icon?: React.ReactNode;
 }) {
   return (
     <button type="button" onClick={onClick} style={{ ...s.opt, ...(half ? { flex: 1 } : {}), ...(active ? s.optOn : {}) }}>
-      <span style={s.optLeft}>
-        <span style={s.optTitle}>{title}</span>
-        {sub && <span style={s.optSub}>{sub}</span>}
+      <span style={s.optMain}>
+        {icon && <span style={{ ...s.optIconWrap, ...(active ? s.optIconWrapOn : {}) }}>{icon}</span>}
+        <span style={s.optLeft}>
+          <span style={s.optTitle}>{title}</span>
+          {sub && <span style={s.optSub}>{sub}</span>}
+        </span>
       </span>
       {price != null && <span style={s.optPrice}>{aed(price)}{perRider ? " /rider" : perMonth ? " /month" : ""}</span>}
       {custom && <span style={s.optPoa}>POA</span>}
@@ -531,7 +582,10 @@ const s: Record<string, CSSProperties> = {
   row: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 4 },
   opt: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, width: "100%", textAlign: "left", background: "#151311", border: "1px solid #3A332E", borderRadius: 10, padding: "13px 15px", marginBottom: 10, cursor: "pointer", color: "#F4F2EF", fontFamily: "inherit" },
   optOn: { borderColor: RED, background: "#2A1718" },
-  optLeft: { display: "flex", flexDirection: "column", gap: 3 },
+  optMain: { display: "flex", alignItems: "center", gap: 12, minWidth: 0 },
+  optIconWrap: { display: "grid", placeItems: "center", width: 36, height: 36, borderRadius: 9, background: "#1F1B19", color: "#9A938D", flexShrink: 0, transition: "background .15s ease, color .15s ease" },
+  optIconWrapOn: { background: RED + "22", color: RED },
+  optLeft: { display: "flex", flexDirection: "column", gap: 3, minWidth: 0 },
   optTitle: { fontSize: 15, fontWeight: 600 },
   optSub: { fontSize: 12.5, color: "#9A938D" },
   optPrice: { fontSize: 14, fontWeight: 700, color: "#F4F2EF", whiteSpace: "nowrap" },
