@@ -449,14 +449,14 @@ export default function EnquiryForm() {
         {step === 3 && (
           <section style={s.card}>
             <label style={s.field}><span style={s.label}>{service === "motorcycle_storage" ? "Drop-off date" : "Preferred date"}</span>
-              <input type="date" value={preferredDate} onChange={e => setPreferredDate(e.target.value)} style={s.input} /></label>
+              <input type="date" value={preferredDate} onChange={e => setPreferredDate(e.target.value)} style={s.dateInput} /></label>
             <label style={s.field}><span style={s.label}>Your name *</span>
               <input value={name} onChange={e => setName(e.target.value)} style={s.input} /></label>
             <label style={s.field}><span style={s.label}>WhatsApp number *</span>
               <div style={s.phoneRow}>
                 <select value={countryIso} onChange={e => setCountryIso(e.target.value)} style={s.dial}>
                   {COUNTRIES.map(c => (
-                    <option key={c.iso} value={c.iso}>{c.flag} {c.dial}  {c.name}</option>
+                    <option key={c.iso} value={c.iso} title={c.name}>{c.flag} {c.dial}</option>
                   ))}
                 </select>
                 <input value={phone} onChange={e => setPhone(e.target.value)} inputMode="tel"
@@ -597,8 +597,9 @@ const s: Record<string, CSSProperties> = {
   field: { display: "grid", gap: 6, marginBottom: 14 },
   label: { fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#9A938D" },
   input: { width: "100%", boxSizing: "border-box", background: "#151311", border: "1px solid #3A332E", borderRadius: 9, color: "#F4F2EF", fontSize: 15, padding: "11px 13px", fontFamily: "inherit" },
+  dateInput: { width: "100%", boxSizing: "border-box", background: "#151311", border: "1px solid #3A332E", borderRadius: 9, color: "#F4F2EF", fontSize: 15, padding: "0 13px", fontFamily: "inherit", height: 44, lineHeight: "20px" },
   phoneRow: { display: "flex", gap: 8 },
-  dial: { flex: "0 0 132px", boxSizing: "border-box", background: "#151311", border: "1px solid #3A332E", borderRadius: 9, color: "#F4F2EF", fontSize: 15, padding: "11px 10px", fontFamily: "inherit" },
+  dial: { flex: "0 0 108px", boxSizing: "border-box", background: "#151311", border: "1px solid #3A332E", borderRadius: 9, color: "#F4F2EF", fontSize: 15, padding: "11px 8px", fontFamily: "inherit" },
   hint: { fontSize: 11.5, color: "#7E776F", marginTop: 5, lineHeight: 1.4 },
   summary: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, background: "#242120", border: "1px solid " + RED + "55", borderRadius: 12, padding: "14px 16px", marginTop: 16 },
   summaryLabel: { fontSize: 11, letterSpacing: "0.08em", textTransform: "uppercase", color: "#9A938D" },
