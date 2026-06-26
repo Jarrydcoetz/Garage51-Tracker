@@ -5,6 +5,14 @@ import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
 import { STORAGE_TERMS, storageTermMonths, storageTotalPrice, addMonths } from "../../lib/storagePricing";
+import {
+  type Part,
+  type StockMovement,
+  sellPrice as partSellPrice,
+  stockFor,
+  partsUsedFor,
+  partsUsedTotal,
+} from "../../lib/partsShared";
 
 type Session = {
   id: string;
@@ -213,7 +221,7 @@ function localInputToIso(v: string): string | null {
   return d.toISOString();
 }
 
-function printJobCard(r: Enquiry) {
+function printJobCard(r: Enquiry, partsLines: { name: string; qty: number; lineTotal: number }[] = []) {
   const frame = document.createElement("iframe");
   frame.style.position = "fixed";
   frame.style.right = "0";
@@ -225,6 +233,14 @@ function printJobCard(r: Enquiry) {
   const w = frame.contentWindow;
   if (!w) { frame.remove(); return; }
   const esc = (v: string | null) => (v || "").replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  const partsTotal = partsLines.reduce((sum, l) => sum + l.lineTotal, 0);
+  const partsSection = partsLines.length === 0 ? "" : `
+  <div class="label" style="margin:18px 0 6px;">Parts used</div>
+  <table class="parts">
+    <tr><th>Part</th><th>Qty</th><th>Price</th></tr>
+    ${partsLines.map(l => `<tr><td>${esc(l.name)}</td><td>${l.qty}</td><td>AED ${l.lineTotal.toLocaleString()}</td></tr>`).join("")}
+    <tr><td colspan="2"><strong>Total</strong></td><td><strong>AED ${partsTotal.toLocaleString()}</strong></td></tr>
+  </table>`;
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Job Card - ${esc(r.customer_name)}</title>
 <style>
   body{font-family:system-ui,-apple-system,sans-serif;color:#1A1817;padding:40px;max-width:720px;margin:0 auto;}
@@ -237,6 +253,9 @@ function printJobCard(r: Enquiry) {
   .label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#999;}
   .val{font-size:15px;margin-top:3px;}
   .box{border:1px solid #ccc;border-radius:8px;padding:14px;min-height:70px;white-space:pre-wrap;font-size:14px;}
+  .parts{width:100%;border-collapse:collapse;font-size:14px;}
+  .parts th{text-align:left;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:#999;padding:6px 0;border-bottom:1px solid #ccc;}
+  .parts td{padding:6px 0;border-bottom:1px solid #eee;}
   .sign{display:flex;gap:48px;margin-top:54px;}
   .sign div{flex:1;border-top:1px solid #888;padding-top:6px;font-size:12px;color:#666;}
   @media print{body{padding:0;}}
@@ -252,7 +271,7 @@ function printJobCard(r: Enquiry) {
     <div class="row"><div class="label">Hours / mileage</div><div class="val">${esc(r.bike_hours) || "—"}</div></div>
   </div>
   <div class="label" style="margin-bottom:6px;">Work required</div>
-  <div class="box">${esc(r.work_required)}</div>
+  <div class="box">${esc(r.work_required)}</div>${partsSection}
   <div class="label" style="margin:18px 0 6px;">Notes</div>
   <div class="box">${esc(r.notes)}</div>
   <div class="sign"><div>Mechanic signature</div><div>Date completed</div></div>
@@ -327,6 +346,11 @@ export default function Admin() {
   const [form, setForm] = useState({ ...BLANK });
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [zohoBusy, setZohoBusy] = useState<string | null>(null);
+  const [parts, setParts] = useState<Part[]>([]);
+  const [movements, setMovements] = useState<StockMovement[]>([]);
+  const [addPartRowId, setAddPartRowId] = useState<string | null>(null);
+  const [addPartSelection, setAddPartSelection] = useState("");
+  const [addPartQty, setAddPartQty] = useState("1");
   const [me, setMe] = useState<Profile | null>(null);
   const [staff, setStaff] = useState<Profile[]>([]);
   const [myEmail, setMyEmail] = useState("");
@@ -358,6 +382,12 @@ export default function Admin() {
         .select("*, sessions(*), client:clients(id, name, whatsapp, zoho_contact_id)")
         .order("created_at", { ascending: false });
       setRows((rowsData as Enquiry[]) || []);
+      const [{ data: partsData }, { data: movementsData }] = await Promise.all([
+        supabase.from("parts").select("*").eq("active", true).order("name"),
+        supabase.from("stock_movements").select("id, part_id, quantity, reason, enquiry_id, cost_price_snapshot, sell_price_snapshot, created_at"),
+      ]);
+      setParts((partsData as Part[]) || []);
+      setMovements((movementsData as StockMovement[]) || []);
       setLoading(false);
     });
   }, [router]);
@@ -566,6 +596,42 @@ export default function Admin() {
       sendStaffWhatsApp(row.assigned_to, name =>
         `Hi ${name}, your ${row.service_type.replace("_", " ")} booking with ${row.customer_name} is set for ${formatSessionTime(newSession.scheduled_at as string)}.`);
     }
+  }
+
+  // Records a part as used on this booking — a negative "used" movement in
+  // the same stock ledger the Parts page writes to, with cost and sell price
+  // snapshotted at this exact moment. Later price changes on the catalog
+  // never reach back and rewrite what this job actually cost.
+  async function addPartToBooking(row: Enquiry) {
+    const part = parts.find(p => p.id === addPartSelection);
+    const qty = Number(addPartQty);
+    if (!part) { showToast("Choose a part first.", "err"); return; }
+    if (!qty || qty <= 0) { showToast("Enter a quantity greater than zero.", "err"); return; }
+    const { data, error } = await supabase.from("stock_movements").insert({
+      part_id: part.id,
+      quantity: -qty,
+      reason: "used",
+      enquiry_id: row.id,
+      cost_price_snapshot: part.cost_price,
+      sell_price_snapshot: partSellPrice(part),
+    }).select().single();
+    if (error || !data) { showToast(error?.message || "Could not add the part.", "err"); return; }
+    setMovements(prev => [...prev, data as StockMovement]);
+    setAddPartRowId(null);
+    setAddPartSelection("");
+    setAddPartQty("1");
+    showToast(`Added ${qty} × ${part.name}.`);
+  }
+
+  // One-time, staff-triggered roll-up — adding parts never silently changes
+  // the price on its own. Same "stay in the loop" pattern as the rest of
+  // this app's money-touching actions.
+  function addPartsSubtotalToEstimate(row: Enquiry) {
+    const lines = partsUsedFor(row.id, movements);
+    const subtotal = partsUsedTotal(lines);
+    if (subtotal <= 0) return;
+    editStaged(row.id, { estimated_value: (Number(row.estimated_value) || 0) + subtotal });
+    showToast(`Added ${aed(subtotal)} in parts to the estimate — hit Save to keep it.`);
   }
 
   async function createPaymentLink(row: Enquiry) {
@@ -1242,6 +1308,47 @@ export default function Admin() {
                           </div>
                           <label style={s.ctrl}><span style={s.ctrlLabel}>Work required</span>
                             <textarea className="g51-input" value={r.work_required || ""} onChange={e => editStaged(r.id, { work_required: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+
+                          {(() => {
+                            const usedLines = partsUsedFor(r.id, movements);
+                            const usedTotal = partsUsedTotal(usedLines);
+                            return (
+                              <div style={s.sesWrap}>
+                                <div style={s.sesHead}>
+                                  <span style={s.sesTitle}>Parts used{usedTotal > 0 ? ` · ${aed(usedTotal)}` : ""}</span>
+                                  {usedTotal > 0 && (
+                                    <button onClick={() => addPartsSubtotalToEstimate(r)} className="g51-btn g51-ghost" style={s.addSes}>
+                                      Add to estimate
+                                    </button>
+                                  )}
+                                </div>
+                                {usedLines.map(line => {
+                                  const part = parts.find(pp => pp.id === line.part_id);
+                                  return (
+                                    <div key={line.part_id} style={s.sesRow}>
+                                      <span style={{ flex: "1 1 auto" }}>{part?.name || "Unknown part"} × {line.qty}</span>
+                                      <span style={{ fontWeight: 700 }}>{aed(line.qty * line.sellSnapshot)}</span>
+                                    </div>
+                                  );
+                                })}
+                                {addPartRowId === r.id ? (
+                                  <div style={s.sesRow}>
+                                    <select className="g51-input" value={addPartSelection} onChange={e => setAddPartSelection(e.target.value)} style={{ ...s.input, flex: "1 1 200px" }}>
+                                      <option value="">Choose a part…</option>
+                                      {parts.map(p => (
+                                        <option key={p.id} value={p.id}>{p.name} ({stockFor(p.id, movements)} in stock)</option>
+                                      ))}
+                                    </select>
+                                    <input className="g51-input" type="number" min={1} value={addPartQty} onChange={e => setAddPartQty(e.target.value)} style={{ ...s.input, width: 70, flex: "0 0 70px" }} />
+                                    <button onClick={() => addPartToBooking(r)} className="g51-btn g51-primary" style={{ ...s.addSes, background: RED, color: "#fff", border: "none", fontWeight: 700 }}>Add</button>
+                                    <button onClick={() => setAddPartRowId(null)} className="g51-btn g51-ghost" style={s.addSes}>Cancel</button>
+                                  </div>
+                                ) : (
+                                  <button onClick={() => { setAddPartRowId(r.id); setAddPartSelection(""); setAddPartQty("1"); }} className="g51-btn g51-ghost" style={s.addSes}>+ Add part</button>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </>
                       )}
 
@@ -1253,7 +1360,10 @@ export default function Admin() {
                         {dirty.has(r.id) && <span style={s.unsavedText}>Unsaved changes</span>}
                         {savedId === r.id && <span style={s.saved}>Saved ✓</span>}
                         {r.service_type === "workshop" && (
-                          <button onClick={() => printJobCard(r)} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
+                          <button onClick={() => printJobCard(r, partsUsedFor(r.id, movements).map(l => {
+                            const part = parts.find(pp => pp.id === l.part_id);
+                            return { name: part?.name || "Unknown part", qty: l.qty, lineTotal: Math.round(l.qty * l.sellSnapshot * 100) / 100 };
+                          }))} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
                         )}
                       </div>
                     </div>

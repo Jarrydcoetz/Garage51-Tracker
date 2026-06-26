@@ -4,6 +4,13 @@ import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
+import {
+  type Part,
+  type StockMovement as Movement,
+  sellPrice,
+  stockFor,
+  isLowStock as isLow,
+} from "../../../lib/partsShared";
 
 const RED = "#ED1C24";
 
@@ -29,20 +36,6 @@ const CATEGORY_PREFIX: Record<string, string> = {
 const UNITS = ["each", "liter", "ml", "box", "set", "meter"];
 
 type Supplier = { id: string; name: string };
-type Part = {
-  id: string;
-  sku: string | null;
-  name: string;
-  category: string;
-  unit: string;
-  cost_price: number;
-  markup_pct: number;
-  reorder_threshold: number;
-  location: string | null;
-  supplier_id: string | null;
-  active: boolean;
-};
-type Movement = { id: string; part_id: string; quantity: number; reason: string; created_at: string };
 
 const BLANK_PART = {
   name: "", sku: "", category: "fluids", unit: "each",
@@ -59,15 +52,6 @@ const CSS = `
 .g51-row:hover{background:#2A2624;}
 `;
 
-function sellPrice(p: Part): number {
-  return Math.round(p.cost_price * (1 + p.markup_pct / 100) * 100) / 100;
-}
-function stockFor(partId: string, movements: Movement[]): number {
-  return movements.filter(m => m.part_id === partId).reduce((sum, m) => sum + Number(m.quantity), 0);
-}
-function isLow(part: Part, stock: number): boolean {
-  return stock <= part.reorder_threshold;
-}
 // Suggests "PREFIX-TOKEN" from the category and name — a starting point to
 // tweak, not a final answer. Avoids clashing with whatever's already in use.
 function suggestSku(name: string, category: string, existingSkus: string[]): string {
