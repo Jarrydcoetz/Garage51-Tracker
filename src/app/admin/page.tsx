@@ -47,6 +47,9 @@ type Enquiry = {
   storage_end_date: string | null;
   bike_category: string | null;
   storage_term: string | null;
+  zoho_invoice_id: string | null;
+  zoho_invoice_number: string | null;
+  zoho_invoice_url: string | null;
   payment_link: string | null;
   payment_intent_id: string | null;
   payment_link_sent_at: string | null;
@@ -55,7 +58,7 @@ type Enquiry = {
   assigned_to: string | null;
 };
 
-type ClientLite = { id: string; name: string | null; whatsapp: string | null };
+type ClientLite = { id: string; name: string | null; whatsapp: string | null; zoho_contact_id: string | null };
 type Profile = { id: string; name: string | null; role: string; active: boolean; whatsapp: string | null };
 
 const RED = "#ED1C24";
@@ -323,6 +326,7 @@ export default function Admin() {
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK });
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
+  const [zohoBusy, setZohoBusy] = useState<string | null>(null);
   const [me, setMe] = useState<Profile | null>(null);
   const [staff, setStaff] = useState<Profile[]>([]);
   const [myEmail, setMyEmail] = useState("");
@@ -351,7 +355,7 @@ export default function Admin() {
       setReady(true);
       const { data: rowsData } = await supabase
         .from("enquiries")
-        .select("*, sessions(*), client:clients(id, name, whatsapp)")
+        .select("*, sessions(*), client:clients(id, name, whatsapp, zoho_contact_id)")
         .order("created_at", { ascending: false });
       setRows((rowsData as Enquiry[]) || []);
       setLoading(false);
@@ -585,6 +589,55 @@ export default function Admin() {
     }
   }
 
+  // Creates a draft invoice in Zoho Books for a booking that's already been
+  // paid via Ziina. Reuses the customer's stored Zoho contact if they have
+  // one; otherwise creates one and saves it back to their client record so
+  // future invoices for the same person don't create duplicate contacts.
+  async function createZohoInvoiceForBooking(row: Enquiry) {
+    setZohoBusy(row.id);
+    try {
+      const res = await fetch("/api/zoho/create-invoice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          zoho_contact_id: row.client?.zoho_contact_id || null,
+          customer_name: row.customer_name,
+          email: row.email,
+          phone: row.phone,
+          line_item_name: cap(row.service_type.replace("_", " ")),
+          line_item_description: row.selection || row.bike_details || null,
+          amount: row.estimated_value,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Could not create the Zoho invoice.", "err"); return; }
+
+      await supabase.from("enquiries").update({
+        zoho_invoice_id: data.zoho_invoice_id,
+        zoho_invoice_number: data.zoho_invoice_number,
+        zoho_invoice_url: data.invoice_url,
+      }).eq("id", row.id);
+      edit(row.id, {
+        zoho_invoice_id: data.zoho_invoice_id,
+        zoho_invoice_number: data.zoho_invoice_number,
+        zoho_invoice_url: data.invoice_url,
+      });
+
+      if (row.client?.id && data.zoho_contact_id && row.client.zoho_contact_id !== data.zoho_contact_id) {
+        await supabase.from("clients").update({ zoho_contact_id: data.zoho_contact_id }).eq("id", row.client.id);
+        const clientId = row.client.id;
+        setRows(prev => prev.map(r =>
+          r.client?.id === clientId ? { ...r, client: { ...(r.client as ClientLite), zoho_contact_id: data.zoho_contact_id } } : r));
+      }
+
+      showToast(`Invoice ${data.zoho_invoice_number} created in Zoho Books.`);
+    } catch {
+      showToast("Could not reach the invoicing service.", "err");
+    } finally {
+      setZohoBusy(null);
+    }
+  }
+
   function copyLink(url: string) {
     if (navigator.clipboard) { navigator.clipboard.writeText(url); showToast("Payment link copied."); }
     else { window.prompt("Copy this payment link:", url); }
@@ -659,7 +712,7 @@ export default function Admin() {
 
   function exportCsv() {
     const data = me?.role === "admin" ? rows : rows.filter(r => r.assigned_to === me?.id);
-    const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Bike category", "Storage term", "Storage start", "Storage end", "Notes"];
+    const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Bike category", "Storage term", "Storage start", "Storage end", "Zoho invoice", "Notes"];
     const esc = (v: unknown) => `"${(v == null ? "" : String(v)).replace(/"/g, '""')}"`;
     const lines = [
       headers.join(","),
@@ -668,7 +721,8 @@ export default function Admin() {
         r.email || "", r.service_type, r.selection || "", r.stage, r.paid_at ? "yes" : "no",
         completedCount(r), r.sessions_total, r.estimated_value,
         r.bike_details || "", r.bike_year || "", r.bike_hours || "", r.work_required || "",
-        r.bike_category || "", r.storage_term || "", r.storage_start_date || "", r.storage_end_date || "", r.notes || "",
+        r.bike_category || "", r.storage_term || "", r.storage_start_date || "", r.storage_end_date || "",
+        r.zoho_invoice_number || "", r.notes || "",
       ].map(esc).join(",")),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -1006,6 +1060,17 @@ export default function Admin() {
                           </>
                         )}
                       </div>
+                    )}
+                    {r.paid_at && (
+                      r.zoho_invoice_id ? (
+                        <a href={r.zoho_invoice_url || "#"} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>
+                          Invoice {r.zoho_invoice_number}<span style={s.sentTick}>✓</span>
+                        </a>
+                      ) : (
+                        <button onClick={() => createZohoInvoiceForBooking(r)} disabled={zohoBusy === r.id} className="g51-btn" style={s.quickBtn}>
+                          {zohoBusy === r.id ? "Creating…" : "Create invoice"}
+                        </button>
+                      )
                     )}
                   </div>
 
