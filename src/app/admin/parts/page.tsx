@@ -22,6 +22,10 @@ const CATEGORY_COLOR: Record<string, string> = {
   fluids: "#3B9EFF", filters: "#FFB02E", brakes: "#ED1C24", drivetrain: "#A78BFA",
   electrical: "#2FBF71", tires: "#5DCAA5", hardware: "#9A938D", consumables: "#D4537E",
 };
+const CATEGORY_PREFIX: Record<string, string> = {
+  fluids: "FLU", filters: "FIL", brakes: "BRK", drivetrain: "DRV",
+  electrical: "ELE", tires: "TIR", hardware: "HW", consumables: "CON",
+};
 const UNITS = ["each", "liter", "ml", "box", "set", "meter"];
 
 type Supplier = { id: string; name: string };
@@ -63,6 +67,21 @@ function stockFor(partId: string, movements: Movement[]): number {
 }
 function isLow(part: Part, stock: number): boolean {
   return stock <= part.reorder_threshold;
+}
+// Suggests "PREFIX-TOKEN" from the category and name — a starting point to
+// tweak, not a final answer. Avoids clashing with whatever's already in use.
+function suggestSku(name: string, category: string, existingSkus: string[]): string {
+  const prefix = CATEGORY_PREFIX[category] || category.slice(0, 3).toUpperCase();
+  const cleaned = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  const token = cleaned.slice(0, 6) || "ITEM";
+  const taken = new Set(existingSkus.map(s => s.toUpperCase()));
+  let candidate = `${prefix}-${token}`;
+  let n = 2;
+  while (taken.has(candidate)) {
+    candidate = `${prefix}-${token}${n}`;
+    n++;
+  }
+  return candidate;
 }
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
 
@@ -201,7 +220,14 @@ export default function PartsScreen() {
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
                   <input className="g51-input" value={form.name} onChange={e => set("name", e.target.value)} style={s.input} /></label>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>SKU</span>
-                  <input className="g51-input" value={form.sku} onChange={e => set("sku", e.target.value)} placeholder="Matches the shelf label" style={s.input} /></label>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input className="g51-input" value={form.sku} onChange={e => set("sku", e.target.value)} placeholder="Matches the shelf label" style={s.input} />
+                    <button onClick={() => {
+                      if (!form.name.trim()) { showToast("Type a name first.", "err"); return; }
+                      const existing = parts.map(p => p.sku || "").filter(Boolean);
+                      set("sku", suggestSku(form.name, form.category, existing));
+                    }} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, flexShrink: 0 }}>Suggest</button>
+                  </div></label>
               </div>
               <div style={s.controls}>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Category</span>
