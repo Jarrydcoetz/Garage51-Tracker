@@ -1,7 +1,16 @@
-// Shared parts/inventory types and math — single source of truth for both
-// the Parts catalog page (app/admin/parts/page.tsx) and the booking
-// dashboard (app/admin/page.tsx), so the two never drift apart the way the
-// storage pricing logic almost did.
+// Shared parts/inventory AND labour types and math — single source of
+// truth for both the Parts catalog page (app/admin/parts/page.tsx) and the
+// booking dashboard (app/admin/page.tsx), so the two never drift apart the
+// way the storage pricing logic almost did.
+
+// PLACEHOLDER — this is not your real labour rate, it's a guess so the
+// feature has something to compute with. Find this line and change it to
+// your actual shop rate before any customer price relies on it.
+export const LABOUR_RATE_PER_HOUR = 150;
+
+export function labourCharge(hours: number | null): number {
+  return Math.round((Number(hours) || 0) * LABOUR_RATE_PER_HOUR * 100) / 100;
+}
 
 export type Part = {
   id: string;

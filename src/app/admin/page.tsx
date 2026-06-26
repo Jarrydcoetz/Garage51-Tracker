@@ -12,6 +12,8 @@ import {
   stockFor,
   partsUsedFor,
   partsUsedTotal,
+  labourCharge,
+  LABOUR_RATE_PER_HOUR,
 } from "../../lib/partsShared";
 
 type Session = {
@@ -58,6 +60,8 @@ type Enquiry = {
   zoho_invoice_id: string | null;
   zoho_invoice_number: string | null;
   zoho_invoice_url: string | null;
+  job_status: string | null;
+  labour_hours: number | null;
   payment_link: string | null;
   payment_intent_id: string | null;
   payment_link_sent_at: string | null;
@@ -72,6 +76,15 @@ type Profile = { id: string; name: string | null; role: string; active: boolean;
 const RED = "#ED1C24";
 const STAGES = ["new", "contacted", "booked", "lost", "cancelled"];
 const SESSION_STATUSES = ["scheduled", "completed", "no_show", "cancelled"];
+// Shop-floor status for a workshop job — deliberately separate from STAGES,
+// which tracks the sales pipeline. A mechanic cares whether they've started
+// the work, not whether the customer's been contacted.
+const JOB_STATUSES = [
+  { key: "queued", label: "Queued" },
+  { key: "in_progress", label: "In progress" },
+  { key: "waiting_parts", label: "Waiting on parts" },
+  { key: "completed", label: "Completed" },
+];
 const SOURCES = [
   { v: "whatsapp", label: "WhatsApp" },
   { v: "instagram", label: "Instagram" },
@@ -374,6 +387,7 @@ export default function Admin() {
         supabase.from("profiles").select("id, name, role, active, whatsapp").eq("id", data.session.user.id).single(),
         supabase.from("profiles").select("id, name, role, active, whatsapp").eq("active", true).order("name"),
       ]);
+      if ((prof as Profile | null)?.role === "mechanic") { router.replace("/admin/workshop"); return; }
       setMe((prof as Profile) || null);
       setStaff((people as Profile[]) || []);
       setReady(true);
@@ -623,15 +637,29 @@ export default function Admin() {
     showToast(`Added ${qty} × ${part.name}.`);
   }
 
-  // One-time, staff-triggered roll-up — adding parts never silently changes
-  // the price on its own. Same "stay in the loop" pattern as the rest of
-  // this app's money-touching actions.
-  function addPartsSubtotalToEstimate(row: Enquiry) {
+  // One-time, staff-triggered roll-up — adding parts or hours never silently
+  // changes the price on its own. Same "stay in the loop" pattern as the
+  // rest of this app's money-touching actions.
+  function addPartsAndLabourToEstimate(row: Enquiry) {
     const lines = partsUsedFor(row.id, movements);
-    const subtotal = partsUsedTotal(lines);
-    if (subtotal <= 0) return;
-    editStaged(row.id, { estimated_value: (Number(row.estimated_value) || 0) + subtotal });
-    showToast(`Added ${aed(subtotal)} in parts to the estimate — hit Save to keep it.`);
+    const partsSubtotal = partsUsedTotal(lines);
+    const labour = labourCharge(row.labour_hours);
+    const total = Math.round((partsSubtotal + labour) * 100) / 100;
+    if (total <= 0) return;
+    editStaged(row.id, { estimated_value: (Number(row.estimated_value) || 0) + total });
+    showToast(`Added ${aed(total)} (parts + labour) to the estimate — hit Save to keep it.`);
+  }
+
+  // Marks a workshop job ready for the mechanic's dedicated queue. Requires
+  // an assignment first — there's no point pushing a job nobody's been told
+  // is theirs. Also pings them directly, reusing the existing WhatsApp flow.
+  async function pushToWorkshop(row: Enquiry) {
+    if (!row.assigned_to) { showToast("Assign a mechanic before pushing to the workshop.", "err"); return; }
+    await supabase.from("enquiries").update({ job_status: "queued" }).eq("id", row.id);
+    edit(row.id, { job_status: "queued" });
+    showToast("Pushed to the workshop queue.");
+    sendStaffWhatsApp(row.assigned_to, name =>
+      `Hi ${name}, a new workshop job is ready for you: ${row.customer_name}'s ${row.bike_details || "bike"}.`);
   }
 
   async function createPaymentLink(row: Enquiry) {
@@ -1309,19 +1337,45 @@ export default function Admin() {
                           <label style={s.ctrl}><span style={s.ctrlLabel}>Work required</span>
                             <textarea className="g51-input" value={r.work_required || ""} onChange={e => editStaged(r.id, { work_required: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
 
+                          {!r.job_status ? (
+                            <button onClick={() => pushToWorkshop(r)} className="g51-btn g51-primary" style={{ ...s.addSes, background: RED, color: "#fff", border: "none", fontWeight: 700, marginBottom: 13 }}>
+                              Push to workshop
+                            </button>
+                          ) : (
+                            <div style={s.controls}>
+                              <label style={s.ctrl}><span style={s.ctrlLabel}>Shop status</span>
+                                <select className="g51-input" value={r.job_status} onChange={e => editStaged(r.id, { job_status: e.target.value })} style={s.input}>
+                                  {JOB_STATUSES.map(j => <option key={j.key} value={j.key}>{j.label}</option>)}
+                                </select></label>
+                              <label style={s.ctrl}><span style={s.ctrlLabel}>Labour hours</span>
+                                <input className="g51-input" type="number" step="0.25" min={0} value={r.labour_hours ?? ""}
+                                  onChange={e => editStaged(r.id, { labour_hours: e.target.value === "" ? null : Number(e.target.value) })} style={s.input} /></label>
+                            </div>
+                          )}
+
                           {(() => {
                             const usedLines = partsUsedFor(r.id, movements);
-                            const usedTotal = partsUsedTotal(usedLines);
+                            const partsSubtotal = partsUsedTotal(usedLines);
+                            const labour = labourCharge(r.labour_hours);
+                            const combinedTotal = Math.round((partsSubtotal + labour) * 100) / 100;
                             return (
                               <div style={s.sesWrap}>
                                 <div style={s.sesHead}>
-                                  <span style={s.sesTitle}>Parts used{usedTotal > 0 ? ` · ${aed(usedTotal)}` : ""}</span>
-                                  {usedTotal > 0 && (
-                                    <button onClick={() => addPartsSubtotalToEstimate(r)} className="g51-btn g51-ghost" style={s.addSes}>
+                                  <span style={s.sesTitle}>
+                                    Parts &amp; labour{combinedTotal > 0 ? ` · ${aed(combinedTotal)}` : ""}
+                                  </span>
+                                  {combinedTotal > 0 && (
+                                    <button onClick={() => addPartsAndLabourToEstimate(r)} className="g51-btn g51-ghost" style={s.addSes}>
                                       Add to estimate
                                     </button>
                                   )}
                                 </div>
+                                {labour > 0 && (
+                                  <div style={s.sesRow}>
+                                    <span style={{ flex: "1 1 auto" }}>Labour — {r.labour_hours}h × {aed(LABOUR_RATE_PER_HOUR)}/h</span>
+                                    <span style={{ fontWeight: 700 }}>{aed(labour)}</span>
+                                  </div>
+                                )}
                                 {usedLines.map(line => {
                                   const part = parts.find(pp => pp.id === line.part_id);
                                   return (

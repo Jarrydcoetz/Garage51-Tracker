@@ -1,0 +1,306 @@
+"use client";
+
+import { useEffect, useState, useRef } from "react";
+import type { CSSProperties } from "react";
+import { useRouter } from "next/navigation";
+import { supabase } from "../../../lib/supabase-browser";
+import {
+  type Part,
+  type StockMovement,
+  sellPrice as partSellPrice,
+  stockFor,
+  partsUsedFor,
+  partsUsedTotal,
+  labourCharge,
+  LABOUR_RATE_PER_HOUR,
+} from "../../../lib/partsShared";
+
+const RED = "#ED1C24";
+
+const JOB_STATUSES = [
+  { key: "queued", label: "Queued" },
+  { key: "in_progress", label: "In progress" },
+  { key: "waiting_parts", label: "Waiting on parts" },
+  { key: "completed", label: "Completed" },
+];
+const STATUS_COLOR: Record<string, string> = {
+  queued: "#3B9EFF", in_progress: "#FFB02E", waiting_parts: "#C77B6B", completed: "#2FBF71",
+};
+
+type Profile = { id: string; name: string | null; role: string };
+type Job = {
+  id: string;
+  customer_name: string;
+  bike_details: string | null;
+  bike_year: string | null;
+  bike_hours: string | null;
+  work_required: string | null;
+  job_status: string | null;
+  labour_hours: number | null;
+  assigned_to: string | null;
+  stage: string;
+};
+
+const CSS = `
+.g51-btn{transition:background .15s ease,border-color .15s ease,opacity .15s ease;}
+.g51-ghost:hover{border-color:#5A534D;color:#F4F2EF;}
+.g51-primary:hover{background:#ff2a32;}
+.g51-input:focus{outline:none;border-color:#6A625B;}
+.g51-btn:disabled{opacity:.55;cursor:default;}
+.g51-row:hover{border-color:#403A35;}
+`;
+
+const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s ease", opacity: 0.7, flexShrink: 0 }}>
+      <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export default function WorkshopScreen() {
+  const router = useRouter();
+  const [ready, setReady] = useState(false);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [parts, setParts] = useState<Part[]>([]);
+  const [movements, setMovements] = useState<StockMovement[]>([]);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [showCompleted, setShowCompleted] = useState(false);
+  const [addPartRowId, setAddPartRowId] = useState<string | null>(null);
+  const [addPartSelection, setAddPartSelection] = useState("");
+  const [addPartQty, setAddPartQty] = useState("1");
+  const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(async ({ data }) => {
+      if (!data.session) { router.replace("/login"); return; }
+      const { data: prof } = await supabase.from("profiles").select("id, name, role").eq("id", data.session.user.id).single();
+      const me = prof as Profile | null;
+      if (!me || (me.role !== "mechanic" && me.role !== "admin")) { router.replace("/admin"); return; }
+
+      const [{ data: jobsData }, { data: partsData }, { data: movementsData }] = await Promise.all([
+        supabase.from("enquiries")
+          .select("id, customer_name, bike_details, bike_year, bike_hours, work_required, job_status, labour_hours, assigned_to, stage")
+          .eq("service_type", "workshop")
+          .not("job_status", "is", null)
+          .order("created_at", { ascending: true }),
+        supabase.from("parts").select("*").eq("active", true).order("name"),
+        supabase.from("stock_movements").select("id, part_id, quantity, reason, enquiry_id, cost_price_snapshot, sell_price_snapshot, created_at"),
+      ]);
+
+      const all = (jobsData as Job[]) || [];
+      const scoped = me.role === "admin" ? all : all.filter(j => j.assigned_to === me.id);
+      setJobs(scoped.filter(j => j.stage !== "cancelled" && j.stage !== "lost"));
+      setParts((partsData as Part[]) || []);
+      setMovements((movementsData as StockMovement[]) || []);
+      setReady(true);
+    });
+  }, [router]);
+
+  function showToast(msg: string, kind: "ok" | "err" = "ok") {
+    setToast({ msg, kind });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3400);
+  }
+  function toggleExpand(id: string) {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function editJobLocal(id: string, patch: Partial<Job>) {
+    setJobs(prev => prev.map(j => (j.id === id ? { ...j, ...patch } : j)));
+  }
+  async function saveJob(id: string, patch: Partial<Job>) {
+    const { error } = await supabase.from("enquiries").update(patch).eq("id", id);
+    if (error) showToast(error.message || "Could not save.", "err");
+  }
+  function setStatus(job: Job, status: string) {
+    editJobLocal(job.id, { job_status: status });
+    saveJob(job.id, { job_status: status });
+  }
+  function setHours(job: Job, hours: number | null) {
+    editJobLocal(job.id, { labour_hours: hours });
+    saveJob(job.id, { labour_hours: hours });
+  }
+  async function addPart(job: Job) {
+    const part = parts.find(p => p.id === addPartSelection);
+    const qty = Number(addPartQty);
+    if (!part) { showToast("Choose a part first.", "err"); return; }
+    if (!qty || qty <= 0) { showToast("Enter a quantity greater than zero.", "err"); return; }
+    const { data, error } = await supabase.from("stock_movements").insert({
+      part_id: part.id, quantity: -qty, reason: "used", enquiry_id: job.id,
+      cost_price_snapshot: part.cost_price, sell_price_snapshot: partSellPrice(part),
+    }).select().single();
+    if (error || !data) { showToast(error?.message || "Could not add the part.", "err"); return; }
+    setMovements(prev => [...prev, data as StockMovement]);
+    setAddPartRowId(null);
+    setAddPartSelection("");
+    setAddPartQty("1");
+    showToast(`Added ${qty} × ${part.name}.`);
+  }
+  async function logout() {
+    await supabase.auth.signOut();
+    router.replace("/login");
+  }
+
+  if (!ready) return <main style={s.loading}>Loading…</main>;
+
+  const visible = jobs.filter(j => showCompleted || j.job_status !== "completed");
+
+  return (
+    <main style={s.page}>
+      <style dangerouslySetInnerHTML={{ __html: CSS }} />
+
+      <header style={s.header}>
+        <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
+        <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
+      </header>
+
+      <div style={s.wrap}>
+        <h1 style={s.h1}>Your jobs</h1>
+        <p style={s.sub}>Status, parts, and hours. Nothing here touches pricing or the customer — that's handled elsewhere.</p>
+
+        <button onClick={() => setShowCompleted(v => !v)} className="g51-btn g51-ghost" style={s.toggleBtn}>
+          {showCompleted ? "Hide completed" : "Show completed"}
+        </button>
+
+        {visible.length === 0 ? (
+          <div style={s.empty}>No jobs waiting on you right now.</div>
+        ) : (
+          <div style={s.list}>
+            {visible.map(job => {
+              const open = expanded.has(job.id);
+              const usedLines = partsUsedFor(job.id, movements);
+              const partsSubtotal = partsUsedTotal(usedLines);
+              const labour = labourCharge(job.labour_hours);
+              const total = Math.round((partsSubtotal + labour) * 100) / 100;
+              const statusKey = job.job_status || "queued";
+              const statusColor = STATUS_COLOR[statusKey] || "#9A938D";
+              return (
+                <div key={job.id} className="g51-row" style={s.card}>
+                  <div style={s.cardHead} onClick={() => toggleExpand(job.id)}>
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: statusColor, flexShrink: 0 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={s.nameRow}>
+                        <span style={s.jobName}>{job.customer_name}</span>
+                        <span style={{ ...s.pill, color: statusColor, borderColor: statusColor + "66", background: statusColor + "1c" }}>
+                          {JOB_STATUSES.find(j => j.key === statusKey)?.label || statusKey}
+                        </span>
+                      </div>
+                      <div style={s.jobSub}>
+                        {job.bike_details || "No bike details"}{job.bike_year ? ` · ${job.bike_year}` : ""}
+                      </div>
+                    </div>
+                    <Chevron open={open} />
+                  </div>
+
+                  {open && (
+                    <div style={s.cardBody}>
+                      {job.work_required && (
+                        <div style={s.box}>
+                          <div style={s.boxLabel}>Work required</div>
+                          <div style={s.boxText}>{job.work_required}</div>
+                        </div>
+                      )}
+
+                      <div style={s.controls}>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Status</span>
+                          <select className="g51-input" value={statusKey} onChange={e => setStatus(job, e.target.value)} style={s.input}>
+                            {JOB_STATUSES.map(j => <option key={j.key} value={j.key}>{j.label}</option>)}
+                          </select></label>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Labour hours</span>
+                          <input className="g51-input" type="number" step="0.25" min={0} value={job.labour_hours ?? ""}
+                            onChange={e => setHours(job, e.target.value === "" ? null : Number(e.target.value))} style={s.input} /></label>
+                      </div>
+
+                      <div style={s.partsWrap}>
+                        <div style={s.partsHead}>
+                          <span style={s.partsTitle}>Parts &amp; labour{total > 0 ? ` · ${aed(total)}` : ""}</span>
+                        </div>
+                        {labour > 0 && (
+                          <div style={s.partRow}>
+                            <span style={{ flex: "1 1 auto" }}>Labour — {job.labour_hours}h × {aed(LABOUR_RATE_PER_HOUR)}/h</span>
+                            <span style={{ fontWeight: 700 }}>{aed(labour)}</span>
+                          </div>
+                        )}
+                        {usedLines.map(line => {
+                          const part = parts.find(p => p.id === line.part_id);
+                          return (
+                            <div key={line.part_id} style={s.partRow}>
+                              <span style={{ flex: "1 1 auto" }}>{part?.name || "Unknown part"} × {line.qty}</span>
+                              <span style={{ fontWeight: 700 }}>{aed(line.qty * line.sellSnapshot)}</span>
+                            </div>
+                          );
+                        })}
+                        {addPartRowId === job.id ? (
+                          <div style={s.partRow}>
+                            <select className="g51-input" value={addPartSelection} onChange={e => setAddPartSelection(e.target.value)} style={{ ...s.input, flex: "1 1 200px" }}>
+                              <option value="">Choose a part…</option>
+                              {parts.map(p => (
+                                <option key={p.id} value={p.id}>{p.name} ({stockFor(p.id, movements)} in stock)</option>
+                              ))}
+                            </select>
+                            <input className="g51-input" type="number" min={1} value={addPartQty} onChange={e => setAddPartQty(e.target.value)} style={{ ...s.input, width: 70, flex: "0 0 70px" }} />
+                            <button onClick={() => addPart(job)} className="g51-btn g51-primary" style={{ ...s.smallBtn, background: RED, color: "#fff", border: "none", fontWeight: 700 }}>Add</button>
+                            <button onClick={() => setAddPartRowId(null)} className="g51-btn g51-ghost" style={s.smallBtn}>Cancel</button>
+                          </div>
+                        ) : (
+                          <button onClick={() => { setAddPartRowId(job.id); setAddPartSelection(""); setAddPartQty("1"); }} className="g51-btn g51-ghost" style={s.smallBtn}>+ Add part</button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {toast && (
+        <div style={{ ...s.toast, ...(toast.kind === "err" ? s.toastErr : s.toastOk) }}>{toast.msg}</div>
+      )}
+    </main>
+  );
+}
+
+const s: Record<string, CSSProperties> = {
+  loading: { minHeight: "100vh", background: "#181615", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
+  page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50 },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #2A2623" },
+  logo: { height: 30, width: "auto" },
+  ghostBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 500, cursor: "pointer" },
+  wrap: { maxWidth: 720, margin: "0 auto", padding: "26px 20px 0" },
+  h1: { fontSize: 24, fontWeight: 800, margin: "0 0 6px" },
+  sub: { color: "#9A938D", fontSize: 14, margin: "0 0 16px", lineHeight: 1.5 },
+  toggleBtn: { fontSize: 12.5, padding: "7px 13px", marginBottom: 18 },
+  empty: { color: "#8C857F", textAlign: "center", padding: "40px 20px", border: "1px dashed #322E2A", borderRadius: 14, fontSize: 14 },
+  list: { display: "flex", flexDirection: "column", gap: 10 },
+  card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14 },
+  cardHead: { display: "flex", alignItems: "center", gap: 12, padding: "15px 17px", cursor: "pointer" },
+  nameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  jobName: { fontWeight: 700, fontSize: 16 },
+  jobSub: { fontSize: 13, color: "#9A938D", marginTop: 3 },
+  pill: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" },
+  cardBody: { padding: "0 17px 17px", borderTop: "1px solid #2A2623", marginTop: 4, paddingTop: 14 },
+  box: { border: "1px solid #2F2B27", borderRadius: 9, padding: "10px 12px", marginBottom: 14, background: "#1B1816" },
+  boxLabel: { fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", color: "#9A938D", marginBottom: 4 },
+  boxText: { fontSize: 14, lineHeight: 1.5, whiteSpace: "pre-wrap" },
+  controls: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 4 },
+  ctrl: { display: "grid", gap: 5, flex: "1 1 160px", marginBottom: 13 },
+  ctrlLabel: { fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase", color: "#9A938D" },
+  input: { width: "100%", boxSizing: "border-box", background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 14, padding: "10px 12px", fontFamily: "inherit" },
+  partsWrap: { background: "#1B1816", border: "1px solid #2F2B27", borderRadius: 11, padding: "12px 13px" },
+  partsHead: { marginBottom: 8 },
+  partsTitle: { fontSize: 12.5, fontWeight: 700, color: "#C9C2BC", letterSpacing: "0.03em" },
+  partRow: { display: "flex", gap: 9, alignItems: "center", flexWrap: "wrap", marginBottom: 8, fontSize: 13.5 },
+  smallBtn: { fontSize: 12.5, padding: "7px 12px" },
+  toast: { position: "fixed", left: "50%", bottom: 22, transform: "translateX(-50%)", zIndex: 100, maxWidth: "calc(100vw - 32px)", padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.45)", border: "1px solid", textAlign: "center" },
+  toastOk: { background: "#10301C", color: "#7CE0A6", borderColor: "#2FBF7155" },
+  toastErr: { background: "#3A1518", color: "#FF9B9B", borderColor: "#ED1C2455" },
+};
