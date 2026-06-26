@@ -50,7 +50,7 @@ export async function POST(req: Request) {
       invoice_url: invoiceWebUrl(invoiceId),
     });
   } catch (err) {
-    console.error("Zoho invoice creation failed:", err);
+    console.error("Zoho invoice creation failed:", err, "| request payload:", JSON.stringify(payload));
     const message = err instanceof Error ? err.message : "Could not create the Zoho invoice.";
     return NextResponse.json({ error: message }, { status: 500 });
   }

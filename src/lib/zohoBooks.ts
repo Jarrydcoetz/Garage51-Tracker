@@ -67,22 +67,28 @@ export type ZohoContactInput = {
   phone?: string | null;
 };
 
+function isValidEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
+}
+
 // Creates a new Zoho contact and returns its ID. Sends the email/phone in
 // both the shapes Zoho's contact object can plausibly expect (top-level and
-// nested under contact_persons) since this hasn't been tested against a
-// real account yet — extra/unused fields are harmless, a missing one isn't.
+// nested under contact_persons) — extra/unused fields are harmless, a
+// missing one isn't. The email is only included if it actually looks like
+// one; Zoho's own validation rejects the request outright otherwise.
 export async function createZohoContact(input: ZohoContactInput): Promise<string> {
+  const cleanEmail = input.email && isValidEmail(input.email) ? input.email.trim() : null;
   const data = await zohoFetch("/contacts", {
     method: "POST",
     body: JSON.stringify({
       contact_name: input.name,
-      ...(input.email ? { email: input.email } : {}),
+      ...(cleanEmail ? { email: cleanEmail } : {}),
       ...(input.phone ? { phone: input.phone } : {}),
       contact_persons: [
         {
           first_name: input.name,
           is_primary_contact: true,
-          ...(input.email ? { email: input.email } : {}),
+          ...(cleanEmail ? { email: cleanEmail } : {}),
           ...(input.phone ? { phone: input.phone } : {}),
         },
       ],
