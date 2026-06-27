@@ -7,12 +7,17 @@ import { supabase } from "../../../lib/supabase-browser";
 import {
   type Part,
   type StockMovement,
+  type ServiceProduct,
+  type ServiceProductItem,
+  type ServiceProductApplication,
   sellPrice as partSellPrice,
   stockFor,
   partsUsedFor,
   partsUsedTotal,
   labourCharge,
   LABOUR_RATE_PER_HOUR,
+  applicationsFor,
+  applicationsTotal,
 } from "../../../lib/partsShared";
 
 const RED = "#ED1C24";
@@ -66,11 +71,16 @@ export default function WorkshopScreen() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
+  const [serviceProducts, setServiceProducts] = useState<ServiceProduct[]>([]);
+  const [productItems, setProductItems] = useState<ServiceProductItem[]>([]);
+  const [applications, setApplications] = useState<ServiceProductApplication[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showCompleted, setShowCompleted] = useState(false);
   const [addPartRowId, setAddPartRowId] = useState<string | null>(null);
   const [addPartSelection, setAddPartSelection] = useState("");
   const [addPartQty, setAddPartQty] = useState("1");
+  const [applyProductRowId, setApplyProductRowId] = useState<string | null>(null);
+  const [applyProductSelection, setApplyProductSelection] = useState("");
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -81,14 +91,17 @@ export default function WorkshopScreen() {
       const me = prof as Profile | null;
       if (!me || (me.role !== "mechanic" && me.role !== "admin")) { router.replace("/admin"); return; }
 
-      const [{ data: jobsData }, { data: partsData }, { data: movementsData }] = await Promise.all([
+      const [{ data: jobsData }, { data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
         supabase.from("enquiries")
           .select("id, customer_name, bike_details, bike_year, bike_hours, work_required, job_status, labour_hours, assigned_to, stage")
           .eq("service_type", "workshop")
           .not("job_status", "is", null)
           .order("created_at", { ascending: true }),
         supabase.from("parts").select("*").eq("active", true).order("name"),
-        supabase.from("stock_movements").select("id, part_id, quantity, reason, enquiry_id, cost_price_snapshot, sell_price_snapshot, created_at"),
+        supabase.from("stock_movements").select("id, part_id, quantity, reason, enquiry_id, service_product_application_id, cost_price_snapshot, sell_price_snapshot, created_at"),
+        supabase.from("service_products").select("*").eq("active", true).order("name"),
+        supabase.from("service_product_items").select("*"),
+        supabase.from("service_product_applications").select("*"),
       ]);
 
       const all = (jobsData as Job[]) || [];
@@ -96,6 +109,9 @@ export default function WorkshopScreen() {
       setJobs(scoped.filter(j => j.stage !== "cancelled" && j.stage !== "lost"));
       setParts((partsData as Part[]) || []);
       setMovements((movementsData as StockMovement[]) || []);
+      setServiceProducts((spData as ServiceProduct[]) || []);
+      setProductItems((spiData as ServiceProductItem[]) || []);
+      setApplications((appData as ServiceProductApplication[]) || []);
       setReady(true);
     });
   }, [router]);
@@ -143,6 +159,31 @@ export default function WorkshopScreen() {
     setAddPartQty("1");
     showToast(`Added ${qty} × ${part.name}.`);
   }
+  async function applyServiceProduct(job: Job) {
+    const product = serviceProducts.find(sp => sp.id === applyProductSelection);
+    if (!product) { showToast("Choose a service product first.", "err"); return; }
+    const { data: appRow, error: appError } = await supabase.from("service_product_applications").insert({
+      service_product_id: product.id, enquiry_id: job.id,
+      name_snapshot: product.name, price_snapshot: product.price,
+    }).select().single();
+    if (appError || !appRow) { showToast(appError?.message || "Could not apply the product.", "err"); return; }
+    const application = appRow as ServiceProductApplication;
+    setApplications(prev => [...prev, application]);
+    const recipe = productItems.filter(i => i.service_product_id === product.id);
+    for (const item of recipe) {
+      const part = parts.find(p => p.id === item.part_id);
+      if (!part) continue;
+      const { data: movRow } = await supabase.from("stock_movements").insert({
+        part_id: part.id, quantity: -item.quantity, reason: "used", enquiry_id: job.id,
+        service_product_application_id: application.id,
+        cost_price_snapshot: part.cost_price, sell_price_snapshot: partSellPrice(part),
+      }).select().single();
+      if (movRow) setMovements(prev => [...prev, movRow as StockMovement]);
+    }
+    setApplyProductRowId(null);
+    setApplyProductSelection("");
+    showToast(`Applied "${product.name}" — ${aed(product.price)}.`);
+  }
   async function logout() {
     await supabase.auth.signOut();
     router.replace("/login");
@@ -177,8 +218,10 @@ export default function WorkshopScreen() {
               const open = expanded.has(job.id);
               const usedLines = partsUsedFor(job.id, movements);
               const partsSubtotal = partsUsedTotal(usedLines);
+              const appliedProducts = applicationsFor(job.id, applications);
+              const productsSubtotal = applicationsTotal(appliedProducts);
               const labour = labourCharge(job.labour_hours);
-              const total = Math.round((partsSubtotal + labour) * 100) / 100;
+              const total = Math.round((partsSubtotal + productsSubtotal + labour) * 100) / 100;
               const statusKey = job.job_status || "queued";
               const statusColor = STATUS_COLOR[statusKey] || "#9A938D";
               return (
@@ -220,7 +263,7 @@ export default function WorkshopScreen() {
 
                       <div style={s.partsWrap}>
                         <div style={s.partsHead}>
-                          <span style={s.partsTitle}>Parts &amp; labour{total > 0 ? ` · ${aed(total)}` : ""}</span>
+                          <span style={s.partsTitle}>Parts, products &amp; labour{total > 0 ? ` · ${aed(total)}` : ""}</span>
                         </div>
                         {labour > 0 && (
                           <div style={s.partRow}>
@@ -228,6 +271,12 @@ export default function WorkshopScreen() {
                             <span style={{ fontWeight: 700 }}>{aed(labour)}</span>
                           </div>
                         )}
+                        {appliedProducts.map(app => (
+                          <div key={app.id} style={s.partRow}>
+                            <span style={{ flex: "1 1 auto" }}>{app.name_snapshot} <span style={{ opacity: 0.6 }}>(fixed price)</span></span>
+                            <span style={{ fontWeight: 700 }}>{aed(app.price_snapshot)}</span>
+                          </div>
+                        ))}
                         {usedLines.map(line => {
                           const part = parts.find(p => p.id === line.part_id);
                           return (
@@ -249,8 +298,24 @@ export default function WorkshopScreen() {
                             <button onClick={() => addPart(job)} className="g51-btn g51-primary" style={{ ...s.smallBtn, background: RED, color: "#fff", border: "none", fontWeight: 700 }}>Add</button>
                             <button onClick={() => setAddPartRowId(null)} className="g51-btn g51-ghost" style={s.smallBtn}>Cancel</button>
                           </div>
+                        ) : applyProductRowId === job.id ? (
+                          <div style={s.partRow}>
+                            <select className="g51-input" value={applyProductSelection} onChange={e => setApplyProductSelection(e.target.value)} style={{ ...s.input, flex: "1 1 200px" }}>
+                              <option value="">Choose a product…</option>
+                              {serviceProducts.map(sp => (
+                                <option key={sp.id} value={sp.id}>{sp.name} ({aed(sp.price)})</option>
+                              ))}
+                            </select>
+                            <button onClick={() => applyServiceProduct(job)} className="g51-btn g51-primary" style={{ ...s.smallBtn, background: RED, color: "#fff", border: "none", fontWeight: 700 }}>Apply</button>
+                            <button onClick={() => setApplyProductRowId(null)} className="g51-btn g51-ghost" style={s.smallBtn}>Cancel</button>
+                          </div>
                         ) : (
-                          <button onClick={() => { setAddPartRowId(job.id); setAddPartSelection(""); setAddPartQty("1"); }} className="g51-btn g51-ghost" style={s.smallBtn}>+ Add part</button>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <button onClick={() => { setAddPartRowId(job.id); setAddPartSelection(""); setAddPartQty("1"); }} className="g51-btn g51-ghost" style={s.smallBtn}>+ Add part</button>
+                            {serviceProducts.length > 0 && (
+                              <button onClick={() => { setApplyProductRowId(job.id); setApplyProductSelection(""); }} className="g51-btn g51-ghost" style={s.smallBtn}>+ Apply product</button>
+                            )}
+                          </div>
                         )}
                       </div>
                     </div>

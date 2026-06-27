@@ -7,6 +7,8 @@ import { supabase } from "../../../lib/supabase-browser";
 import {
   type Part,
   type StockMovement as Movement,
+  type ServiceProduct,
+  type ServiceProductItem,
   sellPrice,
   stockFor,
   isLowStock as isLow,
@@ -83,6 +85,14 @@ export default function PartsScreen() {
   const [parts, setParts] = useState<Part[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  const [products, setProducts] = useState<ServiceProduct[]>([]);
+  const [productItems, setProductItems] = useState<ServiceProductItem[]>([]);
+  const [productsOpen, setProductsOpen] = useState(false);
+  const [newProductName, setNewProductName] = useState("");
+  const [newProductPrice, setNewProductPrice] = useState("");
+  const [creatingProduct, setCreatingProduct] = useState(false);
+  const [recipePartSelection, setRecipePartSelection] = useState<Record<string, string>>({});
+  const [recipeQty, setRecipeQty] = useState<Record<string, string>>({});
   const [adding, setAdding] = useState(false);
   const [creating, setCreating] = useState(false);
   const [addError, setAddError] = useState("");
@@ -96,14 +106,18 @@ export default function PartsScreen() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
-      const [{ data: p }, { data: m }, { data: s }] = await Promise.all([
+      const [{ data: p }, { data: m }, { data: s }, { data: sp }, { data: spi }] = await Promise.all([
         supabase.from("parts").select("*").eq("active", true).order("name"),
         supabase.from("stock_movements").select("id, part_id, quantity, reason, created_at"),
         supabase.from("suppliers").select("id, name").order("name"),
+        supabase.from("service_products").select("*").eq("active", true).order("name"),
+        supabase.from("service_product_items").select("*"),
       ]);
       setParts((p as Part[]) || []);
       setMovements((m as Movement[]) || []);
       setSuppliers((s as Supplier[]) || []);
+      setProducts((sp as ServiceProduct[]) || []);
+      setProductItems((spi as ServiceProductItem[]) || []);
       setReady(true);
     });
   }, [router]);
@@ -154,6 +168,50 @@ export default function PartsScreen() {
   async function savePart(id: string, patch: Partial<Part>) {
     const { error } = await supabase.from("parts").update(patch).eq("id", id);
     if (error) showToast(error.message || "Could not save changes.", "err");
+  }
+
+  async function createProduct() {
+    if (!newProductName.trim()) { showToast("Name is required.", "err"); return; }
+    const price = Number(newProductPrice);
+    if (!price || price <= 0) { showToast("Enter a price greater than zero.", "err"); return; }
+    setCreatingProduct(true);
+    const { data, error } = await supabase.from("service_products").insert({
+      name: newProductName.trim(),
+      price,
+    }).select().single();
+    setCreatingProduct(false);
+    if (error || !data) { showToast(error?.message || "Could not add the product.", "err"); return; }
+    setProducts(prev => [...prev, data as ServiceProduct].sort((a, b) => a.name.localeCompare(b.name)));
+    setNewProductName("");
+    setNewProductPrice("");
+    showToast(`Added "${(data as ServiceProduct).name}".`);
+  }
+
+  async function addRecipeItem(product: ServiceProduct) {
+    const partId = recipePartSelection[product.id];
+    const qty = Number(recipeQty[product.id]);
+    const part = parts.find(p => p.id === partId);
+    if (!part) { showToast("Choose a part first.", "err"); return; }
+    if (!qty || qty <= 0) { showToast("Enter a quantity greater than zero.", "err"); return; }
+    const { data, error } = await supabase.from("service_product_items").insert({
+      service_product_id: product.id, part_id: partId, quantity: qty,
+    }).select().single();
+    if (error || !data) { showToast(error?.message || "Could not add to the recipe.", "err"); return; }
+    setProductItems(prev => [...prev, data as ServiceProductItem]);
+    setRecipePartSelection(prev => ({ ...prev, [product.id]: "" }));
+    setRecipeQty(prev => ({ ...prev, [product.id]: "" }));
+    showToast(`Added ${qty} × ${part.name} to "${product.name}".`);
+  }
+
+  async function removeRecipeItem(item: ServiceProductItem) {
+    await supabase.from("service_product_items").delete().eq("id", item.id);
+    setProductItems(prev => prev.filter(i => i.id !== item.id));
+  }
+
+  async function removeProduct(product: ServiceProduct) {
+    await supabase.from("service_products").update({ active: false }).eq("id", product.id);
+    setProducts(prev => prev.filter(p => p.id !== product.id));
+    showToast(`Removed "${product.name}" from the catalog.`);
   }
 
   async function receiveStock(part: Part) {
@@ -248,6 +306,82 @@ export default function PartsScreen() {
                 <button onClick={createPart} disabled={creating} className="g51-btn g51-primary" style={s.primaryBtn}>{creating ? "Adding…" : "Add part"}</button>
                 <button onClick={() => { setAdding(false); setAddError(""); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
               </div>
+            </>
+          )}
+        </div>
+
+        <div style={s.card}>
+          <div style={s.cardTitleRow} onClick={() => setProductsOpen(p => !p)}>
+            <span style={s.cardTitle}>Service products{products.length > 0 ? ` (${products.length})` : ""}</span>
+            <Chevron open={productsOpen} />
+          </div>
+          {productsOpen && (
+            <>
+              <p style={{ ...s.sub, margin: "10px 0 14px" }}>
+                A fixed-price offering — like &ldquo;Four-stroke engine oil service&rdquo; — that quietly consumes its own
+                recipe of parts when applied to a job. The customer sees one price; the parts it used still come off the shelf.
+              </p>
+              <div style={s.controls}>
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Name</span>
+                  <input className="g51-input" value={newProductName} onChange={e => setNewProductName(e.target.value)} placeholder="e.g. Four-stroke engine oil service" style={s.input} /></label>
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Price (AED)</span>
+                  <input className="g51-input" type="number" value={newProductPrice} onChange={e => setNewProductPrice(e.target.value)} style={s.input} /></label>
+              </div>
+              <div style={s.actions}>
+                <button onClick={createProduct} disabled={creatingProduct} className="g51-btn g51-primary" style={s.primaryBtn}>
+                  {creatingProduct ? "Adding…" : "Add product"}
+                </button>
+              </div>
+
+              {products.length > 0 && (
+                <div style={{ ...s.list, marginTop: 18 }}>
+                  {products.map(product => {
+                    const items = productItems.filter(i => i.service_product_id === product.id);
+                    return (
+                      <div key={product.id} style={s.row}>
+                        <div style={s.rowMain}>
+                          <div style={s.nameRow}>
+                            <span style={s.partName}>{product.name}</span>
+                            <span style={{ ...s.pill, color: "#2FBF71", borderColor: "#2FBF7166", background: "#2FBF711c" }}>{aed(product.price)}</span>
+                          </div>
+                          <div style={s.partSub}>
+                            {items.length === 0
+                              ? "No recipe set yet — applying this won't use any stock"
+                              : items.map(i => `${parts.find(p => p.id === i.part_id)?.name || "?"} ×${i.quantity}`).join(", ")}
+                          </div>
+                        </div>
+                        <details style={s.editWrap}>
+                          <summary style={s.editSummary}>Edit recipe</summary>
+                          {items.map(i => {
+                            const part = parts.find(p => p.id === i.part_id);
+                            return (
+                              <div key={i.id} style={s.rowRight}>
+                                <span style={{ flex: "1 1 auto" }}>{part?.name || "Unknown part"} × {i.quantity}</span>
+                                <button onClick={() => removeRecipeItem(i)} className="g51-btn g51-ghost" style={{ ...s.smallGhost, color: "#FF7A7A" }}>Remove</button>
+                              </div>
+                            );
+                          })}
+                          <div style={{ ...s.rowRight, marginTop: 8 }}>
+                            <select className="g51-input" value={recipePartSelection[product.id] || ""}
+                              onChange={e => setRecipePartSelection(prev => ({ ...prev, [product.id]: e.target.value }))}
+                              style={{ ...s.input, flex: "1 1 200px" }}>
+                              <option value="">Choose a part…</option>
+                              {parts.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                            <input className="g51-input" type="number" min={1} value={recipeQty[product.id] || ""}
+                              onChange={e => setRecipeQty(prev => ({ ...prev, [product.id]: e.target.value }))}
+                              placeholder="Qty" style={s.qtyInput} />
+                            <button onClick={() => addRecipeItem(product)} className="g51-btn g51-primary" style={s.smallPrimary}>Add</button>
+                          </div>
+                          <button onClick={() => removeProduct(product)} className="g51-btn g51-ghost" style={{ ...s.smallGhost, color: "#FF7A7A", marginTop: 10 }}>
+                            Remove product
+                          </button>
+                        </details>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </>
           )}
         </div>
