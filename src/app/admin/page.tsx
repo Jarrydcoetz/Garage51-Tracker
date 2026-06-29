@@ -133,6 +133,7 @@ const BLANK = {
   customer_name: "", phone: "", email: "", service_type: "academy",
   source: "whatsapp", stage: "new", estimated_value: 0, booking_at: "", notes: "",
   storage_start_date: "", storage_end_date: "", bike_category: "adult", storage_term: "month_to_month",
+  preferred_date: "",
 };
 
 // ---- session / state helpers ----------------------------------------------
@@ -298,7 +299,7 @@ function printJobCard(
     <div class="row"><div class="label">Client</div><div class="val">${esc(r.customer_name)}</div></div>
     <div class="row"><div class="label">Phone</div><div class="val">${esc(r.phone)}</div></div>
     <div class="row"><div class="label">Email</div><div class="val">${esc(r.email) || "—"}</div></div>
-    <div class="row"><div class="label">Booking date / time</div><div class="val">${esc(r.booking_at) || "—"}</div></div>
+    <div class="row"><div class="label">Preferred / booking date</div><div class="val">${esc(r.booking_at) || esc(r.preferred_date) || "—"}</div></div>
     <div class="row"><div class="label">Bike (make / model)</div><div class="val">${esc(r.bike_details) || "—"}</div></div>
     <div class="row"><div class="label">Year</div><div class="val">${esc(r.bike_year) || "—"}</div></div>
     <div class="row"><div class="label">Hours / mileage</div><div class="val">${esc(r.bike_hours) || "—"}</div></div>
@@ -478,6 +479,9 @@ export default function Admin() {
       storage_end_date: row.storage_end_date || null,
       bike_category: row.bike_category || null,
       storage_term: row.storage_term || null,
+      preferred_date: row.preferred_date || null,
+      job_status: row.job_status || null,
+      labour_hours: row.labour_hours ?? null,
     };
     if (row.stage === "cancelled") {
       patch.cancelled_at = row.cancelled_at || new Date().toISOString();
@@ -624,7 +628,7 @@ export default function Admin() {
   }
 
   async function addSession(row: Enquiry) {
-    if (row.service_type === "motorcycle_storage") return; // storage uses a date range, not sessions
+    if (row.service_type === "motorcycle_storage" || row.service_type === "workshop") return; // neither uses sessions anymore
     const nextSeq = (row.sessions || []).reduce((m, ss) => Math.max(m, ss.seq), 0) + 1;
     const scheduled_at =
       (row.sessions || []).length === 0 && row.preferred_date
@@ -843,6 +847,7 @@ export default function Admin() {
     if (!form.customer_name.trim() || !form.phone.trim()) { setAddError("Name and phone are required."); return; }
     setCreating(true); setAddError("");
     const isStorage = form.service_type === "motorcycle_storage";
+    const isWorkshop = form.service_type === "workshop";
     const { data, error } = await supabase.from("enquiries").insert({
       customer_name: form.customer_name,
       phone: form.phone,
@@ -851,7 +856,8 @@ export default function Admin() {
       source: form.source,
       stage: form.stage,
       estimated_value: Number(form.estimated_value) || 0,
-      booking_at: isStorage ? null : (form.booking_at || null),
+      booking_at: (isStorage || isWorkshop) ? null : (form.booking_at || null),
+      preferred_date: isWorkshop ? (form.preferred_date || null) : null,
       storage_start_date: isStorage ? (form.storage_start_date || null) : null,
       storage_end_date: isStorage ? (form.storage_end_date || null) : null,
       bike_category: isStorage ? form.bike_category : null,
@@ -860,7 +866,7 @@ export default function Admin() {
     }).select("*, sessions(*)").single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not create booking."); return; }
     const enq = data as Enquiry;
-    if (!isStorage && form.booking_at) {
+    if (!isStorage && !isWorkshop && form.booking_at) {
       const { data: ses } = await supabase.from("sessions")
         .insert({ enquiry_id: enq.id, seq: 1, scheduled_at: localInputToIso(form.booking_at) })
         .select().single();
@@ -1098,6 +1104,9 @@ export default function Admin() {
                   <label style={s.ctrl}><span style={s.ctrlLabel}>Pick-up / renewal date</span>
                     <input className="g51-input" type="date" value={form.storage_end_date} onChange={e => set("storage_end_date", e.target.value)} style={s.input} /></label>
                 </>
+              ) : form.service_type === "workshop" ? (
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Preferred date</span>
+                  <input className="g51-input" type="date" value={form.preferred_date} onChange={e => set("preferred_date", e.target.value)} style={s.input} /></label>
               ) : (
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
                   <input className="g51-input" type="datetime-local" value={form.booking_at} onChange={e => set("booking_at", e.target.value)} style={s.input} /></label>
@@ -1269,7 +1278,14 @@ export default function Admin() {
                         </div>
                       )}
 
-                      {r.preferred_date && (
+                      {r.service_type === "workshop" ? (
+                        <div style={s.prefRow}>
+                          <span style={s.prefLabel}>Preferred date</span>
+                          <input className="g51-input" type="date" value={r.preferred_date || ""}
+                            onChange={e => editStaged(r.id, { preferred_date: e.target.value || null })}
+                            style={{ ...s.input, width: "auto", flex: "0 0 180px" }} />
+                        </div>
+                      ) : r.preferred_date && (
                         <div style={s.prefRow}>
                           <span style={s.prefLabel}>Preferred date</span>
                           <span style={s.prefVal}>{new Date(r.preferred_date).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" })}</span>
@@ -1296,7 +1312,7 @@ export default function Admin() {
                           </button></label>
                       </div>
 
-                      {r.service_type !== "motorcycle_storage" && (
+                      {r.service_type !== "motorcycle_storage" && r.service_type !== "workshop" && (
                       <div style={s.sesWrap}>
                         <div style={s.sesHead}>
                           <span style={s.sesTitle}>Sessions · {done} of {r.sessions_total} done</span>
