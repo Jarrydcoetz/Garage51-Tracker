@@ -4,22 +4,15 @@ import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
-
 import { SERVICE_ITEMS, SERVICE_LABEL, hoursSince as sharedHoursSince, isItemDue } from "../../../lib/bikeServiceShared";
 
 const RED = "#ED1C24";
 
-const CATEGORIES = [
-  { key: "rental", label: "Rental" },
-  { key: "desert_tour", label: "Desert Tour" },
-  { key: "academy", label: "Other" },
-];
-const CATEGORY_COLOR: Record<string, string> = { rental: "#3B9EFF", desert_tour: "#FFB02E", other: "#9A938D" };
-
-type FleetBike = {
+type StorageEnquiry = { id: string; customer_name: string; phone: string; bike_details: string | null; storage_end_date: string | null };
+type StorageBike = {
   id: string;
   name: string;
-  category: string | null;
+  enquiry_id: string | null;
   make: string | null;
   model: string | null;
   year: string | null;
@@ -28,13 +21,13 @@ type FleetBike = {
 };
 type ServiceDue = {
   id: string;
-  bike_id: string;
+  storage_bike_id: string;
   item_key: string;
   interval_hours: number;
   hours_at_last_done: number;
 };
 
-const BLANK_BIKE = { name: "", category: "rental", make: "", model: "", year: "", engine_hours: 0 };
+const BLANK_BIKE = { name: "", enquiry_id: "", make: "", model: "", year: "", engine_hours: 0 };
 
 const CSS = `
 .g51-btn{transition:background .15s ease,border-color .15s ease,opacity .15s ease;}
@@ -45,11 +38,20 @@ const CSS = `
 .g51-row:hover{background:#2A2624;}
 `;
 
-function hoursSince(bike: FleetBike, due: ServiceDue): number {
+function hoursSince(bike: StorageBike, due: ServiceDue): number {
   return sharedHoursSince(bike.engine_hours, due.hours_at_last_done);
 }
-function isDue(bike: FleetBike, due: ServiceDue): boolean {
+function isDue(bike: StorageBike, due: ServiceDue): boolean {
   return isItemDue(bike.engine_hours, due.hours_at_last_done, due.interval_hours);
+}
+function waNumber(phone: string): string {
+  const raw = (phone || "").trim();
+  let n = raw.replace(/\D/g, "");
+  if (!raw.startsWith("+")) {
+    if (n.startsWith("00")) n = n.slice(2);
+    if (n.startsWith("0")) n = "971" + n.slice(1);
+  }
+  return n;
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -60,11 +62,12 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
-export default function FleetScreen() {
+export default function StorageBikesScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [bikes, setBikes] = useState<FleetBike[]>([]);
+  const [bikes, setBikes] = useState<StorageBike[]>([]);
   const [serviceDue, setServiceDue] = useState<ServiceDue[]>([]);
+  const [enquiries, setEnquiries] = useState<StorageEnquiry[]>([]);
   const [adding, setAdding] = useState(false);
   const [creating, setCreating] = useState(false);
   const [addError, setAddError] = useState("");
@@ -75,12 +78,14 @@ export default function FleetScreen() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
-      const [{ data: b }, { data: sd }] = await Promise.all([
-        supabase.from("fleet_bikes").select("*").eq("active", true).order("name"),
-        supabase.from("fleet_service_due").select("*"),
+      const [{ data: b }, { data: sd }, { data: enq }] = await Promise.all([
+        supabase.from("storage_bikes").select("*").eq("active", true).order("name"),
+        supabase.from("storage_bikes_service_due").select("*"),
+        supabase.from("enquiries").select("id, customer_name, phone, bike_details, storage_end_date").eq("service_type", "motorcycle_storage"),
       ]);
-      setBikes((b as FleetBike[]) || []);
+      setBikes((b as StorageBike[]) || []);
       setServiceDue((sd as ServiceDue[]) || []);
+      setEnquiries((enq as StorageEnquiry[]) || []);
       setReady(true);
     });
   }, [router]);
@@ -92,47 +97,34 @@ export default function FleetScreen() {
   }
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
 
-  // Backfills any checklist items a bike doesn't have yet. Needed once,
-  // right after the checklist expanded from 5 items to the full list —
-  // existing bikes only have the original 5 until this runs.
-  async function syncAllChecklists() {
-    const newRows: ServiceDue[] = [];
-    for (const bike of bikes) {
-      const existingKeys = new Set(serviceDue.filter(d => d.bike_id === bike.id).map(d => d.item_key));
-      for (const item of SERVICE_ITEMS) {
-        if (existingKeys.has(item.key)) continue;
-        const { data } = await supabase.from("fleet_service_due").insert({
-          bike_id: bike.id, item_key: item.key, interval_hours: item.defaultInterval, hours_at_last_done: bike.engine_hours,
-        }).select().single();
-        if (data) newRows.push(data as ServiceDue);
-      }
-    }
-    if (newRows.length === 0) { showToast("Every bike already has the full checklist."); return; }
-    setServiceDue(prev => [...prev, ...newRows]);
-    showToast(`Added ${newRows.length} missing checklist item${newRows.length > 1 ? "s" : ""} across your fleet.`);
+  function pickEnquiry(enquiryId: string) {
+    const enq = enquiries.find(e => e.id === enquiryId);
+    setForm(prev => ({
+      ...prev,
+      enquiry_id: enquiryId,
+      name: enq ? `${enq.customer_name} — ${enq.bike_details || "bike"}` : prev.name,
+    }));
   }
 
   async function createBike() {
     if (!form.name.trim()) { setAddError("Name is required."); return; }
     setCreating(true); setAddError("");
     const startingHours = Number(form.engine_hours) || 0;
-    const { data, error } = await supabase.from("fleet_bikes").insert({
+    const { data, error } = await supabase.from("storage_bikes").insert({
       name: form.name.trim(),
-      category: form.category || null,
+      enquiry_id: form.enquiry_id || null,
       make: form.make.trim() || null,
       model: form.model.trim() || null,
       year: form.year.trim() || null,
       engine_hours: startingHours,
     }).select().single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not add the bike."); return; }
-    const bike = data as FleetBike;
+    const bike = data as StorageBike;
 
-    // Start the clock on every tracked item from today's hours — not from
-    // zero, which would falsely flag a perfectly fine bike as overdue.
     const dueRows: ServiceDue[] = [];
     for (const item of SERVICE_ITEMS) {
-      const { data: d } = await supabase.from("fleet_service_due").insert({
-        bike_id: bike.id, item_key: item.key, interval_hours: item.defaultInterval, hours_at_last_done: startingHours,
+      const { data: d } = await supabase.from("storage_bikes_service_due").insert({
+        storage_bike_id: bike.id, item_key: item.key, interval_hours: item.defaultInterval, hours_at_last_done: startingHours,
       }).select().single();
       if (d) dueRows.push(d as ServiceDue);
     }
@@ -145,11 +137,11 @@ export default function FleetScreen() {
     showToast(`Added "${bike.name}".`);
   }
 
-  function editBikeLocal(id: string, patch: Partial<FleetBike>) {
+  function editBikeLocal(id: string, patch: Partial<StorageBike>) {
     setBikes(prev => prev.map(b => (b.id === id ? { ...b, ...patch } : b)));
   }
-  async function saveBike(id: string, patch: Partial<FleetBike>) {
-    const { error } = await supabase.from("fleet_bikes").update(patch).eq("id", id);
+  async function saveBike(id: string, patch: Partial<StorageBike>) {
+    const { error } = await supabase.from("storage_bikes").update(patch).eq("id", id);
     if (error) showToast(error.message || "Could not save changes.", "err");
   }
 
@@ -157,26 +149,34 @@ export default function FleetScreen() {
     setServiceDue(prev => prev.map(d => (d.id === id ? { ...d, ...patch } : d)));
   }
   async function saveDue(id: string, patch: Partial<ServiceDue>) {
-    const { error } = await supabase.from("fleet_service_due").update(patch).eq("id", id);
+    const { error } = await supabase.from("storage_bikes_service_due").update(patch).eq("id", id);
     if (error) showToast(error.message || "Could not save changes.", "err");
   }
-  function markDone(bike: FleetBike, due: ServiceDue) {
+  function markDone(bike: StorageBike, due: ServiceDue) {
     const patch = { hours_at_last_done: bike.engine_hours };
     editDueLocal(due.id, patch);
     saveDue(due.id, patch);
     showToast(`${SERVICE_LABEL[due.item_key] || due.item_key} marked done on "${bike.name}".`);
   }
 
-  async function removeBike(bike: FleetBike) {
-    await supabase.from("fleet_bikes").update({ active: false }).eq("id", bike.id);
+  async function removeBike(bike: StorageBike) {
+    await supabase.from("storage_bikes").update({ active: false }).eq("id", bike.id);
     setBikes(prev => prev.filter(b => b.id !== bike.id));
-    showToast(`Removed "${bike.name}" from the fleet.`);
+    showToast(`Removed "${bike.name}".`);
+  }
+
+  function requestFromClient(bike: StorageBike, dueItems: ServiceDue[]) {
+    const enq = enquiries.find(e => e.id === bike.enquiry_id);
+    if (!enq || !enq.phone) { showToast("No linked customer with a phone number for this bike.", "err"); return; }
+    const list = dueItems.map(d => SERVICE_LABEL[d.item_key] || d.item_key).join(", ");
+    const msg = `Hi ${enq.customer_name}, while your ${enq.bike_details || "bike"} is in storage, our records show it's due for: ${list}. This isn't included in your storage plan and would be invoiced separately — let us know if you'd like us to go ahead.`;
+    window.open(`https://wa.me/${waNumber(enq.phone)}?text=${encodeURIComponent(msg)}`, "_blank");
   }
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
   const dueCountByBike = (bikeId: string) =>
-    serviceDue.filter(d => d.bike_id === bikeId).filter(d => {
+    serviceDue.filter(d => d.storage_bike_id === bikeId).filter(d => {
       const bike = bikes.find(b => b.id === bikeId);
       return bike && isDue(bike, d);
     }).length;
@@ -192,12 +192,8 @@ export default function FleetScreen() {
       </header>
 
       <div style={s.wrap}>
-        <h1 style={s.h1}>Fleet bikes</h1>
-        <p style={s.sub}>Your rental and desert tour bikes — hours, and what's due for service on each.</p>
-
-        <button onClick={syncAllChecklists} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, marginBottom: 16 }}>
-          Sync full checklist to all bikes
-        </button>
+        <h1 style={s.h1}>Storage bikes</h1>
+        <p style={s.sub}>Customer bikes currently in storage — hours, what's due, and requesting approval for anything beyond the storage plan.</p>
 
         {bikesNeedingAttention > 0 && (
           <div style={s.lowBanner}>⚠ {bikesNeedingAttention} bike{bikesNeedingAttention > 1 ? "s" : ""} need attention</div>
@@ -211,18 +207,21 @@ export default function FleetScreen() {
           {adding && (
             <>
               <div style={s.controls}>
-                <label style={s.ctrl}><span style={s.ctrlLabel}>Name / tag *</span>
-                  <input className="g51-input" value={form.name} onChange={e => set("name", e.target.value)} placeholder="e.g. Desmo450 #2" style={s.input} /></label>
-                <label style={s.ctrl}><span style={s.ctrlLabel}>Category</span>
-                  <select className="g51-input" value={form.category} onChange={e => set("category", e.target.value)} style={s.input}>
-                    {CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Linked storage booking</span>
+                  <select className="g51-input" value={form.enquiry_id} onChange={e => pickEnquiry(e.target.value)} style={s.input}>
+                    <option value="">No linked booking</option>
+                    {enquiries.map(e => (
+                      <option key={e.id} value={e.id}>{e.customer_name} — {e.bike_details || "bike"}</option>
+                    ))}
                   </select></label>
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
+                  <input className="g51-input" value={form.name} onChange={e => set("name", e.target.value)} placeholder="e.g. Jay — YZ450F" style={s.input} /></label>
               </div>
               <div style={s.controls}>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Make</span>
-                  <input className="g51-input" value={form.make} onChange={e => set("make", e.target.value)} placeholder="e.g. Ducati" style={s.input} /></label>
+                  <input className="g51-input" value={form.make} onChange={e => set("make", e.target.value)} style={s.input} /></label>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Model</span>
-                  <input className="g51-input" value={form.model} onChange={e => set("model", e.target.value)} placeholder="e.g. Desmo450 MX" style={s.input} /></label>
+                  <input className="g51-input" value={form.model} onChange={e => set("model", e.target.value)} style={s.input} /></label>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Year</span>
                   <input className="g51-input" value={form.year} onChange={e => set("year", e.target.value)} style={s.input} /></label>
               </div>
@@ -240,24 +239,28 @@ export default function FleetScreen() {
         </div>
 
         {bikes.length === 0 ? (
-          <div style={s.empty}>No fleet bikes yet.</div>
+          <div style={s.empty}>No storage bikes tracked yet.</div>
         ) : (
           <div style={s.list}>
             {bikes.map(bike => {
-              const dues = serviceDue.filter(d => d.bike_id === bike.id);
-              const dueCount = dueCountByBike(bike.id);
-              const catColor = CATEGORY_COLOR[bike.category || "other"] || "#9A938D";
+              const dues = serviceDue.filter(d => d.storage_bike_id === bike.id);
+              const dueItems = dues.filter(d => isDue(bike, d));
+              const enq = enquiries.find(e => e.id === bike.enquiry_id);
               return (
                 <div key={bike.id} className="g51-row" style={s.row}>
                   <div style={s.rowMain}>
                     <div style={s.nameRow}>
                       <span style={s.partName}>{bike.name}</span>
-                      <span style={{ ...s.pill, color: catColor, borderColor: catColor + "66", background: catColor + "1c" }}>
-                        {CATEGORIES.find(c => c.key === bike.category)?.label || "Other"}
-                      </span>
-                      {dueCount > 0 && <span style={s.lowBadge}>⚠ {dueCount} due</span>}
+                      {dueItems.length > 0 && <span style={s.lowBadge}>⚠ {dueItems.length} due</span>}
+                      {dueItems.length > 0 && enq?.phone && (
+                        <button onClick={() => requestFromClient(bike, dueItems)} className="g51-btn g51-ghost" style={s.smallGhost}>
+                          Request from client
+                        </button>
+                      )}
                     </div>
                     <div style={s.partSub}>
+                      {enq ? `Linked to ${enq.customer_name}'s storage booking` : "No linked storage booking"}
+                      <span style={s.dotSep}>·</span>
                       {[bike.make, bike.model, bike.year].filter(Boolean).join(" ") || "No make/model set"}
                       <span style={s.dotSep}>·</span>
                       <label style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -293,7 +296,7 @@ export default function FleetScreen() {
                       );
                     })}
                     <button onClick={() => removeBike(bike)} className="g51-btn g51-ghost" style={{ ...s.smallGhost, color: "#FF7A7A", marginTop: 10 }}>
-                      Remove from fleet
+                      Remove
                     </button>
                   </details>
                 </div>
@@ -336,7 +339,6 @@ const s: Record<string, CSSProperties> = {
   rowMain: { marginBottom: 4 },
   nameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   partName: { fontWeight: 600, fontSize: 15 },
-  pill: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "2px 9px", whiteSpace: "nowrap" },
   lowBadge: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#FFB02E", border: "1px solid #FFB02E55", background: "#FFB02E18", borderRadius: 20, padding: "2px 8px" },
   partSub: { fontSize: 12.5, color: "#9A938D", marginTop: 4, lineHeight: 1.5, display: "flex", alignItems: "center", flexWrap: "wrap" },
   dotSep: { margin: "0 7px", opacity: 0.5 },

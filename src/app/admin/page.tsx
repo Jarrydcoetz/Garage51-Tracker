@@ -1037,6 +1037,7 @@ export default function Admin() {
           <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New booking</button>
           <button onClick={() => router.push("/admin/parts")} className="g51-btn g51-ghost" style={s.ghostBtn}>Parts</button>
           <button onClick={() => router.push("/admin/fleet")} className="g51-btn g51-ghost" style={s.ghostBtn}>Fleet</button>
+          <button onClick={() => router.push("/admin/storage-bikes")} className="g51-btn g51-ghost" style={s.ghostBtn}>Storage Bikes</button>
           {me?.role === "admin" && (
             <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
           )}
