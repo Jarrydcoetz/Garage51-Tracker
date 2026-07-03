@@ -1,11 +1,11 @@
 // Shared hours-based maintenance checklist — single source of truth for
-// both the Fleet Bikes page and the Storage Bikes page, so the two don't
-// quietly drift into different checklists for the same kind of bike.
+// both the Fleet Bikes page and the Storage Bikes page.
 //
-// This list draws on the original fleet checklist plus the fuller workshop
-// inspection checklist from the job-card spec. Every interval here is a
-// starting guess, not a real maintenance schedule — go through this with
-// whoever actually knows these bikes before trusting the due flags.
+// Intervals are starting guesses — adjust per bike on either page once you
+// know better. DUE_SOON_THRESHOLD_HOURS controls how many hours before due
+// an item gets flagged amber.
+
+export const DUE_SOON_THRESHOLD_HOURS = 5;
 
 export const SERVICE_ITEMS = [
   { key: "oil_change", label: "Oil change", defaultInterval: 10 },
@@ -31,9 +31,57 @@ export const SERVICE_ITEMS = [
 
 export const SERVICE_LABEL: Record<string, string> = Object.fromEntries(SERVICE_ITEMS.map(i => [i.key, i.label]));
 
+// An immutable event in the service log — every "Log service" action
+// creates one of these; nothing is ever overwritten or deleted.
+export type ServiceLogEntry = {
+  id: string;
+  bike_id?: string;         // fleet_service_log
+  storage_bike_id?: string; // storage_bikes_service_log
+  item_key: string;
+  hours_at_service: number;
+  performed_by: string | null;
+  notes: string | null;
+  created_at: string;
+};
+
 export function hoursSince(currentHours: number, hoursAtLastDone: number): number {
   return Math.max(0, Number(currentHours) - Number(hoursAtLastDone));
 }
+
+export function hoursRemaining(currentHours: number, hoursAtLastDone: number, intervalHours: number): number {
+  return intervalHours - hoursSince(currentHours, hoursAtLastDone);
+}
+
 export function isItemDue(currentHours: number, hoursAtLastDone: number, intervalHours: number): boolean {
   return hoursSince(currentHours, hoursAtLastDone) >= intervalHours;
 }
+
+export function isItemDueSoon(currentHours: number, hoursAtLastDone: number, intervalHours: number): boolean {
+  const remaining = hoursRemaining(currentHours, hoursAtLastDone, intervalHours);
+  return remaining > 0 && remaining <= DUE_SOON_THRESHOLD_HOURS;
+}
+
+export type ItemStatus = "overdue" | "due_soon" | "ok";
+
+export function itemStatus(currentHours: number, hoursAtLastDone: number, intervalHours: number): ItemStatus {
+  if (isItemDue(currentHours, hoursAtLastDone, intervalHours)) return "overdue";
+  if (isItemDueSoon(currentHours, hoursAtLastDone, intervalHours)) return "due_soon";
+  return "ok";
+}
+
+// Given the service log for a bike, return the most recent hours_at_service
+// for a specific item — or fall back to the fallback value (the initial
+// hours_at_last_done baseline stored when the bike was first added).
+export function lastServicedAt(
+  bikeId: string,
+  itemKey: string,
+  log: ServiceLogEntry[],
+  fallback: number,
+  bikeIdField: "bike_id" | "storage_bike_id" = "bike_id"
+): number {
+  const entries = log
+    .filter(e => e[bikeIdField] === bikeId && e.item_key === itemKey)
+    .sort((a, b) => b.hours_at_service - a.hours_at_service);
+  return entries.length > 0 ? entries[0].hours_at_service : fallback;
+}
+

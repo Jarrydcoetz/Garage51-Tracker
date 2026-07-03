@@ -201,7 +201,10 @@ export default function WorkshopScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => router.push("/admin/parts")} className="g51-btn g51-ghost" style={s.ghostBtn}>Parts</button>
+          <button onClick={() => router.push("/admin/fleet")} className="g51-btn g51-ghost" style={s.ghostBtn}>Fleet</button>
+          <button onClick={() => router.push("/admin/storage-bikes")} className="g51-btn g51-ghost" style={s.ghostBtn}>Storage Bikes</button>
           {myRole === "admin" && (
             <button onClick={() => router.push("/admin/overview")} className="g51-btn g51-ghost" style={s.ghostBtn}>← Overview</button>
           )}
