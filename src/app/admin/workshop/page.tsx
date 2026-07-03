@@ -68,6 +68,7 @@ function Chevron({ open }: { open: boolean }) {
 export default function WorkshopScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
+  const [myRole, setMyRole] = useState<string | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
@@ -90,6 +91,7 @@ export default function WorkshopScreen() {
       const { data: prof } = await supabase.from("profiles").select("id, name, role").eq("id", data.session.user.id).single();
       const me = prof as Profile | null;
       if (!me || (me.role !== "mechanic" && me.role !== "admin")) { router.replace("/admin"); return; }
+      setMyRole(me.role);
 
       const [{ data: jobsData }, { data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
         supabase.from("enquiries")
@@ -199,7 +201,12 @@ export default function WorkshopScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {myRole === "admin" && (
+            <button onClick={() => router.push("/admin/overview")} className="g51-btn g51-ghost" style={s.ghostBtn}>← Overview</button>
+          )}
+          <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
+        </div>
       </header>
 
       <div style={s.wrap}>
