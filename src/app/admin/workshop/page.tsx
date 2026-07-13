@@ -53,6 +53,7 @@ const CSS = `
 .g51-input:focus{outline:none;border-color:#6A625B;}
 .g51-btn:disabled{opacity:.55;cursor:default;}
 .g51-row:hover{border-color:#403A35;}
+nav button:hover{background:#2A2624 !important;}
 `;
 
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
@@ -69,6 +70,7 @@ export default function WorkshopScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [myRole, setMyRole] = useState<string | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
@@ -201,16 +203,34 @@ export default function WorkshopScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button onClick={() => router.push("/admin/parts")} className="g51-btn g51-ghost" style={s.ghostBtn}>Parts</button>
-          <button onClick={() => router.push("/admin/fleet")} className="g51-btn g51-ghost" style={s.ghostBtn}>Fleet</button>
-          <button onClick={() => router.push("/admin/storage-bikes")} className="g51-btn g51-ghost" style={s.ghostBtn}>Storage Bikes</button>
-          {myRole === "admin" && (
-            <button onClick={() => router.push("/admin/overview")} className="g51-btn g51-ghost" style={s.ghostBtn}>← Overview</button>
+        <button onClick={() => setMenuOpen(m => !m)} className="g51-btn g51-ghost" style={s.menuBtn} aria-label="Menu">
+          {menuOpen ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
           )}
-          <button onClick={logout} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
-        </div>
+        </button>
       </header>
+
+      {menuOpen && (
+        <>
+          <div onClick={() => setMenuOpen(false)} style={s.menuOverlay} />
+          <nav style={s.menuDropdown}>
+            <button onClick={() => { router.push("/admin/parts"); setMenuOpen(false); }} style={s.menuItem}>Parts & Inventory</button>
+            <button onClick={() => { router.push("/admin/fleet"); setMenuOpen(false); }} style={s.menuItem}>Fleet Bikes</button>
+            <button onClick={() => { router.push("/admin/storage-bikes"); setMenuOpen(false); }} style={s.menuItem}>Storage Bikes</button>
+            {myRole === "admin" && (
+              <button onClick={() => { router.push("/admin/overview"); setMenuOpen(false); }} style={s.menuItem}>← Overview</button>
+            )}
+            <div style={s.menuDivider} />
+            <button onClick={() => { setMenuOpen(false); logout(); }} style={{ ...s.menuItem, color: "#FF7A7A" }}>Log out</button>
+          </nav>
+        </>
+      )}
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Your jobs</h1>
@@ -346,9 +366,14 @@ export default function WorkshopScreen() {
 
 const s: Record<string, CSSProperties> = {
   loading: { minHeight: "100vh", background: "#181615", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
-  page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50 },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #2A2623" },
+  page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50, position: "relative" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #2A2623", position: "sticky", top: 0, background: "#181615", zIndex: 50 },
   logo: { height: 30, width: "auto" },
+  menuBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  menuOverlay: { position: "fixed", inset: 0, zIndex: 48 } as CSSProperties,
+  menuDropdown: { position: "absolute", top: 57, right: 16, background: "#221F1D", border: "1px solid #3A352F", borderRadius: 13, padding: "6px", zIndex: 49, minWidth: 200, boxShadow: "0 16px 40px rgba(0,0,0,0.5)" } as CSSProperties,
+  menuItem: { display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", color: "#F4F2EF", fontSize: 15, fontWeight: 500, padding: "12px 14px", cursor: "pointer", borderRadius: 9, fontFamily: "inherit" } as CSSProperties,
+  menuDivider: { height: 1, background: "#2A2623", margin: "4px 0" },
   ghostBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 500, cursor: "pointer" },
   wrap: { maxWidth: 720, margin: "0 auto", padding: "26px 20px 0" },
   h1: { fontSize: 24, fontWeight: 800, margin: "0 0 6px" },
@@ -379,3 +404,4 @@ const s: Record<string, CSSProperties> = {
   toastOk: { background: "#10301C", color: "#7CE0A6", borderColor: "#2FBF7155" },
   toastErr: { background: "#3A1518", color: "#FF9B9B", borderColor: "#ED1C2455" },
 };
+
