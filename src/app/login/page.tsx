@@ -1,29 +1,29 @@
 "use client";
-
 import { useState } from "react";
 import type { FormEvent, CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
-
 const RED = "#ED1C24";
-
 export default function Login() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-
   async function handleLogin(e: FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError("");
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) setError(error.message);
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error) { setLoading(false); setError(error.message); return; }
+    // Role-based landing: admins go to the overview, mechanics to the workshop
+    // queue, coaches straight into bookings.
+    const { data: prof } = await supabase.from("profiles").select("role").eq("id", data.user.id).single();
+    const role = (prof as { role: string } | null)?.role;
+    if (role === "admin") router.push("/admin/overview");
+    else if (role === "mechanic") router.push("/admin/workshop");
     else router.push("/admin");
   }
-
   return (
     <div style={styles.page}>
       <style>{`
@@ -51,7 +51,6 @@ export default function Login() {
     </div>
   );
 }
-
 const styles: Record<string, CSSProperties> = {
   page: { minHeight: "100vh", background: "#1A1817", display: "grid", placeItems: "center", padding: 20, fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark" },
   card: { width: "100%", maxWidth: 380, background: "#242120", border: "1px solid #39342F", borderRadius: 16, padding: "32px 28px", display: "grid", gap: 16, boxShadow: "0 24px 60px rgba(0,0,0,0.45)" },
