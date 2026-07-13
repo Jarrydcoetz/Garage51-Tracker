@@ -47,6 +47,7 @@ function Chevron({ open }: { open: boolean }) {
 export default function FleetScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [myName, setMyName] = useState<string | null>(null);
   const [bikes, setBikes] = useState<FleetBike[]>([]);
   const [serviceDue, setServiceDue] = useState<ServiceDue[]>([]);
@@ -199,13 +200,27 @@ export default function FleetScreen() {
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => router.push("/admin/parts")} className="g51-btn g51-ghost" style={s.ghostBtn}>Parts</button>
-          <button onClick={() => router.push("/admin/storage-bikes")} className="g51-btn g51-ghost" style={s.ghostBtn}>Storage Bikes</button>
-          <button onClick={() => router.push("/admin")} className="g51-btn g51-ghost" style={s.ghostBtn}>Bookings</button>
-          <button onClick={() => router.push("/admin/overview")} className="g51-btn g51-ghost" style={s.ghostBtn}>← Overview</button>
-        </div>
+        <button onClick={() => setMenuOpen(m => !m)} className="g51-btn g51-ghost" style={s.menuBtn} aria-label="Menu">
+          {menuOpen ? (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+          ) : (
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+          )}
+        </button>
       </header>
+
+      {menuOpen && (
+        <>
+          <div onClick={() => setMenuOpen(false)} style={s.menuOverlay} />
+          <nav style={s.menuDropdown}>
+            <button onClick={() => { router.push("/admin/parts"); setMenuOpen(false); }} style={s.menuItem}>Parts & Inventory</button>
+            <button onClick={() => { router.push("/admin/storage-bikes"); setMenuOpen(false); }} style={s.menuItem}>Storage Bikes</button>
+            <button onClick={() => { router.push("/admin"); setMenuOpen(false); }} style={s.menuItem}>Bookings</button>
+            <div style={s.menuDivider} />
+            <button onClick={() => { router.push("/admin/overview"); setMenuOpen(false); }} style={s.menuItem}>← Overview</button>
+          </nav>
+        </>
+      )}
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Fleet bikes</h1>
@@ -477,9 +492,14 @@ function LogForm({ hrs, by, notes, setHrs, setBy, setNotes, loading, onSave, onC
 
 const s: Record<string, CSSProperties> = {
   loading: { minHeight: "100vh", background: "#181615", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
-  page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50 },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #2A2623", flexWrap: "wrap", gap: 10 },
+  page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 50, position: "relative" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #2A2623", position: "sticky", top: 0, background: "#181615", zIndex: 50 },
   logo: { height: 30, width: "auto" },
+  menuBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  menuOverlay: { position: "fixed", inset: 0, zIndex: 48 } as CSSProperties,
+  menuDropdown: { position: "absolute", top: 57, right: 16, background: "#221F1D", border: "1px solid #3A352F", borderRadius: 13, padding: "6px", zIndex: 49, minWidth: 200, boxShadow: "0 16px 40px rgba(0,0,0,0.5)" } as CSSProperties,
+  menuItem: { display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", color: "#F4F2EF", fontSize: 15, fontWeight: 500, padding: "12px 14px", cursor: "pointer", borderRadius: 9, fontFamily: "inherit" } as CSSProperties,
+  menuDivider: { height: 1, background: "#2A2623", margin: "4px 0" },
   ghostBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" },
   primaryBtn: { background: RED, color: "#fff", border: "none", borderRadius: 9, padding: "10px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer" },
   logBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 7, padding: "5px 11px", fontSize: 12.5, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 },
