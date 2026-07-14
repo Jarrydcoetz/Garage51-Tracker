@@ -33,6 +33,20 @@ const BLANK_BIKE = {
 };
 const RENEWAL_THRESHOLD_DAYS = 14;
 
+const STORAGE_PACKAGES = [
+  { months: 1, label: "1 month" },
+  { months: 3, label: "3 months" },
+  { months: 6, label: "6 months" },
+  { months: 12, label: "12 months" },
+];
+
+// Add N calendar months to a date string (YYYY-MM-DD) or today
+function addMonths(fromDate: string | null, months: number): string {
+  const base = fromDate ? new Date(fromDate) : new Date();
+  base.setMonth(base.getMonth() + months);
+  return base.toISOString().slice(0, 10);
+}
+
 const CSS = `
 .g51-btn{transition:background .15s ease,border-color .15s ease,opacity .15s ease;}
 .g51-ghost:hover{border-color:#5A534D;color:#F4F2EF;}
@@ -82,6 +96,9 @@ export default function StorageBikesScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [selectedPkg, setSelectedPkg] = useState<Record<string, number>>({}); // bikeId → package months
+  const [savingClient, setSavingClient] = useState<Record<string, boolean>>({});
+  const [pendingClient, setPendingClient] = useState<Record<string, { name: string; phone: string; email: string }>>({});
   const [myName, setMyName] = useState<string | null>(null);
   const [bikes, setBikes] = useState<StorageBike[]>([]);
   const [serviceDue, setServiceDue] = useState<ServiceDue[]>([]);
@@ -191,18 +208,58 @@ export default function StorageBikesScreen() {
     await supabase.from("storage_bikes").update({ [field]: value }).eq("id", id);
   }
 
+  function selectPackage(bike: StorageBike, months: number) {
+    // Calculate the new end date from the current start date (or today)
+    const newEnd = addMonths(bike.storage_start_date, months);
+    setSelectedPkg(prev => ({ ...prev, [bike.id]: months }));
+    editBikeLocal(bike.id, { storage_end_date: newEnd });
+    saveBikeField(bike.id, "storage_end_date", newEnd);
+    showToast(`Package set to ${months} month${months > 1 ? "s" : ""} — end date updated to ${formatDate(newEnd)}.`);
+  }
+
   function sendRenewalWhatsApp(bike: StorageBike, enq: StorageEnquiry | undefined) {
     const phone = bike.client_phone || enq?.phone;
     const name = bike.client_name || enq?.customer_name || "there";
     if (!phone) { showToast("No client phone number on file for this bike.", "err"); return; }
-    const rate = bike.monthly_rate ? `AED ${bike.monthly_rate}/month` : "your agreed rate";
+    const months = selectedPkg[bike.id];
+    const rate = bike.monthly_rate || 0;
+    const total = months ? rate * months : rate;
     const endDate = formatDate(bike.storage_end_date);
-    const msg = `Hi ${name}, your motorcycle storage at Garage51 is due for renewal on ${endDate}. Your current rate is ${rate}. Please let us know if you'd like to continue — we'll send a payment link once confirmed. 🏍️`;
+    const bikeName = [bike.make, bike.model, bike.year].filter(Boolean).join(" ") || bike.name;
+    let msg = `Hi ${name}, your motorcycle storage at Garage51 is due for renewal. 🏍️\n\n`;
+    msg += `Bike: ${bikeName}\n`;
+    if (months) {
+      msg += `Package: ${months} month${months > 1 ? "s" : ""}\n`;
+      if (rate) msg += `Total: AED ${total.toLocaleString()}\n`;
+    } else {
+      if (rate) msg += `Monthly rate: AED ${rate.toLocaleString()}\n`;
+    }
+    msg += `New end date: ${endDate}\n\n`;
+    msg += `Reply YES to confirm and we'll send over your payment link.`;
     window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
   }
 
+  async function createRenewalPaymentLink(bike: StorageBike) {
+    const months = selectedPkg[bike.id] || 1;
+    const amount = (bike.monthly_rate || 0) * months;
+    if (amount < 2) { showToast("Set a monthly rate first so we know the amount.", "err"); return; }
+    try {
+      const res = await fetch("/api/payment-link", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ amount, description: `Storage renewal — ${months} month${months > 1 ? "s" : ""} — ${bike.name}` }),
+      });
+      const json = await res.json();
+      if (json.url) {
+        await navigator.clipboard.writeText(json.url);
+        showToast("Payment link copied to clipboard.");
+      } else {
+        showToast(json.error || "Could not create payment link.", "err");
+      }
+    } catch { showToast("Could not reach payment service.", "err"); }
+  }
+
   async function createRenewalInvoice(bike: StorageBike) {
-    if (!bike.enquiry_id) { showToast("No linked booking — can't create Zoho invoice without one.", "err"); return; }
+    if (!bike.enquiry_id) { showToast("No linked booking — Zoho invoice requires a linked storage booking.", "err"); return; }
     try {
       const res = await fetch("/api/zoho/create-invoice", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -212,6 +269,40 @@ export default function StorageBikesScreen() {
       if (json.invoiceNumber) showToast(`Invoice ${json.invoiceNumber} created in Zoho Books.`);
       else showToast(json.error || "Could not create invoice.", "err");
     } catch { showToast("Could not reach Zoho.", "err"); }
+  }
+
+  async function saveClientInfo(bike: StorageBike) {
+    const pending = pendingClient[bike.id];
+    if (!pending) { showToast("No changes to save."); return; }
+    setSavingClient(prev => ({ ...prev, [bike.id]: true }));
+    const { error } = await supabase.from("storage_bikes").update({
+      client_name: pending.name.trim() || null,
+      client_phone: pending.phone.trim() || null,
+      client_email: pending.email.trim() || null,
+    }).eq("id", bike.id);
+    if (error) { showToast(error.message || "Could not save.", "err"); }
+    else {
+      editBikeLocal(bike.id, {
+        client_name: pending.name.trim() || null,
+        client_phone: pending.phone.trim() || null,
+        client_email: pending.email.trim() || null,
+      });
+      setPendingClient(prev => { const n = { ...prev }; delete n[bike.id]; return n; });
+      showToast("Client info saved.");
+    }
+    setSavingClient(prev => ({ ...prev, [bike.id]: false }));
+  }
+
+  function setPending(bikeId: string, field: "name" | "phone" | "email", value: string, bike: StorageBike) {
+    setPendingClient(prev => ({
+      ...prev,
+      [bikeId]: {
+        name: prev[bikeId]?.name ?? (bike.client_name || ""),
+        phone: prev[bikeId]?.phone ?? (bike.client_phone || ""),
+        email: prev[bikeId]?.email ?? (bike.client_email || ""),
+        [field]: value,
+      },
+    }));
   }
   async function removeBike(bike: StorageBike) {
     await supabase.from("storage_bikes").update({ active: false }).eq("id", bike.id);
@@ -415,23 +506,42 @@ export default function StorageBikesScreen() {
                     <Chevron open={isOpen} />
                   </div>
 
-                  {/* Renewal action strip — always visible when renewal is due or overdue */}
+                  {/* Renewal action strip — package selector + actions */}
                   {(renewStatus === "overdue" || renewStatus === "due_soon") && (
-                    <div style={{ margin: "0 17px 12px", background: renewStatus === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${renewStatus === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                      <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: renewStatus === "overdue" ? RED : AMBER }}>
+                    <div style={{ margin: "0 17px 12px", background: renewStatus === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${renewStatus === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: renewStatus === "overdue" ? RED : AMBER, marginBottom: 10 }}>
                         {renewStatus === "overdue" ? `Renewal ${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue` : `Renewal due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
-                        {bike.monthly_rate ? ` · AED ${bike.monthly_rate}` : ""}
-                      </span>
-                      {clientPhone && (
-                        <button onClick={() => sendRenewalWhatsApp(bike, enq)} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: GREEN, borderColor: GREEN + "55" }}>
-                          WhatsApp renewal
-                        </button>
-                      )}
-                      {bike.enquiry_id && (
-                        <button onClick={() => createRenewalInvoice(bike)} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
-                          Zoho invoice
-                        </button>
-                      )}
+                      </div>
+                      <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 7 }}>SELECT PACKAGE</div>
+                      <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10 }}>
+                        {STORAGE_PACKAGES.map(pkg => {
+                          const isSelected = selectedPkg[bike.id] === pkg.months;
+                          const total = bike.monthly_rate ? bike.monthly_rate * pkg.months : null;
+                          return (
+                            <button key={pkg.months} onClick={() => selectPackage(bike, pkg.months)}
+                              style={{ background: isSelected ? AMBER + "33" : "transparent", border: `1px solid ${isSelected ? AMBER : "#3A352F"}`, borderRadius: 9, color: isSelected ? AMBER : "#B5AEA8", fontSize: 12.5, fontWeight: isSelected ? 700 : 500, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", transition: "all .15s" }}>
+                              {pkg.label}{total ? ` · AED ${total.toLocaleString()}` : ""}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {clientPhone && (
+                          <button onClick={() => sendRenewalWhatsApp(bike, enq)} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: GREEN, borderColor: GREEN + "55" }}>
+                            {selectedPkg[bike.id] ? `WhatsApp — ${selectedPkg[bike.id]}m package` : "WhatsApp renewal"}
+                          </button>
+                        )}
+                        {bike.monthly_rate && selectedPkg[bike.id] && (
+                          <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
+                            Payment link · AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
+                          </button>
+                        )}
+                        {bike.enquiry_id && (
+                          <button onClick={() => createRenewalInvoice(bike)} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: "#6B7280", borderColor: "#3A352F" }}>
+                            Zoho invoice
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -474,26 +584,33 @@ export default function StorageBikesScreen() {
                         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
                           <label style={{ display: "grid", gap: 4, flex: "1 1 140px" }}>
                             <span style={s.ctrlLabel}>Client name</span>
-                            <input className="g51-input" value={bike.client_name || ""}
-                              onChange={e => editBikeLocal(bike.id, { client_name: e.target.value })}
-                              onBlur={e => saveBikeField(bike.id, "client_name", e.target.value || null)}
+                            <input className="g51-input"
+                              value={pendingClient[bike.id]?.name ?? (bike.client_name || "")}
+                              onChange={e => setPending(bike.id, "name", e.target.value, bike)}
                               style={{ ...s.input, padding: "6px 10px" }} />
                           </label>
                           <label style={{ display: "grid", gap: 4, flex: "1 1 140px" }}>
                             <span style={s.ctrlLabel}>Client phone</span>
-                            <input className="g51-input" value={bike.client_phone || ""}
-                              onChange={e => editBikeLocal(bike.id, { client_phone: e.target.value })}
-                              onBlur={e => saveBikeField(bike.id, "client_phone", e.target.value || null)}
+                            <input className="g51-input"
+                              value={pendingClient[bike.id]?.phone ?? (bike.client_phone || "")}
+                              onChange={e => setPending(bike.id, "phone", e.target.value, bike)}
+                              placeholder="+971…"
                               style={{ ...s.input, padding: "6px 10px" }} />
                           </label>
                           <label style={{ display: "grid", gap: 4, flex: "1 1 160px" }}>
                             <span style={s.ctrlLabel}>Client email</span>
-                            <input className="g51-input" value={bike.client_email || ""}
-                              onChange={e => editBikeLocal(bike.id, { client_email: e.target.value })}
-                              onBlur={e => saveBikeField(bike.id, "client_email", e.target.value || null)}
+                            <input className="g51-input"
+                              value={pendingClient[bike.id]?.email ?? (bike.client_email || "")}
+                              onChange={e => setPending(bike.id, "email", e.target.value, bike)}
                               style={{ ...s.input, padding: "6px 10px" }} />
                           </label>
                         </div>
+                        {pendingClient[bike.id] && (
+                          <button onClick={() => saveClientInfo(bike)} disabled={savingClient[bike.id]}
+                            style={{ marginTop: 10, background: GREEN, border: "none", borderRadius: 9, color: "#fff", fontSize: 13, fontWeight: 700, padding: "9px 18px", cursor: "pointer", opacity: savingClient[bike.id] ? 0.6 : 1 }}>
+                            {savingClient[bike.id] ? "Saving…" : "Save client info"}
+                          </button>
+                        )}
                       </div>
                       {overdueItems.length > 0 && (
                         <div style={{ background: RED + "0e", border: `1px solid ${RED}33`, borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
