@@ -202,6 +202,12 @@ export default function OverviewScreen() {
             sub={`${staffByRole("admin")} admin · ${staffByRole("coach")} coach · ${staffByRole("mechanic")} mechanic`}
             onClick={() => router.push("/admin/staff")}
           />
+          <ModuleCard
+            title="Clients"
+            headline={`${enquiries.filter((e, i, a) => a.findIndex(x => x.customer_name === e.customer_name && x.phone === e.phone) === i).length} total`}
+            sub="Booking history, LTV, bikes on file, notes"
+            onClick={() => router.push("/admin/clients")}
+          />
         </div>
       </div>
     </main>
