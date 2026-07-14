@@ -181,30 +181,32 @@ export default function ClientsScreen() {
       if (e.created_at > rec.lastBookingAt) rec.lastBookingAt = e.created_at;
     }
 
-    // Second pass: pick up storage bike owners who have no linked enquiry
+    // Second pass: pick up storage bike owners — even those without a phone yet.
+    // Bikes without a phone are keyed by their ID so they still surface on the
+    // clients page with a "contact info needed" indicator.
     for (const sb of storageBikes) {
       const phone = (sb.client_phone || "").trim();
-      if (!phone) continue;
-      if (!map.has(phone)) {
-        const cli = clientRows.find(c => c.whatsapp === phone);
-        map.set(phone, {
+      const key = phone || `sb:${sb.id}`; // fall back to bike ID so no phone = still visible
+      const bikeName = [sb.make, sb.model, sb.year].filter(Boolean).join(" ") || sb.name;
+
+      if (!map.has(key)) {
+        const cli = phone ? clientRows.find(c => c.whatsapp === phone) : null;
+        map.set(key, {
           phone,
           name: sb.client_name || sb.name,
           email: sb.client_email,
           clientId: cli?.id || null,
-          notes: notes[phone] || "",
+          notes: phone ? (notes[phone] || "") : "",
           enquiries: [],
           ltv: 0,
           outstanding: 0,
           lastBookingAt: new Date(0).toISOString(),
           services: ["motorcycle_storage"],
-          bikes: [[sb.make, sb.model, sb.year].filter(Boolean).join(" ") || sb.name],
+          bikes: [bikeName],
         });
       } else {
-        // Client already exists from an enquiry — just make sure storage shows in services
-        const rec = map.get(phone)!;
+        const rec = map.get(key)!;
         if (!rec.services.includes("motorcycle_storage")) rec.services.push("motorcycle_storage");
-        const bikeName = [sb.make, sb.model, sb.year].filter(Boolean).join(" ") || sb.name;
         if (!rec.bikes.includes(bikeName)) rec.bikes.push(bikeName);
       }
     }
@@ -344,6 +346,11 @@ export default function ClientsScreen() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span style={s.clientName}>{client.name}</span>
+                        {!client.phone && (
+                          <span style={{ ...s.pill, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>
+                            No contact info
+                          </span>
+                        )}
                         {client.outstanding > 0 && (
                           <span style={{ ...s.pill, color: RED, borderColor: RED + "55", background: RED + "15" }}>
                             {aed(client.outstanding)} owed
@@ -353,7 +360,9 @@ export default function ClientsScreen() {
                       <div style={s.clientSub}>
                         {client.services.map(sv => (
                           <span key={sv} style={{ ...s.pill, color: SERVICE_COLORS[sv] || "#9A938D", borderColor: (SERVICE_COLORS[sv] || "#9A938D") + "55", background: (SERVICE_COLORS[sv] || "#9A938D") + "18", fontSize: 10 }}>
-                            {client.enquiries.filter(e => e.service_type === sv).length}× {SERVICE_LABELS[sv] || sv}
+                            {client.enquiries.filter(e => e.service_type === sv).length > 0
+                              ? `${client.enquiries.filter(e => e.service_type === sv).length}× `
+                              : ""}{SERVICE_LABELS[sv] || sv}
                           </span>
                         ))}
                       </div>
@@ -370,12 +379,20 @@ export default function ClientsScreen() {
 
                       {/* Contact row */}
                       <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
-                        <span style={{ fontSize: 13, color: "#9A938D" }}>{client.phone}</span>
-                        {client.email && <span style={{ fontSize: 13, color: "#9A938D" }}>· {client.email}</span>}
-                        <a href={`https://wa.me/${waNumber(client.phone)}`} target="_blank" rel="noreferrer"
-                          style={{ marginLeft: "auto", background: "#1A3A25", color: GREEN, border: `1px solid ${GREEN}55`, borderRadius: 9, padding: "6px 13px", fontSize: 12.5, fontWeight: 600, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                          WhatsApp
-                        </a>
+                        {client.phone ? (
+                          <>
+                            <span style={{ fontSize: 13, color: "#9A938D" }}>{client.phone}</span>
+                            {client.email && <span style={{ fontSize: 13, color: "#9A938D" }}>· {client.email}</span>}
+                            <a href={`https://wa.me/${waNumber(client.phone)}`} target="_blank" rel="noreferrer"
+                              style={{ marginLeft: "auto", background: "#1A3A25", color: GREEN, border: `1px solid ${GREEN}55`, borderRadius: 9, padding: "6px 13px", fontSize: 12.5, fontWeight: 600, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                              WhatsApp
+                            </a>
+                          </>
+                        ) : (
+                          <div style={{ background: AMBER + "18", border: `1px solid ${AMBER}44`, borderRadius: 9, padding: "7px 12px", fontSize: 12.5, color: AMBER, fontWeight: 600 }}>
+                            ⚠ No contact info — open Storage Bikes and fill in this client's phone number
+                          </div>
+                        )}
                       </div>
 
                       {/* Stats */}
