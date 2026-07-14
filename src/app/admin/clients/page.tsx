@@ -45,6 +45,18 @@ type ClientRow = {
   email: string | null;
   notes: string | null;
 };
+type StorageBikeLite = {
+  id: string;
+  client_name: string | null;
+  client_phone: string | null;
+  client_email: string | null;
+  name: string;
+  make: string | null;
+  model: string | null;
+  year: string | null;
+  monthly_rate: number | null;
+  storage_end_date: string | null;
+};
 
 type ClientRecord = {
   phone: string;
@@ -97,6 +109,7 @@ export default function ClientsScreen() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [enquiries, setEnquiries] = useState<EnquiryLite[]>([]);
   const [clientRows, setClientRows] = useState<ClientRow[]>([]);
+  const [storageBikes, setStorageBikes] = useState<StorageBikeLite[]>([]);
   const [search, setSearch] = useState("");
   const [serviceFilter, setServiceFilter] = useState("all");
   const [sort, setSort] = useState<"ltv" | "recent" | "name">("ltv");
@@ -111,12 +124,14 @@ export default function ClientsScreen() {
       if (!data.session) { router.replace("/login"); return; }
       const { data: prof } = await supabase.from("profiles").select("role").eq("id", data.session.user.id).single();
       if (!prof || (prof as { role: string }).role !== "admin") { router.replace("/admin/overview"); return; }
-      const [{ data: enqData }, { data: cliData }] = await Promise.all([
+      const [{ data: enqData }, { data: cliData }, { data: sbData }] = await Promise.all([
         supabase.from("enquiries").select("id,customer_name,phone,email,service_type,estimated_value,paid_at,stage,created_at,bike_details,bike_year,client_id").order("created_at", { ascending: false }),
         supabase.from("clients").select("id,name,whatsapp,email,notes"),
+        supabase.from("storage_bikes").select("id,client_name,client_phone,client_email,name,make,model,year,monthly_rate,storage_end_date").eq("active", true),
       ]);
       setEnquiries((enqData as EnquiryLite[]) || []);
       setClientRows((cliData as ClientRow[]) || []);
+      setStorageBikes((sbData as StorageBikeLite[]) || []);
       // Pre-load notes from clients table
       const notesMap: Record<string, string> = {};
       for (const c of (cliData as ClientRow[]) || []) {
@@ -136,6 +151,8 @@ export default function ClientsScreen() {
   // Build client records by grouping enquiries by phone
   const clients = useMemo<ClientRecord[]>(() => {
     const map = new Map<string, ClientRecord>();
+
+    // First pass: build from enquiries (existing logic)
     for (const e of enquiries) {
       const phone = (e.phone || "").trim();
       if (!phone) continue;
@@ -163,8 +180,37 @@ export default function ClientsScreen() {
       if (e.bike_details && !rec.bikes.includes(e.bike_details)) rec.bikes.push(e.bike_details);
       if (e.created_at > rec.lastBookingAt) rec.lastBookingAt = e.created_at;
     }
+
+    // Second pass: pick up storage bike owners who have no linked enquiry
+    for (const sb of storageBikes) {
+      const phone = (sb.client_phone || "").trim();
+      if (!phone) continue;
+      if (!map.has(phone)) {
+        const cli = clientRows.find(c => c.whatsapp === phone);
+        map.set(phone, {
+          phone,
+          name: sb.client_name || sb.name,
+          email: sb.client_email,
+          clientId: cli?.id || null,
+          notes: notes[phone] || "",
+          enquiries: [],
+          ltv: 0,
+          outstanding: 0,
+          lastBookingAt: new Date(0).toISOString(),
+          services: ["motorcycle_storage"],
+          bikes: [[sb.make, sb.model, sb.year].filter(Boolean).join(" ") || sb.name],
+        });
+      } else {
+        // Client already exists from an enquiry — just make sure storage shows in services
+        const rec = map.get(phone)!;
+        if (!rec.services.includes("motorcycle_storage")) rec.services.push("motorcycle_storage");
+        const bikeName = [sb.make, sb.model, sb.year].filter(Boolean).join(" ") || sb.name;
+        if (!rec.bikes.includes(bikeName)) rec.bikes.push(bikeName);
+      }
+    }
+
     return Array.from(map.values());
-  }, [enquiries, clientRows, notes]);
+  }, [enquiries, clientRows, storageBikes, notes]);
 
   // Filter + sort
   const visible = useMemo(() => {

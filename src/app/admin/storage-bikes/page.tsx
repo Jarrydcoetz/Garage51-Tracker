@@ -14,11 +14,24 @@ const RED = "#ED1C24";
 const AMBER = "#FFB02E";
 const GREEN = "#2FBF71";
 
-type StorageEnquiry = { id: string; customer_name: string; phone: string; bike_details: string | null };
-type StorageBike = { id: string; name: string; enquiry_id: string | null; make: string | null; model: string | null; year: string | null; engine_hours: number; active: boolean };
+type StorageEnquiry = { id: string; customer_name: string; phone: string; email: string | null; bike_details: string | null; storage_start_date: string | null; storage_end_date: string | null };
+type StorageBike = {
+  id: string; name: string; enquiry_id: string | null;
+  make: string | null; model: string | null; year: string | null;
+  engine_hours: number; active: boolean;
+  vin: string | null;
+  storage_start_date: string | null; storage_end_date: string | null;
+  client_name: string | null; client_phone: string | null; client_email: string | null;
+  monthly_rate: number | null;
+};
 type ServiceDue = { id: string; storage_bike_id: string; item_key: string; interval_hours: number; hours_at_last_done: number };
 
-const BLANK_BIKE = { name: "", enquiry_id: "", make: "", model: "", year: "", engine_hours: 0 };
+const BLANK_BIKE = {
+  name: "", enquiry_id: "", make: "", model: "", year: "", engine_hours: 0,
+  vin: "", storage_start_date: "", storage_end_date: "",
+  client_name: "", client_phone: "", client_email: "", monthly_rate: 0,
+};
+const RENEWAL_THRESHOLD_DAYS = 14;
 
 const CSS = `
 .g51-btn{transition:background .15s ease,border-color .15s ease,opacity .15s ease;}
@@ -38,6 +51,23 @@ function waNumber(phone: string): string {
     if (n.startsWith("0")) n = "971" + n.slice(1);
   }
   return n;
+}
+
+function daysUntilRenewal(endDate: string | null): number {
+  if (!endDate) return Infinity;
+  return Math.ceil((new Date(endDate).getTime() - Date.now()) / 86400000);
+}
+type RenewalStatus = "overdue" | "due_soon" | "active" | "no_date";
+function renewalStatus(endDate: string | null): RenewalStatus {
+  if (!endDate) return "no_date";
+  const days = daysUntilRenewal(endDate);
+  if (days < 0) return "overdue";
+  if (days <= RENEWAL_THRESHOLD_DAYS) return "due_soon";
+  return "active";
+}
+function formatDate(d: string | null) {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
 function Chevron({ open }: { open: boolean }) {
@@ -80,7 +110,7 @@ export default function StorageBikesScreen() {
         supabase.from("storage_bikes").select("*").eq("active", true).order("name"),
         supabase.from("storage_bikes_service_due").select("*"),
         supabase.from("storage_bikes_service_log").select("*").order("created_at", { ascending: false }),
-        supabase.from("enquiries").select("id, customer_name, phone, bike_details").eq("service_type", "motorcycle_storage"),
+        supabase.from("enquiries").select("id, customer_name, phone, email, bike_details, storage_start_date, storage_end_date").eq("service_type", "motorcycle_storage"),
       ]);
       const bikeList = (b as StorageBike[]) || [];
       setBikes(bikeList);
@@ -110,6 +140,11 @@ export default function StorageBikesScreen() {
     setForm(prev => ({
       ...prev, enquiry_id: enquiryId,
       name: enq ? `${enq.customer_name} — ${enq.bike_details || "bike"}` : prev.name,
+      client_name: enq ? enq.customer_name : prev.client_name,
+      client_phone: enq ? (enq.phone || "") : prev.client_phone,
+      client_email: enq ? (enq.email || "") : prev.client_email,
+      storage_start_date: enq?.storage_start_date || prev.storage_start_date,
+      storage_end_date: enq?.storage_end_date || prev.storage_end_date,
     }));
   }
 
@@ -151,6 +186,33 @@ export default function StorageBikesScreen() {
   async function saveBikeHours(id: string, hours: number) {
     await supabase.from("storage_bikes").update({ engine_hours: hours }).eq("id", id);
   }
+  async function saveBikeField(id: string, field: string, value: string | number | null) {
+    editBikeLocal(id, { [field]: value } as Partial<StorageBike>);
+    await supabase.from("storage_bikes").update({ [field]: value }).eq("id", id);
+  }
+
+  function sendRenewalWhatsApp(bike: StorageBike, enq: StorageEnquiry | undefined) {
+    const phone = bike.client_phone || enq?.phone;
+    const name = bike.client_name || enq?.customer_name || "there";
+    if (!phone) { showToast("No client phone number on file for this bike.", "err"); return; }
+    const rate = bike.monthly_rate ? `AED ${bike.monthly_rate}/month` : "your agreed rate";
+    const endDate = formatDate(bike.storage_end_date);
+    const msg = `Hi ${name}, your motorcycle storage at Garage51 is due for renewal on ${endDate}. Your current rate is ${rate}. Please let us know if you'd like to continue — we'll send a payment link once confirmed. 🏍️`;
+    window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
+  }
+
+  async function createRenewalInvoice(bike: StorageBike) {
+    if (!bike.enquiry_id) { showToast("No linked booking — can't create Zoho invoice without one.", "err"); return; }
+    try {
+      const res = await fetch("/api/zoho/create-invoice", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enquiryId: bike.enquiry_id }),
+      });
+      const json = await res.json();
+      if (json.invoiceNumber) showToast(`Invoice ${json.invoiceNumber} created in Zoho Books.`);
+      else showToast(json.error || "Could not create invoice.", "err");
+    } catch { showToast("Could not reach Zoho.", "err"); }
+  }
   async function removeBike(bike: StorageBike) {
     await supabase.from("storage_bikes").update({ active: false }).eq("id", bike.id);
     setBikes(prev => prev.filter(b => b.id !== bike.id));
@@ -165,6 +227,13 @@ export default function StorageBikesScreen() {
       name: form.name.trim(), enquiry_id: form.enquiry_id || null,
       make: form.make.trim() || null, model: form.model.trim() || null,
       year: form.year.trim() || null, engine_hours: startingHours,
+      vin: form.vin.trim() || null,
+      storage_start_date: form.storage_start_date || null,
+      storage_end_date: form.storage_end_date || null,
+      client_name: form.client_name.trim() || null,
+      client_phone: form.client_phone.trim() || null,
+      client_email: form.client_email.trim() || null,
+      monthly_rate: Number(form.monthly_rate) || null,
     }).select().single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not add bike."); return; }
     const bike = data as StorageBike;
@@ -254,8 +323,23 @@ export default function StorageBikesScreen() {
               <label style={s.ctrl}><span style={s.ctrlLabel}>Year</span><input className="g51-input" value={form.year} onChange={e => set("year", e.target.value)} style={s.input} /></label>
             </div>
             <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>VIN</span><input className="g51-input" value={form.vin} onChange={e => set("vin", e.target.value)} placeholder="Chassis / VIN number" style={s.input} /></label>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Current engine hours</span>
                 <input className="g51-input" type="number" value={form.engine_hours} onChange={e => set("engine_hours", Number(e.target.value))} style={s.input} /></label>
+            </div>
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Storage start date</span>
+                <input className="g51-input" type="date" value={form.storage_start_date} onChange={e => set("storage_start_date", e.target.value)} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Storage end / renewal date</span>
+                <input className="g51-input" type="date" value={form.storage_end_date} onChange={e => set("storage_end_date", e.target.value)} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Monthly rate (AED)</span>
+                <input className="g51-input" type="number" value={form.monthly_rate} onChange={e => set("monthly_rate", Number(e.target.value))} style={s.input} /></label>
+            </div>
+            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", margin: "12px 0 6px" }}>CLIENT INFO (auto-filled if linked to a booking)</div>
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Client name</span><input className="g51-input" value={form.client_name} onChange={e => set("client_name", e.target.value)} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Client phone</span><input className="g51-input" value={form.client_phone} onChange={e => set("client_phone", e.target.value)} placeholder="+971…" style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Client email</span><input className="g51-input" value={form.client_email} onChange={e => set("client_email", e.target.value)} style={s.input} /></label>
             </div>
             {addError && <p style={{ color: "#FF6B6B", fontSize: 13, margin: "10px 0 0" }}>{addError}</p>}
             <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
@@ -284,6 +368,10 @@ export default function StorageBikesScreen() {
               const bikeLog = serviceLog.filter(e => e.storage_bike_id === bike.id).slice(0, 8);
               const isLast = idx === bikes.length - 1;
               const hasDue = overdueItems.length > 0 || dueSoonItems.length > 0;
+              const renewStatus = renewalStatus(bike.storage_end_date);
+              const daysLeft = daysUntilRenewal(bike.storage_end_date);
+              const clientPhone = bike.client_phone || enq?.phone;
+              const clientName = bike.client_name || enq?.customer_name;
 
               return (
                 <div key={bike.id} className="g51-bike-card" style={{ ...(isLast ? { borderBottom: "none" } : {}) }}>
@@ -291,15 +379,17 @@ export default function StorageBikesScreen() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span style={s.bikeName}>{bike.name}</span>
-                        {overdueItems.length > 0 && <span style={{ ...s.badge, color: RED, borderColor: RED + "55", background: RED + "18" }}>⚠ {overdueItems.length} overdue</span>}
-                        {dueSoonItems.length > 0 && overdueItems.length === 0 && <span style={{ ...s.badge, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>⏰ {dueSoonItems.length} due soon</span>}
-                        {hasDue && enq?.phone && (
-                          <button onClick={e => { e.stopPropagation(); requestFromClient(bike, [...overdueItems, ...dueSoonItems]); }} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: AMBER, borderColor: AMBER + "55" }}>Request from client</button>
+                        {renewStatus === "overdue" && <span style={{ ...s.badge, color: RED, borderColor: RED + "55", background: RED + "18" }}>🔴 Renewal overdue</span>}
+                        {renewStatus === "due_soon" && <span style={{ ...s.badge, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>⏰ Renewal in {daysLeft}d</span>}
+                        {overdueItems.length > 0 && <span style={{ ...s.badge, color: RED, borderColor: RED + "55", background: RED + "18" }}>⚠ {overdueItems.length} service overdue</span>}
+                        {hasDue && clientPhone && (
+                          <button onClick={e => { e.stopPropagation(); requestFromClient(bike, [...overdueItems, ...dueSoonItems]); }} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: AMBER, borderColor: AMBER + "55" }}>Request service</button>
                         )}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
-                        <span style={s.bikeSub}>{enq ? `${enq.customer_name}'s booking` : "No linked booking"}</span>
+                        <span style={s.bikeSub}>{clientName ? `${clientName}` : (enq ? `${enq.customer_name}` : "No client info")}</span>
                         {(bike.make || bike.model) && <><span style={s.dotSep}>·</span><span style={s.bikeSub}>{[bike.make, bike.model, bike.year].filter(Boolean).join(" ")}</span></>}
+                        {bike.vin && <><span style={s.dotSep}>·</span><span style={s.bikeSub}>VIN: {bike.vin}</span></>}
                         <span style={s.dotSep}>·</span>
                         <label style={{ display: "inline-flex", alignItems: "center", gap: 5 }} onClick={e => e.stopPropagation()}>
                           <input className="g51-input" type="number" value={bike.engine_hours}
@@ -309,24 +399,102 @@ export default function StorageBikesScreen() {
                           <span style={s.bikeSub}>h</span>
                         </label>
                       </div>
+                      {/* Storage period */}
+                      {(bike.storage_start_date || bike.storage_end_date) && (
+                        <div style={{ fontSize: 11.5, color: renewStatus === "overdue" ? RED : renewStatus === "due_soon" ? AMBER : "#6F6862", marginTop: 4 }}>
+                          📅 {formatDate(bike.storage_start_date)} → {formatDate(bike.storage_end_date)}
+                          {bike.monthly_rate ? ` · AED ${bike.monthly_rate}/mo` : ""}
+                        </div>
+                      )}
                       <div style={{ display: "flex", height: 4, borderRadius: 2, overflow: "hidden", marginTop: 8, background: "#2A2623", gap: 1 }}>
                         {overdueWidth > 0 && <div style={{ width: `${overdueWidth}%`, background: RED }} />}
                         {dueSoonWidth > 0 && <div style={{ width: `${dueSoonWidth}%`, background: AMBER }} />}
                         {okWidth > 0 && <div style={{ width: `${okWidth}%`, background: GREEN + "55" }} />}
                       </div>
-                      <div style={{ fontSize: 10.5, color: "#6F6862", marginTop: 4 }}>
-                        {overdueItems.length > 0 && <span style={{ color: RED }}>{overdueItems.length} overdue</span>}
-                        {overdueItems.length > 0 && dueSoonItems.length > 0 && " · "}
-                        {dueSoonItems.length > 0 && <span style={{ color: AMBER }}>{dueSoonItems.length} due soon</span>}
-                        {(overdueItems.length > 0 || dueSoonItems.length > 0) && okItems.length > 0 && " · "}
-                        {okItems.length > 0 && <span style={{ color: GREEN }}>{okItems.length} ok</span>}
-                      </div>
                     </div>
                     <Chevron open={isOpen} />
                   </div>
 
+                  {/* Renewal action strip — always visible when renewal is due or overdue */}
+                  {(renewStatus === "overdue" || renewStatus === "due_soon") && (
+                    <div style={{ margin: "0 17px 12px", background: renewStatus === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${renewStatus === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: renewStatus === "overdue" ? RED : AMBER }}>
+                        {renewStatus === "overdue" ? `Renewal ${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue` : `Renewal due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
+                        {bike.monthly_rate ? ` · AED ${bike.monthly_rate}` : ""}
+                      </span>
+                      {clientPhone && (
+                        <button onClick={() => sendRenewalWhatsApp(bike, enq)} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: GREEN, borderColor: GREEN + "55" }}>
+                          WhatsApp renewal
+                        </button>
+                      )}
+                      {bike.enquiry_id && (
+                        <button onClick={() => createRenewalInvoice(bike)} className="g51-btn g51-ghost" style={{ ...s.logBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
+                          Zoho invoice
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   {isOpen && (
                     <div style={{ padding: "0 17px 16px" }}>
+                      {/* Editable storage fields */}
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 8 }}>STORAGE & CLIENT DETAILS</div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          <label style={{ display: "grid", gap: 4, flex: "1 1 140px" }}>
+                            <span style={s.ctrlLabel}>Storage start</span>
+                            <input className="g51-input" type="date" value={bike.storage_start_date || ""}
+                              onChange={e => editBikeLocal(bike.id, { storage_start_date: e.target.value || null })}
+                              onBlur={e => saveBikeField(bike.id, "storage_start_date", e.target.value || null)}
+                              style={{ ...s.input, padding: "6px 10px" }} />
+                          </label>
+                          <label style={{ display: "grid", gap: 4, flex: "1 1 140px" }}>
+                            <span style={s.ctrlLabel}>Renewal date</span>
+                            <input className="g51-input" type="date" value={bike.storage_end_date || ""}
+                              onChange={e => editBikeLocal(bike.id, { storage_end_date: e.target.value || null })}
+                              onBlur={e => saveBikeField(bike.id, "storage_end_date", e.target.value || null)}
+                              style={{ ...s.input, padding: "6px 10px" }} />
+                          </label>
+                          <label style={{ display: "grid", gap: 4, flex: "1 1 120px" }}>
+                            <span style={s.ctrlLabel}>Monthly rate (AED)</span>
+                            <input className="g51-input" type="number" value={bike.monthly_rate || ""}
+                              onChange={e => editBikeLocal(bike.id, { monthly_rate: Number(e.target.value) || null })}
+                              onBlur={e => saveBikeField(bike.id, "monthly_rate", Number(e.target.value) || null)}
+                              style={{ ...s.input, padding: "6px 10px" }} />
+                          </label>
+                          <label style={{ display: "grid", gap: 4, flex: "1 1 160px" }}>
+                            <span style={s.ctrlLabel}>VIN</span>
+                            <input className="g51-input" value={bike.vin || ""}
+                              onChange={e => editBikeLocal(bike.id, { vin: e.target.value })}
+                              onBlur={e => saveBikeField(bike.id, "vin", e.target.value || null)}
+                              placeholder="Chassis / VIN"
+                              style={{ ...s.input, padding: "6px 10px" }} />
+                          </label>
+                        </div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 8 }}>
+                          <label style={{ display: "grid", gap: 4, flex: "1 1 140px" }}>
+                            <span style={s.ctrlLabel}>Client name</span>
+                            <input className="g51-input" value={bike.client_name || ""}
+                              onChange={e => editBikeLocal(bike.id, { client_name: e.target.value })}
+                              onBlur={e => saveBikeField(bike.id, "client_name", e.target.value || null)}
+                              style={{ ...s.input, padding: "6px 10px" }} />
+                          </label>
+                          <label style={{ display: "grid", gap: 4, flex: "1 1 140px" }}>
+                            <span style={s.ctrlLabel}>Client phone</span>
+                            <input className="g51-input" value={bike.client_phone || ""}
+                              onChange={e => editBikeLocal(bike.id, { client_phone: e.target.value })}
+                              onBlur={e => saveBikeField(bike.id, "client_phone", e.target.value || null)}
+                              style={{ ...s.input, padding: "6px 10px" }} />
+                          </label>
+                          <label style={{ display: "grid", gap: 4, flex: "1 1 160px" }}>
+                            <span style={s.ctrlLabel}>Client email</span>
+                            <input className="g51-input" value={bike.client_email || ""}
+                              onChange={e => editBikeLocal(bike.id, { client_email: e.target.value })}
+                              onBlur={e => saveBikeField(bike.id, "client_email", e.target.value || null)}
+                              style={{ ...s.input, padding: "6px 10px" }} />
+                          </label>
+                        </div>
+                      </div>
                       {overdueItems.length > 0 && (
                         <div style={{ background: RED + "0e", border: `1px solid ${RED}33`, borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
                           <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: RED, marginBottom: 8 }}>OVERDUE — CLIENT APPROVAL MAY BE NEEDED</div>
