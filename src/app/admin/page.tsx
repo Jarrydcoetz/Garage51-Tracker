@@ -133,7 +133,7 @@ const BLANK = {
   customer_name: "", phone: "", email: "", service_type: "academy",
   source: "whatsapp", stage: "new", estimated_value: 0, booking_at: "", notes: "",
   storage_start_date: "", storage_end_date: "", bike_category: "adult", storage_term: "month_to_month",
-  preferred_date: "",
+  preferred_date: "", sessions_total: 1,
 };
 
 // ---- session / state helpers ----------------------------------------------
@@ -848,6 +848,7 @@ export default function Admin() {
     setCreating(true); setAddError("");
     const isStorage = form.service_type === "motorcycle_storage";
     const isWorkshop = form.service_type === "workshop";
+    const sessionsTotal = Math.max(1, Number(form.sessions_total) || 1);
     const { data, error } = await supabase.from("enquiries").insert({
       customer_name: form.customer_name,
       phone: form.phone,
@@ -856,6 +857,7 @@ export default function Admin() {
       source: form.source,
       stage: form.stage,
       estimated_value: Number(form.estimated_value) || 0,
+      sessions_total: sessionsTotal,
       booking_at: (isStorage || isWorkshop) ? null : (form.booking_at || null),
       preferred_date: isWorkshop ? (form.preferred_date || null) : null,
       storage_start_date: isStorage ? (form.storage_start_date || null) : null,
@@ -863,6 +865,10 @@ export default function Admin() {
       bike_category: isStorage ? form.bike_category : null,
       storage_term: isStorage ? form.storage_term : null,
       notes: form.notes || "",
+      // Non-admins are auto-assigned to themselves so the booking immediately
+      // appears in their filtered view — a coach creating a booking for their
+      // own student shouldn't have to manually assign it to themselves.
+      assigned_to: me?.role !== "admin" ? me?.id || null : null,
     }).select("*, sessions(*)").single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not create booking."); return; }
     const enq = data as Enquiry;
@@ -879,6 +885,7 @@ export default function Admin() {
     setRows(prev => [enq, ...prev]);
     setForm({ ...BLANK });
     setAdding(false);
+    showToast(`Booking created for ${form.customer_name}.`);
   }
 
   function exportCsv() {
@@ -1102,6 +1109,10 @@ export default function Admin() {
             <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>{form.service_type === "motorcycle_storage" ? (form.storage_term === "month_to_month" ? "Monthly rate (AED)" : "Total for term (AED)") : "Est. value (AED)"}</span>
                 <input className="g51-input" type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
+              {!["motorcycle_storage", "workshop"].includes(form.service_type) && (
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Package size (sessions)</span>
+                  <input className="g51-input" type="number" min={1} value={form.sessions_total} onChange={e => set("sessions_total", Math.max(1, Number(e.target.value) || 1))} style={s.input} /></label>
+              )}
               {form.service_type === "motorcycle_storage" ? (
                 <>
                   <label style={s.ctrl}><span style={s.ctrlLabel}>Drop-off date</span>
