@@ -9,7 +9,7 @@ import { isItemDue } from "../../../lib/bikeServiceShared";
 
 const RED = "#ED1C24";
 
-type EnquiryLite = { id: string; service_type: string; stage: string; estimated_value: number; paid_at: string | null; job_status: string | null };
+type EnquiryLite = { id: string; service_type: string; stage: string; estimated_value: number; paid_at: string | null; job_status: string | null; phone: string | null };
 type BikeLite = { id: string; engine_hours: number };
 type FleetDueLite = { bike_id: string; interval_hours: number; hours_at_last_done: number };
 type StorageDueLite = { storage_bike_id: string; interval_hours: number; hours_at_last_done: number };
@@ -70,7 +70,7 @@ export default function OverviewScreen() {
         { data: storageData }, { data: storageDueData },
         { data: staffData },
       ] = await Promise.all([
-        supabase.from("enquiries").select("id, service_type, stage, estimated_value, paid_at, job_status"),
+        supabase.from("enquiries").select("id, service_type, stage, estimated_value, paid_at, job_status, phone"),
         supabase.from("parts").select("*").eq("active", true),
         supabase.from("stock_movements").select("part_id, quantity"),
         supabase.from("fleet_bikes").select("id, engine_hours").eq("active", true),
@@ -204,7 +204,7 @@ export default function OverviewScreen() {
           />
           <ModuleCard
             title="Clients"
-            headline={`${enquiries.filter((e, i, a) => a.findIndex(x => x.customer_name === e.customer_name && x.phone === e.phone) === i).length} total`}
+            headline={`${new Set(enquiries.map(e => e.phone).filter(Boolean)).size} total`}
             sub="Booking history, LTV, bikes on file, notes"
             onClick={() => router.push("/admin/clients")}
           />
