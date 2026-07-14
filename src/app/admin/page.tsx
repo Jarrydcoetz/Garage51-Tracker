@@ -1049,8 +1049,10 @@ export default function Admin() {
           <button onClick={() => router.push("/admin/fleet")} className="g51-btn g51-ghost" style={s.ghostBtn}>Fleet</button>
           <button onClick={() => router.push("/admin/storage-bikes")} className="g51-btn g51-ghost" style={s.ghostBtn}>Storage Bikes</button>
           {me?.role === "admin" && (
-            <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
-            <button onClick={() => router.push("/admin/clients")} className="g51-btn g51-ghost" style={s.ghostBtn}>Clients</button>
+            <>
+              <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
+              <button onClick={() => router.push("/admin/clients")} className="g51-btn g51-ghost" style={s.ghostBtn}>Clients</button>
+            </>
           )}
           <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
         </div>
