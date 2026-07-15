@@ -44,6 +44,9 @@ type ClientRow = {
   whatsapp: string | null;
   email: string | null;
   notes: string | null;
+  guardian_id: string | null;
+  is_minor: boolean;
+  relationship: string | null;
 };
 type StorageBikeLite = {
   id: string;
@@ -70,6 +73,12 @@ type ClientRecord = {
   lastBookingAt: string;
   services: string[];
   bikes: string[];
+  // Guardian / dependent relationships
+  guardianPhone: string | null;
+  guardianName: string | null;
+  relationship: string | null;
+  dependents: { phone: string; name: string; relationship: string | null }[];
+  isMinor: boolean;
 };
 
 function initials(name: string) {
@@ -116,6 +125,12 @@ export default function ClientsScreen() {
   const [outstandingOnly, setOutstandingOnly] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [notes, setNotes] = useState<Record<string, string>>({});
+  const [editMode, setEditMode] = useState<string | null>(null); // phone of client being edited
+  const [editForm, setEditForm] = useState({ name: "", phone: "", email: "", relationship: "", isMinor: false });
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [linkingGuardian, setLinkingGuardian] = useState<string | null>(null); // phone of dependent
+  const [guardianSearch, setGuardianSearch] = useState("");
+  const [savingLink, setSavingLink] = useState(false);
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -126,7 +141,7 @@ export default function ClientsScreen() {
       if (!prof || (prof as { role: string }).role !== "admin") { router.replace("/admin/overview"); return; }
       const [{ data: enqData }, { data: cliData }, { data: sbData }] = await Promise.all([
         supabase.from("enquiries").select("id,customer_name,phone,email,service_type,estimated_value,paid_at,stage,created_at,bike_details,bike_year,client_id").order("created_at", { ascending: false }),
-        supabase.from("clients").select("id,name,whatsapp,email,notes"),
+        supabase.from("clients").select("id,name,whatsapp,email,notes,guardian_id,is_minor,relationship"),
         supabase.from("storage_bikes").select("id,client_name,client_phone,client_email,name,make,model,year,monthly_rate,storage_end_date").eq("active", true),
       ]);
       setEnquiries((enqData as EnquiryLite[]) || []);
@@ -152,7 +167,7 @@ export default function ClientsScreen() {
   const clients = useMemo<ClientRecord[]>(() => {
     const map = new Map<string, ClientRecord>();
 
-    // First pass: build from enquiries (existing logic)
+    // First pass: build from enquiries
     for (const e of enquiries) {
       const phone = (e.phone || "").trim();
       if (!phone) continue;
@@ -160,16 +175,16 @@ export default function ClientsScreen() {
         const cli = clientRows.find(c => c.whatsapp === phone);
         map.set(phone, {
           phone,
-          name: e.customer_name,
-          email: e.email,
+          name: cli?.name || e.customer_name,
+          email: cli?.email || e.email,
           clientId: cli?.id || null,
           notes: notes[phone] || "",
           enquiries: [],
-          ltv: 0,
-          outstanding: 0,
+          ltv: 0, outstanding: 0,
           lastBookingAt: e.created_at,
-          services: [],
-          bikes: [],
+          services: [], bikes: [],
+          guardianPhone: null, guardianName: null, relationship: cli?.relationship || null,
+          dependents: [], isMinor: cli?.is_minor || false,
         });
       }
       const rec = map.get(phone)!;
@@ -181,33 +196,57 @@ export default function ClientsScreen() {
       if (e.created_at > rec.lastBookingAt) rec.lastBookingAt = e.created_at;
     }
 
-    // Second pass: pick up storage bike owners — even those without a phone yet.
-    // Bikes without a phone are keyed by their ID so they still surface on the
-    // clients page with a "contact info needed" indicator.
+    // Second pass: storage bike owners
     for (const sb of storageBikes) {
       const phone = (sb.client_phone || "").trim();
-      const key = phone || `sb:${sb.id}`; // fall back to bike ID so no phone = still visible
+      const key = phone || `sb:${sb.id}`;
       const bikeName = [sb.make, sb.model, sb.year].filter(Boolean).join(" ") || sb.name;
-
       if (!map.has(key)) {
         const cli = phone ? clientRows.find(c => c.whatsapp === phone) : null;
         map.set(key, {
           phone,
-          name: sb.client_name || sb.name,
-          email: sb.client_email,
+          name: cli?.name || sb.client_name || sb.name,
+          email: cli?.email || sb.client_email,
           clientId: cli?.id || null,
           notes: phone ? (notes[phone] || "") : "",
-          enquiries: [],
-          ltv: 0,
-          outstanding: 0,
+          enquiries: [], ltv: 0, outstanding: 0,
           lastBookingAt: new Date(0).toISOString(),
-          services: ["motorcycle_storage"],
-          bikes: [bikeName],
+          services: ["motorcycle_storage"], bikes: [bikeName],
+          guardianPhone: null, guardianName: null, relationship: cli?.relationship || null,
+          dependents: [], isMinor: cli?.is_minor || false,
         });
       } else {
         const rec = map.get(key)!;
         if (!rec.services.includes("motorcycle_storage")) rec.services.push("motorcycle_storage");
         if (!rec.bikes.includes(bikeName)) rec.bikes.push(bikeName);
+      }
+    }
+
+    // Third pass: resolve guardian relationships using clients table
+    // Build a map of clientId → phone for quick lookup
+    const idToPhone = new Map<string, string>();
+    for (const rec of map.values()) {
+      if (rec.clientId) idToPhone.set(rec.clientId, rec.phone);
+    }
+    for (const row of clientRows) {
+      if (row.guardian_id && row.whatsapp) {
+        const dependentPhone = row.whatsapp;
+        const guardianPhone = idToPhone.get(row.guardian_id) || null;
+        const dependentRec = map.get(dependentPhone);
+        if (dependentRec && guardianPhone) {
+          dependentRec.guardianPhone = guardianPhone;
+          dependentRec.relationship = row.relationship;
+          const guardianRec = map.get(guardianPhone);
+          if (guardianRec) {
+            const guardianName = guardianRec.name;
+            dependentRec.guardianName = guardianName;
+            guardianRec.dependents.push({
+              phone: dependentPhone,
+              name: dependentRec.name,
+              relationship: row.relationship,
+            });
+          }
+        }
       }
     }
 
@@ -228,6 +267,75 @@ export default function ClientsScreen() {
     if (sort === "name") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
     return list;
   }, [clients, search, serviceFilter, outstandingOnly, sort]);
+
+  // Ensure a proper clients record exists; create one if not — needed before
+  // saving guardian links, since both parties must have a record to reference.
+  async function ensureClientRecord(client: ClientRecord): Promise<string> {
+    if (client.clientId) return client.clientId;
+    const { data } = await supabase.from("clients").insert({
+      name: client.name, whatsapp: client.phone, email: client.email,
+    }).select().single();
+    if (data) {
+      setClientRows(prev => [...prev, data as ClientRow]);
+      return (data as ClientRow).id;
+    }
+    throw new Error("Could not create client record.");
+  }
+
+  function openEdit(client: ClientRecord) {
+    setEditForm({
+      name: client.name,
+      phone: client.phone,
+      email: client.email || "",
+      relationship: client.relationship || "",
+      isMinor: client.isMinor,
+    });
+    setEditMode(client.phone);
+  }
+
+  async function saveClientEdit(client: ClientRecord) {
+    setSavingEdit(true);
+    const patch = {
+      name: editForm.name.trim() || null,
+      whatsapp: editForm.phone.trim() || null,
+      email: editForm.email.trim() || null,
+      relationship: editForm.relationship.trim() || null,
+      is_minor: editForm.isMinor,
+    };
+    try {
+      if (client.clientId) {
+        await supabase.from("clients").update(patch).eq("id", client.clientId);
+        setClientRows(prev => prev.map(r => r.id === client.clientId ? { ...r, ...patch } : r));
+      } else {
+        const { data } = await supabase.from("clients").insert({ ...patch }).select().single();
+        if (data) setClientRows(prev => [...prev, data as ClientRow]);
+      }
+      showToast("Client details saved.");
+      setEditMode(null);
+    } catch { showToast("Could not save.", "err"); }
+    setSavingEdit(false);
+  }
+
+  async function linkGuardian(dependent: ClientRecord, guardian: ClientRecord) {
+    setSavingLink(true);
+    try {
+      const dependentId = await ensureClientRecord(dependent);
+      const guardianId = await ensureClientRecord(guardian);
+      await supabase.from("clients").update({ guardian_id: guardianId, is_minor: true }).eq("id", dependentId);
+      setClientRows(prev => prev.map(r => r.id === dependentId ? { ...r, guardian_id: guardianId, is_minor: true } : r));
+      showToast(`${dependent.name} linked to ${guardian.name}.`);
+      setLinkingGuardian(null);
+      setGuardianSearch("");
+    } catch { showToast("Could not link guardian.", "err"); }
+    setSavingLink(false);
+  }
+
+  async function unlinkGuardian(client: ClientRecord) {
+    if (!client.clientId) return;
+    await supabase.from("clients").update({ guardian_id: null, is_minor: false }).eq("id", client.clientId);
+    setClientRows(prev => prev.map(r => r.id === client.clientId ? { ...r, guardian_id: null, is_minor: false } : r));
+    showToast("Guardian unlinked.");
+  }
 
   async function saveNotes(phone: string, text: string) {
     setNotes(prev => ({ ...prev, [phone]: text }));
@@ -346,11 +454,14 @@ export default function ClientsScreen() {
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span style={s.clientName}>{client.name}</span>
-                        {!client.phone && (
-                          <span style={{ ...s.pill, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>
-                            No contact info
+                        {client.isMinor && <span style={{ ...s.pill, color: "#A78BFA", borderColor: "#A78BFA55", background: "#A78BFA18" }}>Minor</span>}
+                        {client.guardianName && <span style={{ fontSize: 11.5, color: "#6F6862" }}>via {client.guardianName}</span>}
+                        {client.dependents.length > 0 && (
+                          <span style={{ ...s.pill, color: "#A78BFA", borderColor: "#A78BFA55", background: "#A78BFA18" }}>
+                            {client.dependents.length} dependent{client.dependents.length > 1 ? "s" : ""}
                           </span>
                         )}
+                        {!client.phone && <span style={{ ...s.pill, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>No contact info</span>}
                         {client.outstanding > 0 && (
                           <span style={{ ...s.pill, color: RED, borderColor: RED + "55", background: RED + "15" }}>
                             {aed(client.outstanding)} owed
@@ -377,30 +488,124 @@ export default function ClientsScreen() {
                   {isOpen && (
                     <div style={{ padding: "0 17px 18px", borderTop: "1px solid #2A2623" }}>
 
-                      {/* Contact row */}
-                      <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
-                        {client.phone ? (
-                          <>
-                            <span style={{ fontSize: 13, color: "#9A938D" }}>{client.phone}</span>
-                            {client.email && <span style={{ fontSize: 13, color: "#9A938D" }}>· {client.email}</span>}
-                            <a href={`https://wa.me/${waNumber(client.phone)}`} target="_blank" rel="noreferrer"
-                              style={{ marginLeft: "auto", background: "#1A3A25", color: GREEN, border: `1px solid ${GREEN}55`, borderRadius: 9, padding: "6px 13px", fontSize: 12.5, fontWeight: 600, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                              WhatsApp
-                            </a>
-                          </>
-                        ) : (
-                          <div style={{ background: AMBER + "18", border: `1px solid ${AMBER}44`, borderRadius: 9, padding: "7px 12px", fontSize: 12.5, color: AMBER, fontWeight: 600 }}>
-                            ⚠ No contact info — open Storage Bikes and fill in this client's phone number
+                      {/* Guardian/Dependent badge */}
+                      {client.guardianPhone && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, background: "#A78BFA18", border: "1px solid #A78BFA44", borderRadius: 9, padding: "8px 12px", flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 12.5, color: "#A78BFA", fontWeight: 600 }}>
+                            👨‍👦 Guardian: {client.guardianName || client.guardianPhone}
+                            {client.relationship ? ` (${client.relationship})` : ""}
+                          </span>
+                          <button onClick={() => unlinkGuardian(client)}
+                            style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer" }}>
+                            Unlink
+                          </button>
+                        </div>
+                      )}
+                      {client.dependents.length > 0 && (
+                        <div style={{ marginTop: 12, background: "#A78BFA18", border: "1px solid #A78BFA44", borderRadius: 9, padding: "8px 12px" }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#A78BFA", marginBottom: 6 }}>DEPENDENTS / MINOR STUDENTS</div>
+                          {client.dependents.map(dep => (
+                            <div key={dep.phone} style={{ fontSize: 13, color: "#C9C2BC", marginBottom: 3 }}>
+                              👤 {dep.name}{dep.relationship ? ` — ${dep.relationship}` : ""} <span style={{ color: "#6F6862" }}>· {dep.phone}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Contact row + Edit */}
+                      {editMode === client.phone ? (
+                        <div style={{ marginTop: 14, background: "#1B1816", border: "1px solid #322E2A", borderRadius: 12, padding: "14px" }}>
+                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 10 }}>EDITING CLIENT DETAILS</div>
+                          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                            <label style={{ display: "grid", gap: 5, flex: "1 1 150px" }}>
+                              <span style={{ fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase" as const, color: "#9A938D" }}>Name</span>
+                              <input className="g51-input" value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} style={s.input} />
+                            </label>
+                            <label style={{ display: "grid", gap: 5, flex: "1 1 150px" }}>
+                              <span style={{ fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase" as const, color: "#9A938D" }}>Phone</span>
+                              <input className="g51-input" value={editForm.phone} onChange={e => setEditForm(f => ({ ...f, phone: e.target.value }))} style={s.input} />
+                            </label>
+                            <label style={{ display: "grid", gap: 5, flex: "1 1 150px" }}>
+                              <span style={{ fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase" as const, color: "#9A938D" }}>Email</span>
+                              <input className="g51-input" value={editForm.email} onChange={e => setEditForm(f => ({ ...f, email: e.target.value }))} style={s.input} />
+                            </label>
+                            <label style={{ display: "grid", gap: 5, flex: "1 1 120px" }}>
+                              <span style={{ fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase" as const, color: "#9A938D" }}>Relationship (if minor)</span>
+                              <input className="g51-input" value={editForm.relationship} onChange={e => setEditForm(f => ({ ...f, relationship: e.target.value }))} placeholder="e.g. Son, Daughter" style={s.input} />
+                            </label>
                           </div>
-                        )}
-                      </div>
+                          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 10, fontSize: 13, color: "#B5AEA8", cursor: "pointer" }}>
+                            <input type="checkbox" checked={editForm.isMinor} onChange={e => setEditForm(f => ({ ...f, isMinor: e.target.checked }))} />
+                            Minor / student (dependent)
+                          </label>
+                          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                            <button onClick={() => saveClientEdit(client)} disabled={savingEdit}
+                              style={{ background: GREEN, border: "none", borderRadius: 9, color: "#fff", fontSize: 13, fontWeight: 700, padding: "9px 16px", cursor: "pointer" }}>
+                              {savingEdit ? "Saving…" : "Save changes"}
+                            </button>
+                            <button onClick={() => setEditMode(null)} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 10, marginTop: 14, flexWrap: "wrap", alignItems: "center" }}>
+                          {client.phone ? (
+                            <>
+                              <span style={{ fontSize: 13, color: "#9A938D" }}>{client.phone}</span>
+                              {client.email && <span style={{ fontSize: 13, color: "#9A938D" }}>· {client.email}</span>}
+                              <a href={`https://wa.me/${waNumber(client.phone)}`} target="_blank" rel="noreferrer"
+                                style={{ background: "#1A3A25", color: GREEN, border: `1px solid ${GREEN}55`, borderRadius: 9, padding: "6px 13px", fontSize: 12.5, fontWeight: 600, textDecoration: "none" }}>
+                                WhatsApp
+                              </a>
+                              <button onClick={() => openEdit(client)} className="g51-btn g51-ghost" style={s.ghostBtn}>Edit</button>
+                            </>
+                          ) : (
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                              <div style={{ background: AMBER + "18", border: `1px solid ${AMBER}44`, borderRadius: 9, padding: "7px 12px", fontSize: 12.5, color: AMBER, fontWeight: 600 }}>
+                                ⚠ No contact info
+                              </div>
+                              <button onClick={() => openEdit(client)} className="g51-btn g51-ghost" style={s.ghostBtn}>Add contact info</button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Link / unlink guardian */}
+                      {!client.guardianPhone && (
+                        <div style={{ marginTop: 10 }}>
+                          {linkingGuardian === client.phone ? (
+                            <div style={{ background: "#1B1816", border: "1px solid #322E2A", borderRadius: 12, padding: "12px 14px" }}>
+                              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 8 }}>LINK GUARDIAN / PAYING PARENT</div>
+                              <input className="g51-input" placeholder="Search by name or phone…"
+                                value={guardianSearch} onChange={e => setGuardianSearch(e.target.value)}
+                                style={{ ...s.input, marginBottom: 8 }} autoFocus />
+                              <div style={{ maxHeight: 180, overflowY: "auto" }}>
+                                {clients.filter(c =>
+                                  c.phone !== client.phone && !c.isMinor &&
+                                  (c.name.toLowerCase().includes(guardianSearch.toLowerCase()) || c.phone.includes(guardianSearch))
+                                ).slice(0, 8).map(g => (
+                                  <button key={g.phone} onClick={() => linkGuardian(client, g)} disabled={savingLink}
+                                    style={{ display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid #2A2623", color: "#F4F2EF", fontSize: 13.5, padding: "9px 4px", cursor: "pointer" }}>
+                                    {g.name} <span style={{ color: "#6F6862" }}>· {g.phone}</span>
+                                  </button>
+                                ))}
+                              </div>
+                              <button onClick={() => { setLinkingGuardian(null); setGuardianSearch(""); }} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, marginTop: 8 }}>Cancel</button>
+                            </div>
+                          ) : (
+                            <button onClick={() => setLinkingGuardian(client.phone)} className="g51-btn g51-ghost"
+                              style={{ ...s.ghostBtn, fontSize: 12.5, color: "#A78BFA", borderColor: "#A78BFA44" }}>
+                              + Link guardian / parent
+                            </button>
+                          )}
+                        </div>
+                      )}
 
                       {/* Stats */}
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, margin: "14px 0" }}>
                         {[
                           { label: "Lifetime value", value: aed(client.ltv), color: GREEN },
                           { label: "Outstanding", value: client.outstanding > 0 ? aed(client.outstanding) : "—", color: client.outstanding > 0 ? RED : "#6F6862" },
-                          { label: "Client since", value: new Date(client.enquiries[client.enquiries.length - 1]?.created_at).toLocaleDateString("en-GB", { month: "short", year: "numeric" }), color: "#F4F2EF" },
+                          { label: "Client since", value: client.enquiries.length > 0 ? new Date(client.enquiries[client.enquiries.length - 1]?.created_at).toLocaleDateString("en-GB", { month: "short", year: "numeric" }) : "—", color: "#F4F2EF" },
                         ].map(stat => (
                           <div key={stat.label} style={{ background: "#1B1816", borderRadius: 10, padding: "10px 12px" }}>
                             <div style={{ fontSize: 10.5, color: "#6F6862", marginBottom: 4 }}>{stat.label}</div>
