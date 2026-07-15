@@ -309,14 +309,18 @@ export default function StorageBikesScreen() {
 
   // ---- renewal helpers ----
   function selectPackage(bike: StorageBike, months: number) {
-    // Extend from the current end date to preserve the billing cycle.
-    // If the bike is already overdue, the end date is in the past — adding
-    // months to it gives the correct new renewal date (e.g. 1 Jun + 3m = 1 Sep).
-    const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
+    // Only record which package is selected — nothing is written to the database
+    // until sendRenewalWhatsApp confirms the action. This keeps the flow clean:
+    // the admin can change their mind, check the draft, and restart without any
+    // lingering state from a previous selection.
     setSelectedPkg(prev => ({ ...prev, [bike.id]: months }));
-    editBikeLocal(bike.id, { storage_end_date: newEnd });
-    saveBikeField(bike.id, "storage_end_date", newEnd);
-    showToast(`${months}m package set — new end date ${fmtDate(newEnd)}`);
+    // Reset the sent indicator so the flow can start fresh with the new package
+    setWaSent(prev => { const n = new Set(prev); n.delete(bike.id); return n; });
+  }
+
+  function resetBikePackage(bikeId: string) {
+    setSelectedPkg(prev => { const n = { ...prev }; delete n[bikeId]; return n; });
+    setWaSent(prev => { const n = new Set(prev); n.delete(bikeId); return n; });
   }
   function buildRenewalMsg(group: ClientGroup, bikes: StorageBike[]) {
     const name = pendingClient[group.key]?.name || group.name || "there";
@@ -327,24 +331,39 @@ export default function StorageBikesScreen() {
       const rate = bike.monthly_rate || 0;
       const total = months ? rate * months : rate;
       grandTotal += total;
+      // Compute the new end date fresh from the CURRENT end date + selected package.
+      // This is the source of truth — never rely on state which may lag a render.
+      const newEnd = months
+        ? addMonths(bike.storage_end_date || bike.storage_start_date, months)
+        : null;
       msg += `${i + 1}. ${bikePrimaryLabel(bike)}`;
       if (bike.reference_number) msg += ` (${bike.reference_number})`;
       msg += `\n`;
       if (months) msg += `   Package: ${months} month${months > 1 ? "s" : ""} · AED ${total.toLocaleString()}\n`;
-      if (months) msg += `   New end date: ${fmtDate(bike.storage_end_date)}\n`;
-      else msg += `   Renewal date: ${fmtDate(bike.storage_end_date)}\n`;
+      if (newEnd) msg += `   New end date: ${fmtDate(newEnd)}\n`;
+      else msg += `   Current end date: ${fmtDate(bike.storage_end_date)}\n`;
       msg += `\n`;
     });
     if (bikes.length > 1 && grandTotal > 0) msg += `Total: AED ${grandTotal.toLocaleString()}\n\n`;
     msg += `Reply YES to confirm and we'll send your payment link${bikes.length > 1 ? "s" : ""}.`;
     return msg;
   }
+
   function sendRenewalWhatsApp(group: ClientGroup, targetBikes: StorageBike[]) {
     const phone = pendingClient[group.key]?.phone || group.phone;
     if (!phone) { showToast("No phone number for this client.", "err"); return; }
     const msg = buildRenewalMsg(group, targetBikes);
     window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
-    // Mark all targeted bikes as sent so the button reflects the action
+    // NOW write the new end dates to the database — only after the admin has
+    // reviewed the draft and opened WhatsApp. Nothing is saved before this point.
+    for (const bike of targetBikes) {
+      const months = selectedPkg[bike.id];
+      if (months) {
+        const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
+        editBikeLocal(bike.id, { storage_end_date: newEnd });
+        saveBikeField(bike.id, "storage_end_date", newEnd);
+      }
+    }
     setWaSent(prev => {
       const next = new Set(prev);
       targetBikes.forEach(b => next.add(b.id));
@@ -686,9 +705,9 @@ export default function StorageBikesScreen() {
                                     );
                                   })}
                                 </div>
-                                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
                                   <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
-                                    style={{ ...s.actionBtn, color: waSent.has(bike.id) ? GREEN : GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
+                                    style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
                                     {waSent.has(bike.id)
                                       ? `✓ Sent${selectedPkg[bike.id] ? ` — ${selectedPkg[bike.id]}m` : ""}`
                                       : selectedPkg[bike.id] ? `WhatsApp — ${selectedPkg[bike.id]}m` : "WhatsApp"}
@@ -697,6 +716,12 @@ export default function StorageBikesScreen() {
                                     <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost"
                                       style={{ ...s.actionBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
                                       Payment link · AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
+                                    </button>
+                                  )}
+                                  {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
+                                    <button onClick={() => resetBikePackage(bike.id)}
+                                      style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
+                                      ↺ Reset
                                     </button>
                                   )}
                                 </div>

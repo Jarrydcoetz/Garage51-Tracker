@@ -337,6 +337,26 @@ export default function ClientsScreen() {
     showToast("Guardian unlinked.");
   }
 
+  async function deleteClient(client: ClientRecord) {
+    const confirmMsg = client.phone
+      ? `Permanently delete ${client.name}?\n\nThis will remove:\n• Their profile record\n• ${client.enquiries.length} booking${client.enquiries.length !== 1 ? "s" : ""}\n\nThis cannot be undone.`
+      : `Permanently delete ${client.name}? This cannot be undone.`;
+    if (!window.confirm(confirmMsg)) return;
+    // Delete clients table record
+    if (client.clientId) {
+      await supabase.from("clients").delete().eq("id", client.clientId);
+    }
+    // Delete enquiries linked to this phone
+    if (client.phone) {
+      await supabase.from("enquiries").delete().eq("phone", client.phone);
+    }
+    // Remove from local state
+    setEnquiries(prev => prev.filter(e => e.phone !== client.phone));
+    setClientRows(prev => prev.filter(r => r.id !== client.clientId));
+    setExpanded(null);
+    showToast(`${client.name} deleted.`);
+  }
+
   async function saveNotes(phone: string, text: string) {
     setNotes(prev => ({ ...prev, [phone]: text }));
     const existing = clientRows.find(c => c.whatsapp === phone);
@@ -653,6 +673,14 @@ export default function ClientsScreen() {
                         rows={3}
                         style={{ ...s.input, width: "100%", resize: "vertical" }}
                       />
+
+                      <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #2A2623" }}>
+                        <button onClick={() => deleteClient(client)}
+                          className="g51-btn g51-ghost"
+                          style={{ ...s.ghostBtn, color: "#FF6B6B", borderColor: "#FF6B6B44", fontSize: 12.5 }}>
+                          Delete client
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
