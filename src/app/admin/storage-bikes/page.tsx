@@ -120,6 +120,7 @@ export default function StorageBikesScreen() {
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK_BIKE });
   const [selectedPkg, setSelectedPkg] = useState<Record<string, number>>({});
+  const [waSent, setWaSent] = useState<Set<string>>(new Set());
   const [pendingClient, setPendingClient] = useState<Record<string, { name: string; phone: string; email: string }>>({});
   const [savingClient, setSavingClient] = useState<Record<string, boolean>>({});
   const [logFormOpen, setLogFormOpen] = useState<{ bikeId: string; itemKey: string } | null>(null);
@@ -308,11 +309,14 @@ export default function StorageBikesScreen() {
 
   // ---- renewal helpers ----
   function selectPackage(bike: StorageBike, months: number) {
-    const newEnd = addMonths(bike.storage_start_date, months);
+    // Extend from the current end date to preserve the billing cycle.
+    // If the bike is already overdue, the end date is in the past — adding
+    // months to it gives the correct new renewal date (e.g. 1 Jun + 3m = 1 Sep).
+    const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
     setSelectedPkg(prev => ({ ...prev, [bike.id]: months }));
     editBikeLocal(bike.id, { storage_end_date: newEnd });
     saveBikeField(bike.id, "storage_end_date", newEnd);
-    showToast(`${months}m package set — end date → ${fmtDate(newEnd)}`);
+    showToast(`${months}m package set — new end date ${fmtDate(newEnd)}`);
   }
   function buildRenewalMsg(group: ClientGroup, bikes: StorageBike[]) {
     const name = pendingClient[group.key]?.name || group.name || "there";
@@ -340,6 +344,12 @@ export default function StorageBikesScreen() {
     if (!phone) { showToast("No phone number for this client.", "err"); return; }
     const msg = buildRenewalMsg(group, targetBikes);
     window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
+    // Mark all targeted bikes as sent so the button reflects the action
+    setWaSent(prev => {
+      const next = new Set(prev);
+      targetBikes.forEach(b => next.add(b.id));
+      return next;
+    });
   }
   async function createRenewalPaymentLink(bike: StorageBike) {
     const months = selectedPkg[bike.id] || 1;
@@ -572,7 +582,9 @@ export default function StorageBikesScreen() {
                       <button onClick={e => { e.stopPropagation(); sendRenewalWhatsApp(group, group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date)))); }}
                         className="g51-btn g51-ghost"
                         style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", flexShrink: 0 }}>
-                        {group.bikes.length > 1 ? "WhatsApp all" : "WhatsApp"}
+                        {group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date))).every(b => waSent.has(b.id))
+                          ? "✓ Sent"
+                          : group.bikes.length > 1 ? "WhatsApp all" : "WhatsApp"}
                       </button>
                     )}
                     <Chevron open={isGroupOpen} />
@@ -676,8 +688,10 @@ export default function StorageBikesScreen() {
                                 </div>
                                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                                   <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
-                                    style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55" }}>
-                                    {selectedPkg[bike.id] ? `WhatsApp — ${selectedPkg[bike.id]}m` : "WhatsApp"}
+                                    style={{ ...s.actionBtn, color: waSent.has(bike.id) ? GREEN : GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
+                                    {waSent.has(bike.id)
+                                      ? `✓ Sent${selectedPkg[bike.id] ? ` — ${selectedPkg[bike.id]}m` : ""}`
+                                      : selectedPkg[bike.id] ? `WhatsApp — ${selectedPkg[bike.id]}m` : "WhatsApp"}
                                   </button>
                                   {bike.monthly_rate && selectedPkg[bike.id] && (
                                     <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost"
