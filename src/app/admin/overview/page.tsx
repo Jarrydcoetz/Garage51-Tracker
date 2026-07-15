@@ -11,6 +11,7 @@ const RED = "#ED1C24";
 
 type EnquiryLite = { id: string; service_type: string; stage: string; estimated_value: number; paid_at: string | null; job_status: string | null; phone: string | null };
 type BikeLite = { id: string; engine_hours: number };
+type StorageBikeLite = { id: string; engine_hours: number; storage_end_date: string | null; client_phone: string | null };
 type FleetDueLite = { bike_id: string; interval_hours: number; hours_at_last_done: number };
 type StorageDueLite = { storage_bike_id: string; interval_hours: number; hours_at_last_done: number };
 type StaffLite = { id: string; role: string };
@@ -50,7 +51,7 @@ export default function OverviewScreen() {
   const [movements, setMovements] = useState<StockMovement[]>([]);
   const [fleetBikes, setFleetBikes] = useState<BikeLite[]>([]);
   const [fleetDue, setFleetDue] = useState<FleetDueLite[]>([]);
-  const [storageBikes, setStorageBikes] = useState<BikeLite[]>([]);
+  const [storageBikes, setStorageBikes] = useState<StorageBikeLite[]>([]);
   const [storageDue, setStorageDue] = useState<StorageDueLite[]>([]);
   const [staff, setStaff] = useState<StaffLite[]>([]);
 
@@ -75,7 +76,7 @@ export default function OverviewScreen() {
         supabase.from("stock_movements").select("part_id, quantity"),
         supabase.from("fleet_bikes").select("id, engine_hours").eq("active", true),
         supabase.from("fleet_service_due").select("bike_id, interval_hours, hours_at_last_done"),
-        supabase.from("storage_bikes").select("id, engine_hours").eq("active", true),
+        supabase.from("storage_bikes").select("id, engine_hours, storage_end_date, client_phone").eq("active", true),
         supabase.from("storage_bikes_service_due").select("storage_bike_id, interval_hours, hours_at_last_done"),
         supabase.from("profiles").select("id, role").eq("active", true),
       ]);
@@ -85,7 +86,7 @@ export default function OverviewScreen() {
       setMovements((movementsData as StockMovement[]) || []);
       setFleetBikes((fleetData as BikeLite[]) || []);
       setFleetDue((fleetDueData as FleetDueLite[]) || []);
-      setStorageBikes((storageData as BikeLite[]) || []);
+      setStorageBikes((storageData as StorageBikeLite[]) || []);
       setStorageDue((storageDueData as StorageDueLite[]) || []);
       setStaff((staffData as StaffLite[]) || []);
       setReady(true);
@@ -116,10 +117,28 @@ export default function OverviewScreen() {
     fleetDue.some(d => d.bike_id === b.id && isItemDue(b.engine_hours, d.hours_at_last_done, d.interval_hours))
   ).length;
 
-  // Storage bikes
-  const storageAttention = storageBikes.filter(b =>
+  const RENEWAL_THRESHOLD_DAYS = 14;
+  function daysUntil(d: string | null) { return d ? Math.ceil((new Date(d).getTime() - Date.now()) / 86400000) : Infinity; }
+
+  // Storage bikes — service items due
+  const storageServiceAttention = storageBikes.filter(b =>
     storageDue.some(d => d.storage_bike_id === b.id && isItemDue(b.engine_hours, d.hours_at_last_done, d.interval_hours))
   ).length;
+
+  // Storage bikes — renewals overdue or due within threshold
+  const storageRenewalAttention = storageBikes.filter(b => {
+    const days = daysUntil(b.storage_end_date);
+    return days < 0 || days <= RENEWAL_THRESHOLD_DAYS;
+  }).length;
+  const storageRenewalOverdue = storageBikes.filter(b => daysUntil(b.storage_end_date) < 0).length;
+
+  const storageAttention = storageServiceAttention + storageRenewalAttention;
+
+  // Unique clients — phones from enquiries + storage bikes
+  const uniqueClients = new Set([
+    ...enquiries.map(e => e.phone).filter(Boolean),
+    ...storageBikes.map(b => b.client_phone).filter(Boolean),
+  ]).size;
 
   // Staff
   const staffByRole = (role: string) => staff.filter(p => p.role === role).length;
@@ -191,9 +210,17 @@ export default function OverviewScreen() {
           <ModuleCard
             title="Storage bikes"
             headline={`${storageBikes.length} tracked`}
-            sub={storageAttention > 0 ? `${storageAttention} need service` : "Nothing due right now"}
+            sub={
+              storageRenewalOverdue > 0
+                ? `${storageRenewalOverdue} renewal${storageRenewalOverdue > 1 ? "s" : ""} overdue · ${storageServiceAttention > 0 ? `${storageServiceAttention} service due` : "service ok"}`
+                : storageRenewalAttention > 0
+                ? `${storageRenewalAttention} renewal${storageRenewalAttention > 1 ? "s" : ""} due soon · ${storageServiceAttention > 0 ? `${storageServiceAttention} service due` : "service ok"}`
+                : storageServiceAttention > 0
+                ? `${storageServiceAttention} need service · renewals ok`
+                : "All renewals and service up to date"
+            }
             badgeCount={storageAttention}
-            badgeLabel="need service"
+            badgeLabel={storageRenewalOverdue > 0 ? "need attention" : "due soon"}
             onClick={() => router.push("/admin/storage-bikes")}
           />
           <ModuleCard
@@ -204,7 +231,7 @@ export default function OverviewScreen() {
           />
           <ModuleCard
             title="Clients"
-            headline={`${new Set(enquiries.map(e => e.phone).filter(Boolean)).size} total`}
+            headline={`${uniqueClients} total`}
             sub="Booking history, LTV, bikes on file, notes"
             onClick={() => router.push("/admin/clients")}
           />
