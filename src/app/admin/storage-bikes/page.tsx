@@ -26,6 +26,8 @@ type StorageBike = {
   storage_start_date: string | null; storage_end_date: string | null;
   client_name: string | null; client_phone: string | null; client_email: string | null;
   monthly_rate: number | null;
+  renewal_payment_intent_id: string | null;
+  renewal_paid_at: string | null;
 };
 type ServiceDue = {
   id: string; storage_bike_id: string; item_key: string;
@@ -154,6 +156,20 @@ export default function StorageBikesScreen() {
       }
       setExpandedGroups(groupKeys);
       setReady(true);
+
+      // Realtime: when the webhook sets renewal_paid_at on a bike, update the
+      // card immediately without requiring a page reload.
+      const channel = supabase
+        .channel("storage_bikes_renewal")
+        .on("postgres_changes", {
+          event: "UPDATE", schema: "public", table: "storage_bikes",
+        }, (payload) => {
+          const updated = payload.new as StorageBike;
+          setBikes(prev => prev.map(b => b.id === updated.id ? { ...b, renewal_paid_at: updated.renewal_paid_at, renewal_payment_intent_id: updated.renewal_payment_intent_id } : b));
+        })
+        .subscribe();
+
+      return () => { supabase.removeChannel(channel); };
     });
   }, [router]);
 
@@ -368,9 +384,13 @@ export default function StorageBikesScreen() {
     const months = selectedPkg[bike.id];
     if (!months) { showToast("Select a package first.", "err"); return; }
     const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
-    editBikeLocal(bike.id, { storage_end_date: newEnd });
-    saveBikeField(bike.id, "storage_end_date", newEnd);
-    // Clear the flow now that renewal is confirmed
+    // Update the end date and clear the pending payment state
+    supabase.from("storage_bikes").update({
+      storage_end_date: newEnd,
+      renewal_paid_at: null,
+      renewal_payment_intent_id: null,
+    }).eq("id", bike.id);
+    editBikeLocal(bike.id, { storage_end_date: newEnd, renewal_paid_at: null, renewal_payment_intent_id: null });
     resetBikePackage(bike.id);
     showToast(`Renewed to ${fmtDate(newEnd)} ✓`);
   }
@@ -384,8 +404,22 @@ export default function StorageBikesScreen() {
         body: JSON.stringify({ amount, description: `Storage renewal ${months}m — ${bikePrimaryLabel(bike)} (${bike.reference_number || bike.id.slice(0, 8)})` }),
       });
       const json = await res.json();
-      if (json.url) { await navigator.clipboard.writeText(json.url); showToast("Payment link copied."); }
-      else showToast(json.error || "Could not create payment link.", "err");
+      if (json.url) {
+        await navigator.clipboard.writeText(json.url);
+        // Store the Ziina payment ID on the bike so the webhook can match it
+        // when the client pays — this is what triggers the "payment received"
+        // indicator on the card automatically, without any manual action.
+        if (json.id) {
+          await supabase.from("storage_bikes").update({
+            renewal_payment_intent_id: json.id,
+            renewal_paid_at: null, // clear any previous paid status for this new link
+          }).eq("id", bike.id);
+          editBikeLocal(bike.id, { renewal_payment_intent_id: json.id, renewal_paid_at: null });
+        }
+        showToast("Payment link copied — waiting for client to pay.");
+      } else {
+        showToast(json.error || "Could not create payment link.", "err");
+      }
     } catch { showToast("Could not reach payment service.", "err"); }
   }
   function requestFromClient(group: ClientGroup, dueItems: ServiceDue[], bike: StorageBike) {
@@ -722,12 +756,17 @@ export default function StorageBikesScreen() {
                                       Payment link · AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
                                     </button>
                                   )}
-                                  {/* Mark as renewed only appears after WhatsApp has been sent —
-                                      the admin clicks this once payment is confirmed.
-                                      Until then the card stays in its overdue/due-soon state. */}
-                                  {waSent.has(bike.id) && selectedPkg[bike.id] && (
+                                  {/* Payment received — set automatically by the Ziina webhook
+                                      when the client pays. No manual action needed. */}
+                                  {bike.renewal_paid_at && (
+                                    <span style={{ background: "#10301C", border: `1px solid ${GREEN}55`, borderRadius: 8, color: GREEN, fontSize: 12.5, fontWeight: 700, padding: "6px 13px" }}>
+                                      💳 Payment received
+                                    </span>
+                                  )}
+                                  {/* Mark as renewed — available once WhatsApp is sent OR payment is received */}
+                                  {(waSent.has(bike.id) || bike.renewal_paid_at) && selectedPkg[bike.id] && (
                                     <button onClick={() => markRenewed(bike)}
-                                      style={{ background: "#10301C", border: `1px solid ${GREEN}55`, borderRadius: 8, color: GREEN, fontSize: 12.5, fontWeight: 700, padding: "6px 13px", cursor: "pointer", fontFamily: "inherit" }}>
+                                      style={{ background: bike.renewal_paid_at ? GREEN + "33" : "#10301C", border: `1px solid ${GREEN}${bike.renewal_paid_at ? "88" : "55"}`, borderRadius: 8, color: GREEN, fontSize: 12.5, fontWeight: 700, padding: "6px 13px", cursor: "pointer", fontFamily: "inherit" }}>
                                       ✓ Mark as renewed
                                     </button>
                                   )}

@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-
 export const runtime = "nodejs";
 
 // Ziina only sends webhooks from these IPs
@@ -50,10 +49,22 @@ export async function POST(req: Request) {
     payload.data?.status === "completed" &&
     payload.data.id
   ) {
+    const paidAt = new Date().toISOString();
+    const paymentId = payload.data.id;
+
+    // Existing: match against bookings
     await supabase
       .from("enquiries")
-      .update({ paid_at: new Date().toISOString(), status: "paid" })
-      .eq("payment_intent_id", payload.data.id);
+      .update({ paid_at: paidAt, status: "paid" })
+      .eq("payment_intent_id", paymentId);
+
+    // New: match against storage bike renewal payment links.
+    // The storage bikes page stores the Ziina payment ID in
+    // renewal_payment_intent_id when the link is created.
+    await supabase
+      .from("storage_bikes")
+      .update({ renewal_paid_at: paidAt })
+      .eq("renewal_payment_intent_id", paymentId);
   }
 
   // Always acknowledge so Ziina doesn't keep retrying
