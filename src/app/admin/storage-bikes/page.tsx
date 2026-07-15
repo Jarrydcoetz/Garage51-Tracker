@@ -105,6 +105,7 @@ nav button:hover{background:#2A2624 !important;}
 export default function StorageBikesScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
+  const [filterMode, setFilterMode] = useState<"all" | "renewal_overdue" | "renewal_due" | "service_due" | "attention">("all");
   const [myName, setMyName] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [bikes, setBikes] = useState<StorageBike[]>([]);
@@ -195,6 +196,44 @@ export default function StorageBikesScreen() {
   function getStatus(bike: StorageBike, due: ServiceDue) {
     return itemStatus(bike.engine_hours, getLastDoneHours(bike.id, due), due.interval_hours);
   }
+
+  // Per-bike filter predicate — evaluated after getStatus is defined
+  function bikeHasServiceDue(bike: StorageBike): boolean {
+    return serviceDue.filter(d => d.storage_bike_id === bike.id).some(d => getStatus(bike, d) !== "ok");
+  }
+  function bikeMatchesFilter(bike: StorageBike): boolean {
+    const rs = renewalStatus(bike.storage_end_date);
+    const hasSvc = bikeHasServiceDue(bike);
+    switch (filterMode) {
+      case "renewal_overdue": return rs === "overdue";
+      case "renewal_due":     return rs === "due_soon";
+      case "service_due":     return hasSvc;
+      case "attention":       return rs === "overdue" || rs === "due_soon" || hasSvc;
+      default:                return true;
+    }
+  }
+
+  // Per-category counts for the filter bar
+  const filterCounts = useMemo(() => ({
+    all: bikes.length,
+    renewal_overdue: bikes.filter(b => renewalStatus(b.storage_end_date) === "overdue").length,
+    renewal_due: bikes.filter(b => renewalStatus(b.storage_end_date) === "due_soon").length,
+    service_due: bikes.filter(b => serviceDue.filter(d => d.storage_bike_id === b.id).some(d => itemStatus(b.engine_hours, lastServicedAt(b.id, d.item_key, serviceLog, d.hours_at_last_done, "storage_bike_id"), d.interval_hours) !== "ok")).length,
+    attention: bikes.filter(b => {
+      const rs = renewalStatus(b.storage_end_date);
+      return rs === "overdue" || rs === "due_soon" || serviceDue.filter(d => d.storage_bike_id === b.id).some(d => itemStatus(b.engine_hours, lastServicedAt(b.id, d.item_key, serviceLog, d.hours_at_last_done, "storage_bike_id"), d.interval_hours) !== "ok");
+    }).length,
+  }), [bikes, serviceDue, serviceLog]);
+
+  // Client groups after applying the bike-level filter
+  const filteredGroups = useMemo(() => {
+    if (filterMode === "all") return clientGroups;
+    return clientGroups
+      .map(group => ({ ...group, bikes: group.bikes.filter(bikeMatchesFilter) }))
+      .filter(group => group.bikes.length > 0);
+  // bikeMatchesFilter is stable as long as filterMode + serviceDue don't change
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientGroups, filterMode, serviceDue, serviceLog]);
   function openLogForm(bikeId: string, itemKey: string) {
     const bike = bikes.find(b => b.id === bikeId);
     setLogHours(String(bike?.engine_hours ?? ""));
@@ -397,7 +436,38 @@ export default function StorageBikesScreen() {
           <button onClick={() => setAdding(a => !a)} className="g51-btn g51-ghost" style={s.ghostBtn}>{adding ? "Cancel" : "+ Add bike"}</button>
         </div>
 
-        {totalAttention > 0 && (
+        {/* Filter bar */}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+          {([
+            { key: "all",             label: "All bikes",        color: "#9A938D" },
+            { key: "attention",       label: "Needs attention",  color: AMBER },
+            { key: "renewal_overdue", label: "Renewal overdue",  color: RED },
+            { key: "renewal_due",     label: "Renewal due soon", color: AMBER },
+            { key: "service_due",     label: "Service due",      color: "#3B9EFF" },
+          ] as const).map(({ key, label, color }) => {
+            const count = filterCounts[key];
+            const isActive = filterMode === key;
+            return (
+              <button key={key} onClick={() => setFilterMode(key)}
+                style={{
+                  background: isActive ? color + "22" : "transparent",
+                  border: `1px solid ${isActive ? color : "#2F2B27"}`,
+                  borderRadius: 20, color: isActive ? color : "#9A938D",
+                  fontSize: 12.5, fontWeight: isActive ? 700 : 500,
+                  padding: "6px 13px", cursor: "pointer", fontFamily: "inherit",
+                  transition: "all .15s",
+                  display: "flex", alignItems: "center", gap: 6,
+                }}>
+                {label}
+                <span style={{ background: isActive ? color + "33" : "#2A2623", borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 700, color: isActive ? color : "#6F6862" }}>
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        {totalAttention > 0 && filterMode === "all" && (
           <div style={{ background: "#FFB02E18", border: "1px solid #FFB02E55", color: AMBER, borderRadius: 10, padding: "10px 14px", fontSize: 13.5, fontWeight: 600, marginBottom: 18 }}>
             ⚠ {totalAttention} bike{totalAttention > 1 ? "s" : ""} need renewal attention
           </div>
@@ -464,11 +534,13 @@ export default function StorageBikesScreen() {
         )}
 
         {/* Client groups */}
-        {clientGroups.length === 0 ? (
-          <div style={s.empty}>No storage bikes yet.</div>
+        {filteredGroups.length === 0 ? (
+          <div style={s.empty}>
+            {filterMode === "all" ? "No storage bikes yet." : `No bikes in the "${filterMode.replace(/_/g, " ")}" category.`}
+          </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {clientGroups.map(group => {
+            {filteredGroups.map(group => {
               const isGroupOpen = expandedGroups.has(group.key);
               const groupDueCount = group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date))).length;
               const pendingG = pendingClient[group.key];
