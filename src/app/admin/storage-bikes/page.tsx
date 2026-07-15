@@ -354,21 +354,25 @@ export default function StorageBikesScreen() {
     if (!phone) { showToast("No phone number for this client.", "err"); return; }
     const msg = buildRenewalMsg(group, targetBikes);
     window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
-    // NOW write the new end dates to the database — only after the admin has
-    // reviewed the draft and opened WhatsApp. Nothing is saved before this point.
-    for (const bike of targetBikes) {
-      const months = selectedPkg[bike.id];
-      if (months) {
-        const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
-        editBikeLocal(bike.id, { storage_end_date: newEnd });
-        saveBikeField(bike.id, "storage_end_date", newEnd);
-      }
-    }
+    // Only mark as sent — do NOT update the end date here.
+    // The card stays in its overdue/due-soon state until the admin explicitly
+    // clicks "Mark as renewed" after payment is confirmed.
     setWaSent(prev => {
       const next = new Set(prev);
       targetBikes.forEach(b => next.add(b.id));
       return next;
     });
+  }
+
+  function markRenewed(bike: StorageBike) {
+    const months = selectedPkg[bike.id];
+    if (!months) { showToast("Select a package first.", "err"); return; }
+    const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
+    editBikeLocal(bike.id, { storage_end_date: newEnd });
+    saveBikeField(bike.id, "storage_end_date", newEnd);
+    // Clear the flow now that renewal is confirmed
+    resetBikePackage(bike.id);
+    showToast(`Renewed to ${fmtDate(newEnd)} ✓`);
   }
   async function createRenewalPaymentLink(bike: StorageBike) {
     const months = selectedPkg[bike.id] || 1;
@@ -716,6 +720,15 @@ export default function StorageBikesScreen() {
                                     <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost"
                                       style={{ ...s.actionBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
                                       Payment link · AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
+                                    </button>
+                                  )}
+                                  {/* Mark as renewed only appears after WhatsApp has been sent —
+                                      the admin clicks this once payment is confirmed.
+                                      Until then the card stays in its overdue/due-soon state. */}
+                                  {waSent.has(bike.id) && selectedPkg[bike.id] && (
+                                    <button onClick={() => markRenewed(bike)}
+                                      style={{ background: "#10301C", border: `1px solid ${GREEN}55`, borderRadius: 8, color: GREEN, fontSize: 12.5, fontWeight: 700, padding: "6px 13px", cursor: "pointer", fontFamily: "inherit" }}>
+                                      ✓ Mark as renewed
                                     </button>
                                   )}
                                   {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
