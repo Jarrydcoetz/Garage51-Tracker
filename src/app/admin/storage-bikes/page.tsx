@@ -115,6 +115,7 @@ export default function StorageBikesScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
   const [filterMode, setFilterMode] = useState<"all" | "renewal_overdue" | "renewal_due" | "service_due" | "attention">("all");
+  const [search, setSearch] = useState("");
   const [myName, setMyName] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [bikes, setBikes] = useState<StorageBike[]>([]);
@@ -251,13 +252,39 @@ export default function StorageBikesScreen() {
 
   // Client groups after applying the bike-level filter
   const filteredGroups = useMemo(() => {
-    if (filterMode === "all") return clientGroups;
-    return clientGroups
-      .map(group => ({ ...group, bikes: group.bikes.filter(bikeMatchesFilter) }))
-      .filter(group => group.bikes.length > 0);
-  // bikeMatchesFilter is stable as long as filterMode + serviceDue don't change
+    const q = search.trim().toLowerCase();
+
+    // Start with the status filter
+    let groups = filterMode === "all"
+      ? clientGroups
+      : clientGroups
+          .map(group => ({ ...group, bikes: group.bikes.filter(bikeMatchesFilter) }))
+          .filter(group => group.bikes.length > 0);
+
+    // Then apply the search on top
+    if (q) {
+      groups = groups.map(group => {
+        // Client-level match: show entire group with all its bikes
+        const clientMatch =
+          group.name.toLowerCase().includes(q) ||
+          group.phone.includes(q) ||
+          (group.email || "").toLowerCase().includes(q);
+        if (clientMatch) return group;
+
+        // Bike-level match: filter down to matching bikes
+        const matchingBikes = group.bikes.filter(b =>
+          bikePrimaryLabel(b).toLowerCase().includes(q) ||
+          (b.reference_number || "").toLowerCase().includes(q) ||
+          (b.vin || "").toLowerCase().includes(q) ||
+          (b.bike_number || "").toLowerCase().includes(q)
+        );
+        return { ...group, bikes: matchingBikes };
+      }).filter(group => group.bikes.length > 0);
+    }
+
+    return groups;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientGroups, filterMode, serviceDue, serviceLog]);
+  }, [clientGroups, filterMode, serviceDue, serviceLog, search]);
   function openLogForm(bikeId: string, itemKey: string) {
     const bike = bikes.find(b => b.id === bikeId);
     setLogHours(String(bike?.engine_hours ?? ""));
@@ -542,8 +569,28 @@ export default function StorageBikesScreen() {
         <h1 style={s.h1}>Storage bikes</h1>
         <p style={s.sub}>Grouped by client. Bikes sorted by renewal urgency.</p>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
           <button onClick={() => setAdding(a => !a)} className="g51-btn g51-ghost" style={s.ghostBtn}>{adding ? "Cancel" : "+ Add bike"}</button>
+        </div>
+
+        {/* Search */}
+        <div style={{ position: "relative", marginBottom: 12 }}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "#6F6862", pointerEvents: "none" }}>
+            <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+          </svg>
+          <input
+            className="g51-input"
+            placeholder="Search by client name, phone, email, or bike…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            style={{ ...s.input, paddingLeft: 36, width: "100%" }}
+          />
+          {search && (
+            <button onClick={() => setSearch("")}
+              style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>
+              ×
+            </button>
+          )}
         </div>
 
         {/* Filter bar */}
@@ -646,7 +693,9 @@ export default function StorageBikesScreen() {
         {/* Client groups */}
         {filteredGroups.length === 0 ? (
           <div style={s.empty}>
-            {filterMode === "all" ? "No storage bikes yet." : `No bikes in the "${filterMode.replace(/_/g, " ")}" category.`}
+            {search
+              ? `No bikes match "${search}".`
+              : filterMode === "all" ? "No storage bikes yet." : `No bikes in the "${filterMode.replace(/_/g, " ")}" category.`}
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -768,67 +817,76 @@ export default function StorageBikesScreen() {
                               </div>
                             </div>
 
-                            {/* Renewal package strip */}
+                                                        {/* Renewal package strip */}
                             {(rs === "overdue" || rs === "due_soon" || rs === "paid") && (
                               <div style={{ margin: "0 14px 10px", background: rs === "paid" ? GOLD + "15" : rs === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px" }}>
                                 <div style={{ fontSize: 12.5, fontWeight: 700, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER, marginBottom: 8 }}>
                                   {rs === "paid"
-                                    ? "💳 Payment received — select a package and mark as renewed"
+                                    ? "\u{1F4B3} Payment received \u2014 confirm the renewal period and create the invoice"
                                     : rs === "overdue"
                                     ? `${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue`
                                     : `Due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
                                 </div>
+
+                                {/* Package selector */}
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
                                   {STORAGE_PACKAGES.map(pkg => {
                                     const isSel = selectedPkg[bike.id] === pkg.months;
                                     const tot = bike.monthly_rate ? bike.monthly_rate * pkg.months : null;
+                                    const selColor = rs === "paid" ? GOLD : AMBER;
                                     return (
                                       <button key={pkg.months} className="g51-pkg"
                                         onClick={() => selectPackage(bike, pkg.months)}
-                                        style={{ background: isSel ? AMBER + "33" : "transparent", border: `1px solid ${isSel ? AMBER : "#3A352F"}`, borderRadius: 8, color: isSel ? AMBER : "#B5AEA8", fontSize: 12, fontWeight: isSel ? 700 : 400, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit" }}>
-                                        {pkg.label}{tot ? ` · AED ${tot.toLocaleString()}` : ""}
+                                        style={{ background: isSel ? selColor + "33" : "transparent", border: `1px solid ${isSel ? selColor : "#3A352F"}`, borderRadius: 8, color: isSel ? selColor : "#B5AEA8", fontSize: 12, fontWeight: isSel ? 700 : 400, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+                                        {pkg.label}{tot ? ` \u00b7 AED ${tot.toLocaleString()}` : ""}
                                       </button>
                                     );
                                   })}
                                 </div>
-                                <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-                                  <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
-                                    style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
-                                    {waSent.has(bike.id)
-                                      ? `✓ Sent${selectedPkg[bike.id] ? ` — ${selectedPkg[bike.id]}m` : ""}`
-                                      : selectedPkg[bike.id] ? `WhatsApp — ${selectedPkg[bike.id]}m` : "WhatsApp"}
-                                  </button>
-                                  {bike.monthly_rate && selectedPkg[bike.id] && (
-                                    <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost"
-                                      style={{ ...s.actionBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
-                                      Payment link · AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
+
+                                {/* PRE-PAYMENT: WhatsApp + payment link */}
+                                {!bike.renewal_paid_at && (
+                                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                                    <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
+                                      style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
+                                      {waSent.has(bike.id)
+                                        ? `\u2713 Sent${selectedPkg[bike.id] ? ` \u2014 ${selectedPkg[bike.id]}m` : ""}`
+                                        : selectedPkg[bike.id] ? `WhatsApp \u2014 ${selectedPkg[bike.id]}m` : "WhatsApp"}
                                     </button>
-                                  )}
-                                  {/* Payment received — set automatically by the Ziina webhook
-                                      when the client pays. No manual action needed. */}
-                                  {bike.renewal_paid_at && (
-                                    <span style={{ background: GOLD + "22", border: `1px solid ${GOLD}66`, borderRadius: 8, color: GOLD, fontSize: 12.5, fontWeight: 700, padding: "6px 13px" }}>
-                                      💳 Payment received
-                                    </span>
-                                  )}
-                                  {/* Create invoice — the final step that closes the billing cycle.
-                                      Available once WhatsApp is sent OR payment is received.
-                                      Clicking it: updates the end date, stamps renewal_invoiced_at,
-                                      clears payment fields, optionally creates a Zoho invoice.
-                                      Card naturally moves to green since new end date is in the future. */}
-                                  {bike.renewal_paid_at && selectedPkg[bike.id] && (
-                                    <button onClick={() => createRenewalInvoice(bike)}
-                                      style={{ background: bike.renewal_paid_at ? GOLD + "33" : "#10301C", border: `1px solid ${GOLD}${bike.renewal_paid_at ? "88" : "55"}`, borderRadius: 8, color: GOLD, fontSize: 12.5, fontWeight: 700, padding: "6px 13px", cursor: "pointer", fontFamily: "inherit" }}>
-                                      🧾 Create invoice
-                                    </button>
-                                  )}
-                                  {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
-                                    <button onClick={() => resetBikePackage(bike.id)}
-                                      style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
-                                      ↺ Reset
-                                    </button>
-                                  )}
-                                </div>
+                                    {bike.monthly_rate && selectedPkg[bike.id] && (
+                                      <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost"
+                                        style={{ ...s.actionBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
+                                        Payment link \u00b7 AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
+                                      </button>
+                                    )}
+                                    {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
+                                      <button onClick={() => resetBikePackage(bike.id)}
+                                        style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
+                                        \u21ba Reset
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* POST-PAYMENT: create invoice only */}
+                                {bike.renewal_paid_at && (
+                                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                                    {selectedPkg[bike.id] ? (
+                                      <button onClick={() => createRenewalInvoice(bike)}
+                                        style={{ background: GOLD + "33", border: `1px solid ${GOLD}88`, borderRadius: 8, color: GOLD, fontSize: 13, fontWeight: 700, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit" }}>
+                                        \u{1F9FE} Create invoice \u00b7 AED {bike.monthly_rate ? (bike.monthly_rate * selectedPkg[bike.id]).toLocaleString() : ""}
+                                      </button>
+                                    ) : (
+                                      <span style={{ fontSize: 12.5, color: GOLD + "AA" }}>\u2190 Select a renewal period above</span>
+                                    )}
+                                    {selectedPkg[bike.id] && (
+                                      <button onClick={() => resetBikePackage(bike.id)}
+                                        style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
+                                        \u21ba Reset
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             )}
 
