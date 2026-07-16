@@ -376,6 +376,12 @@ export default function StorageBikesScreen() {
     const name = pendingClient[group.key]?.name || group.name || "there";
     let msg = `Hi ${name}, your motorcycle storage at Garage51 is due for renewal 🏍️\n\n`;
     let grandTotal = 0;
+
+    // Detect combined payment: all bikes share the same link URL
+    const uniqueLinks = new Set(Object.values(paymentLinks));
+    const isCombined = uniqueLinks.size === 1 && bikes.length > 1;
+    const combinedLink = isCombined ? [...uniqueLinks][0] : null;
+
     bikes.forEach((bike, i) => {
       const months = selectedPkg[bike.id];
       const rate = bike.monthly_rate || 0;
@@ -390,10 +396,15 @@ export default function StorageBikesScreen() {
       msg += `\n`;
       if (months) msg += `   Package: ${months} month${months > 1 ? "s" : ""} · AED ${total.toLocaleString()}\n`;
       if (newEnd) msg += `   New end date: ${fmtDate(newEnd)}\n`;
-      if (paymentLinks[bike.id]) msg += `   Pay securely: ${paymentLinks[bike.id]}\n`;
+      // Only show per-bike link when NOT using a combined link
+      if (!isCombined && paymentLinks[bike.id]) msg += `   Pay securely: ${paymentLinks[bike.id]}\n`;
       msg += `\n`;
     });
-    if (grandTotal > 0) msg += `Total: AED ${grandTotal.toLocaleString()}\n\n`;
+
+    if (grandTotal > 0) msg += `Total: AED ${grandTotal.toLocaleString()}\n`;
+    // Combined link shown once after the total — clean and unambiguous
+    if (combinedLink) msg += `Pay securely: ${combinedLink}\n`;
+    msg += `\n`;
     msg += `To cancel your storage, simply reply *"cancel renewal"* and we'll arrange your motorcycle collection and settle any outstanding pro-rata storage fees. 🙏`;
     return msg;
   }
@@ -402,34 +413,54 @@ export default function StorageBikesScreen() {
     const phone = pendingClient[group.key]?.phone || group.phone;
     if (!phone) { showToast("No phone number for this client.", "err"); return; }
 
-    // Auto-create a payment link for each bike that has a package and rate selected.
-    // Storing the Ziina payment ID means the webhook can still match the payment
-    // automatically when the client pays — same as before, just triggered here
-    // rather than by a separate button.
+    const billableBikes = targetBikes.filter(b => selectedPkg[b.id] && (b.monthly_rate || 0) > 0);
+    const grandTotal = billableBikes.reduce((sum, b) => sum + (b.monthly_rate! * selectedPkg[b.id]), 0);
     const paymentLinks: Record<string, string> = {};
-    for (const bike of targetBikes) {
-      const months = selectedPkg[bike.id];
-      const rate = bike.monthly_rate || 0;
-      if (months && rate > 0) {
-        try {
-          const res = await fetch("/api/payment-link", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              amount: rate * months,
-              description: `Storage renewal ${months}m — ${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""}`,
-            }),
-          });
-          const json = await res.json();
-          if (json.url && json.id) {
-            paymentLinks[bike.id] = json.url;
+
+    if (billableBikes.length > 1 && grandTotal > 0) {
+      // COMBINED: one payment link for all bikes — stored on every bike so the
+      // webhook's .eq("renewal_payment_intent_id", id) updates all of them at once.
+      try {
+        const bikeNames = billableBikes.map(b =>
+          `${bikePrimaryLabel(b)}${b.reference_number ? ` (${b.reference_number})` : ""}`
+        ).join(", ");
+        const res = await fetch("/api/payment-link", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ amount: grandTotal, description: `Storage renewal — ${bikeNames}` }),
+        });
+        const json = await res.json();
+        if (json.url && json.id) {
+          for (const bike of billableBikes) {
             await supabase.from("storage_bikes").update({
-              renewal_payment_intent_id: json.id,
-              renewal_paid_at: null,
+              renewal_payment_intent_id: json.id, renewal_paid_at: null,
             }).eq("id", bike.id);
             editBikeLocal(bike.id, { renewal_payment_intent_id: json.id, renewal_paid_at: null });
+            paymentLinks[bike.id] = json.url; // same URL on all → buildRenewalMsg detects combined
           }
-        } catch { /* message still opens, just without this link */ }
-      }
+        }
+      } catch { /* message still opens without link */ }
+
+    } else if (billableBikes.length === 1) {
+      // SINGLE: individual payment link for that one bike
+      const bike = billableBikes[0];
+      const months = selectedPkg[bike.id];
+      try {
+        const res = await fetch("/api/payment-link", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount: (bike.monthly_rate || 0) * months,
+            description: `Storage renewal ${months}m — ${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""}`,
+          }),
+        });
+        const json = await res.json();
+        if (json.url && json.id) {
+          paymentLinks[bike.id] = json.url;
+          await supabase.from("storage_bikes").update({
+            renewal_payment_intent_id: json.id, renewal_paid_at: null,
+          }).eq("id", bike.id);
+          editBikeLocal(bike.id, { renewal_payment_intent_id: json.id, renewal_paid_at: null });
+        }
+      } catch { /* proceed without link */ }
     }
 
     const msg = buildRenewalMsg(group, targetBikes, paymentLinks);
@@ -439,8 +470,13 @@ export default function StorageBikesScreen() {
       targetBikes.forEach(b => next.add(b.id));
       return next;
     });
-    if (Object.keys(paymentLinks).length > 0) {
-      showToast(`WhatsApp opened with payment link${Object.keys(paymentLinks).length > 1 ? "s" : ""} included.`);
+    const linkCount = Object.keys(paymentLinks).length;
+    if (linkCount > 0) {
+      const isCombined = new Set(Object.values(paymentLinks)).size === 1 && billableBikes.length > 1;
+      showToast(isCombined
+        ? `WhatsApp opened with combined payment link · AED ${grandTotal.toLocaleString()}`
+        : "WhatsApp opened with payment link included."
+      );
     }
   }
 
