@@ -372,46 +372,76 @@ export default function StorageBikesScreen() {
     setSelectedPkg(prev => { const n = { ...prev }; delete n[bikeId]; return n; });
     setWaSent(prev => { const n = new Set(prev); n.delete(bikeId); return n; });
   }
-  function buildRenewalMsg(group: ClientGroup, bikes: StorageBike[]) {
+  function buildRenewalMsg(group: ClientGroup, bikes: StorageBike[], paymentLinks: Record<string, string> = {}) {
     const name = pendingClient[group.key]?.name || group.name || "there";
-    let msg = `Hi ${name}, here's a renewal update for your bike${bikes.length > 1 ? "s" : ""} in storage at Garage51 🏍️\n\n`;
+    let msg = `Hi ${name}, your motorcycle storage at Garage51 is due for renewal 🏍️\n\n`;
     let grandTotal = 0;
     bikes.forEach((bike, i) => {
       const months = selectedPkg[bike.id];
       const rate = bike.monthly_rate || 0;
       const total = months ? rate * months : rate;
       grandTotal += total;
-      // Compute the new end date fresh from the CURRENT end date + selected package.
-      // This is the source of truth — never rely on state which may lag a render.
       const newEnd = months
         ? addMonths(bike.storage_end_date || bike.storage_start_date, months)
         : null;
-      msg += `${i + 1}. ${bikePrimaryLabel(bike)}`;
+      if (bikes.length > 1) msg += `${i + 1}. `;
+      msg += `${bikePrimaryLabel(bike)}`;
       if (bike.reference_number) msg += ` (${bike.reference_number})`;
       msg += `\n`;
       if (months) msg += `   Package: ${months} month${months > 1 ? "s" : ""} · AED ${total.toLocaleString()}\n`;
       if (newEnd) msg += `   New end date: ${fmtDate(newEnd)}\n`;
-      else msg += `   Current end date: ${fmtDate(bike.storage_end_date)}\n`;
+      if (paymentLinks[bike.id]) msg += `   Pay securely: ${paymentLinks[bike.id]}\n`;
       msg += `\n`;
     });
-    if (bikes.length > 1 && grandTotal > 0) msg += `Total: AED ${grandTotal.toLocaleString()}\n\n`;
-    msg += `Reply YES to confirm and we'll send your payment link${bikes.length > 1 ? "s" : ""}.`;
+    if (grandTotal > 0) msg += `Total: AED ${grandTotal.toLocaleString()}\n\n`;
+    msg += `To cancel your storage, simply reply *"cancel renewal"* and we'll arrange your motorcycle collection and settle any outstanding pro-rata storage fees. 🙏`;
     return msg;
   }
 
-  function sendRenewalWhatsApp(group: ClientGroup, targetBikes: StorageBike[]) {
+  async function sendRenewalWhatsApp(group: ClientGroup, targetBikes: StorageBike[]) {
     const phone = pendingClient[group.key]?.phone || group.phone;
     if (!phone) { showToast("No phone number for this client.", "err"); return; }
-    const msg = buildRenewalMsg(group, targetBikes);
+
+    // Auto-create a payment link for each bike that has a package and rate selected.
+    // Storing the Ziina payment ID means the webhook can still match the payment
+    // automatically when the client pays — same as before, just triggered here
+    // rather than by a separate button.
+    const paymentLinks: Record<string, string> = {};
+    for (const bike of targetBikes) {
+      const months = selectedPkg[bike.id];
+      const rate = bike.monthly_rate || 0;
+      if (months && rate > 0) {
+        try {
+          const res = await fetch("/api/payment-link", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              amount: rate * months,
+              description: `Storage renewal ${months}m — ${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""}`,
+            }),
+          });
+          const json = await res.json();
+          if (json.url && json.id) {
+            paymentLinks[bike.id] = json.url;
+            await supabase.from("storage_bikes").update({
+              renewal_payment_intent_id: json.id,
+              renewal_paid_at: null,
+            }).eq("id", bike.id);
+            editBikeLocal(bike.id, { renewal_payment_intent_id: json.id, renewal_paid_at: null });
+          }
+        } catch { /* message still opens, just without this link */ }
+      }
+    }
+
+    const msg = buildRenewalMsg(group, targetBikes, paymentLinks);
     window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
-    // Only mark as sent — do NOT update the end date here.
-    // The card stays in its overdue/due-soon state until the admin explicitly
-    // clicks "Mark as renewed" after payment is confirmed.
     setWaSent(prev => {
       const next = new Set(prev);
       targetBikes.forEach(b => next.add(b.id));
       return next;
     });
+    if (Object.keys(paymentLinks).length > 0) {
+      showToast(`WhatsApp opened with payment link${Object.keys(paymentLinks).length > 1 ? "s" : ""} included.`);
+    }
   }
 
   async function createRenewalInvoice(bike: StorageBike) {
@@ -733,7 +763,7 @@ export default function StorageBikesScreen() {
                         style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", flexShrink: 0 }}>
                         {group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date, b.renewal_paid_at))).every(b => waSent.has(b.id))
                           ? "✓ Sent"
-                          : group.bikes.length > 1 ? "WhatsApp all" : "WhatsApp"}
+                          : group.bikes.length > 1 ? "WhatsApp all + payment links" : "WhatsApp + payment link"}
                       </button>
                     )}
                     <Chevron open={isGroupOpen} />
@@ -844,21 +874,15 @@ export default function StorageBikesScreen() {
                                   })}
                                 </div>
 
-                                {/* PRE-PAYMENT: WhatsApp + payment link */}
+                                {/* PRE-PAYMENT: WhatsApp (now auto-creates and includes payment link) */}
                                 {!bike.renewal_paid_at && (
                                   <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
                                     <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
                                       style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
                                       {waSent.has(bike.id)
                                         ? `✓ Sent${selectedPkg[bike.id] ? ` — ${selectedPkg[bike.id]}m` : ""}`
-                                        : selectedPkg[bike.id] ? `WhatsApp — ${selectedPkg[bike.id]}m` : "WhatsApp"}
+                                        : selectedPkg[bike.id] ? `WhatsApp + payment link — ${selectedPkg[bike.id]}m` : "WhatsApp"}
                                     </button>
-                                    {bike.monthly_rate && selectedPkg[bike.id] && (
-                                      <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost"
-                                        style={{ ...s.actionBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
-                                        Payment link · AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
-                                      </button>
-                                    )}
                                     {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
                                       <button onClick={() => resetBikePackage(bike.id)}
                                         style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
