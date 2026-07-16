@@ -822,7 +822,7 @@ export default function StorageBikesScreen() {
                               <div style={{ margin: "0 14px 10px", background: rs === "paid" ? GOLD + "15" : rs === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px" }}>
                                 <div style={{ fontSize: 12.5, fontWeight: 700, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER, marginBottom: 8 }}>
                                   {rs === "paid"
-                                    ? "\u{1F4B3} Payment received \u2014 confirm the renewal period and create the invoice"
+                                    ? "💳 Payment received — confirm the renewal period and create the invoice"
                                     : rs === "overdue"
                                     ? `${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue`
                                     : `Due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
@@ -838,7 +838,7 @@ export default function StorageBikesScreen() {
                                       <button key={pkg.months} className="g51-pkg"
                                         onClick={() => selectPackage(bike, pkg.months)}
                                         style={{ background: isSel ? selColor + "33" : "transparent", border: `1px solid ${isSel ? selColor : "#3A352F"}`, borderRadius: 8, color: isSel ? selColor : "#B5AEA8", fontSize: 12, fontWeight: isSel ? 700 : 400, padding: "5px 10px", cursor: "pointer", fontFamily: "inherit" }}>
-                                        {pkg.label}{tot ? ` \u00b7 AED ${tot.toLocaleString()}` : ""}
+                                        {pkg.label}{tot ? ` · AED ${tot.toLocaleString()}` : ""}
                                       </button>
                                     );
                                   })}
@@ -850,19 +850,19 @@ export default function StorageBikesScreen() {
                                     <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
                                       style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
                                       {waSent.has(bike.id)
-                                        ? `\u2713 Sent${selectedPkg[bike.id] ? ` \u2014 ${selectedPkg[bike.id]}m` : ""}`
-                                        : selectedPkg[bike.id] ? `WhatsApp \u2014 ${selectedPkg[bike.id]}m` : "WhatsApp"}
+                                        ? `✓ Sent${selectedPkg[bike.id] ? ` — ${selectedPkg[bike.id]}m` : ""}`
+                                        : selectedPkg[bike.id] ? `WhatsApp — ${selectedPkg[bike.id]}m` : "WhatsApp"}
                                     </button>
                                     {bike.monthly_rate && selectedPkg[bike.id] && (
                                       <button onClick={() => createRenewalPaymentLink(bike)} className="g51-btn g51-ghost"
                                         style={{ ...s.actionBtn, color: "#A78BFA", borderColor: "#A78BFA55" }}>
-                                        Payment link \u00b7 AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
+                                        Payment link · AED {(bike.monthly_rate * selectedPkg[bike.id]).toLocaleString()}
                                       </button>
                                     )}
                                     {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
                                       <button onClick={() => resetBikePackage(bike.id)}
                                         style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
-                                        \u21ba Reset
+                                        ↺ Reset
                                       </button>
                                     )}
                                   </div>
@@ -874,15 +874,15 @@ export default function StorageBikesScreen() {
                                     {selectedPkg[bike.id] ? (
                                       <button onClick={() => createRenewalInvoice(bike)}
                                         style={{ background: GOLD + "33", border: `1px solid ${GOLD}88`, borderRadius: 8, color: GOLD, fontSize: 13, fontWeight: 700, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit" }}>
-                                        \u{1F9FE} Create invoice \u00b7 AED {bike.monthly_rate ? (bike.monthly_rate * selectedPkg[bike.id]).toLocaleString() : ""}
+                                        🧾 Create invoice · AED {bike.monthly_rate ? (bike.monthly_rate * selectedPkg[bike.id]).toLocaleString() : ""}
                                       </button>
                                     ) : (
-                                      <span style={{ fontSize: 12.5, color: GOLD + "AA" }}>\u2190 Select a renewal period above</span>
+                                      <span style={{ fontSize: 12.5, color: GOLD + "AA" }}>← Select a renewal period above</span>
                                     )}
                                     {selectedPkg[bike.id] && (
                                       <button onClick={() => resetBikePackage(bike.id)}
                                         style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
-                                        \u21ba Reset
+                                        ↺ Reset
                                       </button>
                                     )}
                                   </div>
