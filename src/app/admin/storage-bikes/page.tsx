@@ -391,10 +391,10 @@ export default function StorageBikesScreen() {
     const months = selectedPkg[bike.id];
     if (!months) { showToast("Select a package first.", "err"); return; }
     const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
+    const amount = (bike.monthly_rate || 0) * months;
     const now = new Date().toISOString();
 
-    // Update the end date and stamp the invoice date — this is what moves
-    // the card from gold (payment received) to green (billing cycle complete).
+    // Update the end date and stamp the invoice date — moves card from gold to green
     await supabase.from("storage_bikes").update({
       storage_end_date: newEnd,
       renewal_invoiced_at: now,
@@ -409,18 +409,26 @@ export default function StorageBikesScreen() {
     });
     resetBikePackage(bike.id);
 
-    // If there's a linked booking, also create a draft Zoho invoice
-    if (bike.enquiry_id) {
+    // Create a Zoho draft invoice directly from the bike's client data.
+    // The route accepts raw fields — no linked booking required.
+    if (amount > 0) {
       try {
         const res = await fetch("/api/zoho/create-invoice", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ enquiryId: bike.enquiry_id }),
+          body: JSON.stringify({
+            customer_name: bike.client_name || bike.name,
+            phone: bike.client_phone || null,
+            email: bike.client_email || null,
+            line_item_name: "Motorcycle Storage",
+            line_item_description: `${months} month renewal — ${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""}`,
+            amount,
+          }),
         });
         const json = await res.json();
-        if (json.invoiceNumber) {
-          showToast(`Renewed to ${fmtDate(newEnd)} · Invoice ${json.invoiceNumber} created ✓`);
+        if (json.zoho_invoice_number) {
+          showToast(`Invoice ${json.zoho_invoice_number} created · renewed to ${fmtDate(newEnd)} ✓`);
         } else {
-          showToast(`Renewed to ${fmtDate(newEnd)} ✓ (Zoho: ${json.error || "could not create invoice"})`);
+          showToast(`Renewed to ${fmtDate(newEnd)} ✓ — Zoho: ${json.error || "could not create invoice"}`);
         }
       } catch {
         showToast(`Renewed to ${fmtDate(newEnd)} ✓ (Zoho unavailable)`);
