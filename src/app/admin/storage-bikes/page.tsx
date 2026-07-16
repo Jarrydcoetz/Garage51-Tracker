@@ -28,6 +28,7 @@ type StorageBike = {
   monthly_rate: number | null;
   renewal_payment_intent_id: string | null;
   renewal_paid_at: string | null;
+  renewal_invoiced_at: string | null;
 };
 type ServiceDue = {
   id: string; storage_bike_id: string; item_key: string;
@@ -51,8 +52,12 @@ const STORAGE_PACKAGES = [
   { months: 12, label: "12 months" },
 ];
 
-type RenewalStatus = "overdue" | "due_soon" | "active" | "no_date";
-const STATUS_PRIORITY: Record<RenewalStatus, number> = { overdue: 3, due_soon: 2, active: 1, no_date: 0 };
+const GOLD = "#F59E0B";
+
+type RenewalStatus = "overdue" | "due_soon" | "active" | "no_date" | "paid";
+const STATUS_PRIORITY: Record<RenewalStatus, number> = {
+  overdue: 3, due_soon: 2, paid: 1.5, active: 1, no_date: 0,
+};
 
 function waNumber(phone: string): string {
   const raw = (phone || "").trim();
@@ -67,7 +72,9 @@ function daysUntil(endDate: string | null): number {
   if (!endDate) return Infinity;
   return Math.ceil((new Date(endDate).getTime() - Date.now()) / 86400000);
 }
-function renewalStatus(endDate: string | null): RenewalStatus {
+function renewalStatus(endDate: string | null, paidAt?: string | null): RenewalStatus {
+  // Payment received takes full priority — card should never stay red once paid
+  if (paidAt) return "paid";
   if (!endDate) return "no_date";
   const d = daysUntil(endDate);
   if (d < 0) return "overdue";
@@ -165,7 +172,7 @@ export default function StorageBikesScreen() {
           event: "UPDATE", schema: "public", table: "storage_bikes",
         }, (payload) => {
           const updated = payload.new as StorageBike;
-          setBikes(prev => prev.map(b => b.id === updated.id ? { ...b, renewal_paid_at: updated.renewal_paid_at, renewal_payment_intent_id: updated.renewal_payment_intent_id } : b));
+          setBikes(prev => prev.map(b => b.id === updated.id ? { ...b, renewal_paid_at: updated.renewal_paid_at, renewal_payment_intent_id: updated.renewal_payment_intent_id, renewal_invoiced_at: updated.renewal_invoiced_at } : b));
         })
         .subscribe();
 
@@ -197,7 +204,7 @@ export default function StorageBikesScreen() {
       }
       const g = map.get(key)!;
       g.bikes.push(bike);
-      const rs = renewalStatus(bike.storage_end_date);
+      const rs = renewalStatus(bike.storage_end_date, bike.renewal_paid_at);
       if (STATUS_PRIORITY[rs] > STATUS_PRIORITY[g.worstStatus]) g.worstStatus = rs;
     }
     // Sort groups: overdue first, then due_soon, then alphabetical
@@ -219,13 +226,13 @@ export default function StorageBikesScreen() {
     return serviceDue.filter(d => d.storage_bike_id === bike.id).some(d => getStatus(bike, d) !== "ok");
   }
   function bikeMatchesFilter(bike: StorageBike): boolean {
-    const rs = renewalStatus(bike.storage_end_date);
+    const rs = renewalStatus(bike.storage_end_date, bike.renewal_paid_at);
     const hasSvc = bikeHasServiceDue(bike);
     switch (filterMode) {
       case "renewal_overdue": return rs === "overdue";
       case "renewal_due":     return rs === "due_soon";
       case "service_due":     return hasSvc;
-      case "attention":       return rs === "overdue" || rs === "due_soon" || hasSvc;
+      case "attention":       return rs === "overdue" || rs === "due_soon" || rs === "paid" || hasSvc;
       default:                return true;
     }
   }
@@ -233,11 +240,11 @@ export default function StorageBikesScreen() {
   // Per-category counts for the filter bar
   const filterCounts = useMemo(() => ({
     all: bikes.length,
-    renewal_overdue: bikes.filter(b => renewalStatus(b.storage_end_date) === "overdue").length,
-    renewal_due: bikes.filter(b => renewalStatus(b.storage_end_date) === "due_soon").length,
+    renewal_overdue: bikes.filter(b => renewalStatus(b.storage_end_date, b.renewal_paid_at) === "overdue").length,
+    renewal_due: bikes.filter(b => renewalStatus(b.storage_end_date, b.renewal_paid_at) === "due_soon").length,
     service_due: bikes.filter(b => serviceDue.filter(d => d.storage_bike_id === b.id).some(d => itemStatus(b.engine_hours, lastServicedAt(b.id, d.item_key, serviceLog, d.hours_at_last_done, "storage_bike_id"), d.interval_hours) !== "ok")).length,
     attention: bikes.filter(b => {
-      const rs = renewalStatus(b.storage_end_date);
+      const rs = renewalStatus(b.storage_end_date, b.renewal_paid_at);
       return rs === "overdue" || rs === "due_soon" || serviceDue.filter(d => d.storage_bike_id === b.id).some(d => itemStatus(b.engine_hours, lastServicedAt(b.id, d.item_key, serviceLog, d.hours_at_last_done, "storage_bike_id"), d.interval_hours) !== "ok");
     }).length,
   }), [bikes, serviceDue, serviceLog]);
@@ -380,19 +387,47 @@ export default function StorageBikesScreen() {
     });
   }
 
-  function markRenewed(bike: StorageBike) {
+  async function createRenewalInvoice(bike: StorageBike) {
     const months = selectedPkg[bike.id];
     if (!months) { showToast("Select a package first.", "err"); return; }
     const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
-    // Update the end date and clear the pending payment state
-    supabase.from("storage_bikes").update({
+    const now = new Date().toISOString();
+
+    // Update the end date and stamp the invoice date — this is what moves
+    // the card from gold (payment received) to green (billing cycle complete).
+    await supabase.from("storage_bikes").update({
       storage_end_date: newEnd,
+      renewal_invoiced_at: now,
       renewal_paid_at: null,
       renewal_payment_intent_id: null,
     }).eq("id", bike.id);
-    editBikeLocal(bike.id, { storage_end_date: newEnd, renewal_paid_at: null, renewal_payment_intent_id: null });
+    editBikeLocal(bike.id, {
+      storage_end_date: newEnd,
+      renewal_invoiced_at: now,
+      renewal_paid_at: null,
+      renewal_payment_intent_id: null,
+    });
     resetBikePackage(bike.id);
-    showToast(`Renewed to ${fmtDate(newEnd)} ✓`);
+
+    // If there's a linked booking, also create a draft Zoho invoice
+    if (bike.enquiry_id) {
+      try {
+        const res = await fetch("/api/zoho/create-invoice", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enquiryId: bike.enquiry_id }),
+        });
+        const json = await res.json();
+        if (json.invoiceNumber) {
+          showToast(`Renewed to ${fmtDate(newEnd)} · Invoice ${json.invoiceNumber} created ✓`);
+        } else {
+          showToast(`Renewed to ${fmtDate(newEnd)} ✓ (Zoho: ${json.error || "could not create invoice"})`);
+        }
+      } catch {
+        showToast(`Renewed to ${fmtDate(newEnd)} ✓ (Zoho unavailable)`);
+      }
+    } else {
+      showToast(`Renewed to ${fmtDate(newEnd)} ✓`);
+    }
   }
   async function createRenewalPaymentLink(bike: StorageBike) {
     const months = selectedPkg[bike.id] || 1;
@@ -466,7 +501,7 @@ export default function StorageBikesScreen() {
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
   const totalAttention = bikes.filter(b => {
-    const rs = renewalStatus(b.storage_end_date);
+    const rs = renewalStatus(b.storage_end_date, b.renewal_paid_at);
     return rs === "overdue" || rs === "due_soon";
   }).length;
 
@@ -609,7 +644,7 @@ export default function StorageBikesScreen() {
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {filteredGroups.map(group => {
               const isGroupOpen = expandedGroups.has(group.key);
-              const groupDueCount = group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date))).length;
+              const groupDueCount = group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date, b.renewal_paid_at))).length;
               const pendingG = pendingClient[group.key];
               const displayName = pendingG?.name ?? group.name;
               const displayPhone = pendingG?.phone ?? group.phone;
@@ -636,10 +671,10 @@ export default function StorageBikesScreen() {
                     </div>
                     {/* Renew all button for clients with multiple due bikes */}
                     {groupDueCount > 0 && displayPhone && (
-                      <button onClick={e => { e.stopPropagation(); sendRenewalWhatsApp(group, group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date)))); }}
+                      <button onClick={e => { e.stopPropagation(); sendRenewalWhatsApp(group, group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date, b.renewal_paid_at)))); }}
                         className="g51-btn g51-ghost"
                         style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", flexShrink: 0 }}>
-                        {group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date))).every(b => waSent.has(b.id))
+                        {group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date, b.renewal_paid_at))).every(b => waSent.has(b.id))
                           ? "✓ Sent"
                           : group.bikes.length > 1 ? "WhatsApp all" : "WhatsApp"}
                       </button>
@@ -676,7 +711,7 @@ export default function StorageBikesScreen() {
                         const okItems = dues.filter(d => getStatus(bike, d) === "ok");
                         const isBikeOpen = expandedBikes.has(bike.id);
                         const isOkOpen = okExpanded.has(bike.id);
-                        const rs = renewalStatus(bike.storage_end_date);
+                        const rs = renewalStatus(bike.storage_end_date, bike.renewal_paid_at);
                         const daysLeft = daysUntil(bike.storage_end_date);
                         const bikeLog = serviceLog.filter(e => e.storage_bike_id === bike.id).slice(0, 6);
                         const total = dues.length;
@@ -695,12 +730,13 @@ export default function StorageBikesScreen() {
                                   )}
                                   <span style={s.bikePrimary}>{bikePrimaryLabel(bike)}</span>
                                   {bike.bike_number && <span style={s.bikeNumTag}>{bike.bike_number}</span>}
+                                  {rs === "paid" && <span style={{ ...s.badge, color: GOLD, borderColor: GOLD + "66", background: GOLD + "22" }}>💳 Payment received</span>}
                                   {rs === "overdue" && <span style={{ ...s.badge, color: RED, borderColor: RED + "55", background: RED + "18" }}>🔴 Overdue</span>}
                                   {rs === "due_soon" && <span style={{ ...s.badge, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>⏰ {daysLeft}d</span>}
                                 </div>
                                 {bike.vin && <div style={{ fontSize: 11, color: "#6F6862", marginTop: 2 }}>VIN: {bike.vin}</div>}
                                 {(bike.storage_start_date || bike.storage_end_date) && (
-                                  <div style={{ fontSize: 11.5, color: rs === "overdue" ? RED : rs === "due_soon" ? AMBER : "#6F6862", marginTop: 3 }}>
+                                  <div style={{ fontSize: 11.5, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : rs === "due_soon" ? AMBER : "#6F6862", marginTop: 3 }}>
                                     📅 {fmtDate(bike.storage_start_date)} → {fmtDate(bike.storage_end_date)}
                                     {bike.monthly_rate ? ` · AED ${bike.monthly_rate}/mo` : ""}
                                   </div>
@@ -725,10 +761,14 @@ export default function StorageBikesScreen() {
                             </div>
 
                             {/* Renewal package strip */}
-                            {(rs === "overdue" || rs === "due_soon") && (
-                              <div style={{ margin: "0 14px 10px", background: rs === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${rs === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px" }}>
-                                <div style={{ fontSize: 12.5, fontWeight: 700, color: rs === "overdue" ? RED : AMBER, marginBottom: 8 }}>
-                                  {rs === "overdue" ? `${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue` : `Due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
+                            {(rs === "overdue" || rs === "due_soon" || rs === "paid") && (
+                              <div style={{ margin: "0 14px 10px", background: rs === "paid" ? GOLD + "15" : rs === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px" }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER, marginBottom: 8 }}>
+                                  {rs === "paid"
+                                    ? "💳 Payment received — select a package and mark as renewed"
+                                    : rs === "overdue"
+                                    ? `${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue`
+                                    : `Due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
                                 </div>
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
                                   {STORAGE_PACKAGES.map(pkg => {
@@ -759,15 +799,19 @@ export default function StorageBikesScreen() {
                                   {/* Payment received — set automatically by the Ziina webhook
                                       when the client pays. No manual action needed. */}
                                   {bike.renewal_paid_at && (
-                                    <span style={{ background: "#10301C", border: `1px solid ${GREEN}55`, borderRadius: 8, color: GREEN, fontSize: 12.5, fontWeight: 700, padding: "6px 13px" }}>
+                                    <span style={{ background: GOLD + "22", border: `1px solid ${GOLD}66`, borderRadius: 8, color: GOLD, fontSize: 12.5, fontWeight: 700, padding: "6px 13px" }}>
                                       💳 Payment received
                                     </span>
                                   )}
-                                  {/* Mark as renewed — available once WhatsApp is sent OR payment is received */}
-                                  {(waSent.has(bike.id) || bike.renewal_paid_at) && selectedPkg[bike.id] && (
-                                    <button onClick={() => markRenewed(bike)}
-                                      style={{ background: bike.renewal_paid_at ? GREEN + "33" : "#10301C", border: `1px solid ${GREEN}${bike.renewal_paid_at ? "88" : "55"}`, borderRadius: 8, color: GREEN, fontSize: 12.5, fontWeight: 700, padding: "6px 13px", cursor: "pointer", fontFamily: "inherit" }}>
-                                      ✓ Mark as renewed
+                                  {/* Create invoice — the final step that closes the billing cycle.
+                                      Available once WhatsApp is sent OR payment is received.
+                                      Clicking it: updates the end date, stamps renewal_invoiced_at,
+                                      clears payment fields, optionally creates a Zoho invoice.
+                                      Card naturally moves to green since new end date is in the future. */}
+                                  {bike.renewal_paid_at && selectedPkg[bike.id] && (
+                                    <button onClick={() => createRenewalInvoice(bike)}
+                                      style={{ background: bike.renewal_paid_at ? GOLD + "33" : "#10301C", border: `1px solid ${GOLD}${bike.renewal_paid_at ? "88" : "55"}`, borderRadius: 8, color: GOLD, fontSize: 12.5, fontWeight: 700, padding: "6px 13px", cursor: "pointer", fontFamily: "inherit" }}>
+                                      🧾 Create invoice
                                     </button>
                                   )}
                                   {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
