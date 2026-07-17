@@ -29,7 +29,18 @@ type StorageBike = {
   renewal_payment_intent_id: string | null;
   renewal_paid_at: string | null;
   renewal_invoiced_at: string | null;
+  service_request_text: string | null;
+  service_request_sent_at: string | null;
+  service_enquiry_id: string | null;
+  service_completed_at: string | null;
 };
+type ServiceEnquiry = {
+  id: string; job_status: string | null; stage: string;
+  estimated_value: number; paid_at: string | null;
+  payment_intent_id: string | null; work_required: string | null;
+  assigned_to: string | null;
+};
+type StaffProfile = { id: string; name: string | null; role: string };
 type ServiceDue = {
   id: string; storage_bike_id: string; item_key: string;
   interval_hours: number; hours_at_last_done: number;
@@ -139,6 +150,14 @@ export default function StorageBikesScreen() {
   const [logNotes, setLogNotes] = useState("");
   const [loggingItem, setLoggingItem] = useState(false);
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
+  // Service request flow state
+  const [servicePanel, setServicePanel] = useState<string | null>(null);
+  const [serviceDraft, setServiceDraft] = useState<Record<string, string>>({});
+  const [jobCardPanel, setJobCardPanel] = useState<string | null>(null);
+  const [jobCardForm, setJobCardForm] = useState({ work: "", assignedTo: "", amount: "", date: "" });
+  const [creatingJob, setCreatingJob] = useState(false);
+  const [profiles, setProfiles] = useState<StaffProfile[]>([]);
+  const [serviceEnquiries, setServiceEnquiries] = useState<Record<string, ServiceEnquiry>>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -146,18 +165,32 @@ export default function StorageBikesScreen() {
       if (!data.session) { router.replace("/login"); return; }
       const { data: prof } = await supabase.from("profiles").select("id, name").eq("id", data.session.user.id).single();
       if (prof) setMyName((prof as { name: string | null }).name);
-      const [{ data: b }, { data: sd }, { data: sl }, { data: enq }] = await Promise.all([
+      const [{ data: b }, { data: sd }, { data: sl }, { data: enq }, { data: profData }] = await Promise.all([
         supabase.from("storage_bikes").select("*").eq("active", true).order("reference_number"),
         supabase.from("storage_bikes_service_due").select("*"),
         supabase.from("storage_bikes_service_log").select("*").order("created_at", { ascending: false }),
         supabase.from("enquiries").select("id,customer_name,phone,email,bike_details,storage_start_date,storage_end_date").eq("service_type", "motorcycle_storage"),
+        supabase.from("profiles").select("id,name,role").eq("active", true),
       ]);
       const bikeList = (b as StorageBike[]) || [];
       setBikes(bikeList);
       setServiceDue((sd as ServiceDue[]) || []);
       setServiceLog((sl as ServiceLogEntry[]) || []);
       setEnquiries((enq as StorageEnquiry[]) || []);
-      // Start with all groups expanded but bikes collapsed
+      setProfiles((profData as StaffProfile[]) || []);
+
+      // Load linked service enquiries for bikes that have one
+      const svcIds = bikeList.map(bk => bk.service_enquiry_id).filter(Boolean) as string[];
+      if (svcIds.length > 0) {
+        const { data: svcEnqData } = await supabase
+          .from("enquiries")
+          .select("id,job_status,stage,estimated_value,paid_at,payment_intent_id,work_required,assigned_to")
+          .in("id", svcIds);
+        const enqMap: Record<string, ServiceEnquiry> = {};
+        for (const e of (svcEnqData || [])) { enqMap[(e as ServiceEnquiry).id] = e as ServiceEnquiry; }
+        setServiceEnquiries(enqMap);
+      }
+
       const groupKeys = new Set<string>();
       for (const bk of bikeList) {
         groupKeys.add(bk.client_phone || `name:${bk.client_name || bk.id}`);
@@ -165,19 +198,25 @@ export default function StorageBikesScreen() {
       setExpandedGroups(groupKeys);
       setReady(true);
 
-      // Realtime: when the webhook sets renewal_paid_at on a bike, update the
-      // card immediately without requiring a page reload.
-      const channel = supabase
-        .channel("storage_bikes_renewal")
-        .on("postgres_changes", {
-          event: "UPDATE", schema: "public", table: "storage_bikes",
-        }, (payload) => {
+      // Realtime: storage bike field updates (renewal + service fields)
+      const bikesChannel = supabase
+        .channel("storage_bikes_changes")
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "storage_bikes" }, (payload) => {
           const updated = payload.new as StorageBike;
-          setBikes(prev => prev.map(b => b.id === updated.id ? { ...b, renewal_paid_at: updated.renewal_paid_at, renewal_payment_intent_id: updated.renewal_payment_intent_id, renewal_invoiced_at: updated.renewal_invoiced_at } : b));
+          setBikes(prev => prev.map(b => b.id === updated.id ? { ...b, ...updated } : b));
         })
         .subscribe();
 
-      return () => { supabase.removeChannel(channel); };
+      // Realtime: enquiry payment updates (service job paid_at)
+      const enqChannel = supabase
+        .channel("service_enquiries_changes")
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "enquiries" }, (payload) => {
+          const updated = payload.new as ServiceEnquiry;
+          setServiceEnquiries(prev => prev[updated.id] ? { ...prev, [updated.id]: { ...prev[updated.id], ...updated } } : prev);
+        })
+        .subscribe();
+
+      return () => { supabase.removeChannel(bikesChannel); supabase.removeChannel(enqChannel); };
     });
   }, [router]);
 
@@ -478,6 +517,129 @@ export default function StorageBikesScreen() {
         : "WhatsApp opened with payment link included."
       );
     }
+  }
+
+  // ---- service request functions ----
+
+  async function sendServiceRequest(bike: StorageBike, group: ClientGroup) {
+    const phone = pendingClient[group.key]?.phone || group.phone;
+    if (!phone) { showToast("No client phone number.", "err"); return; }
+    const text = serviceDraft[bike.id] || bike.service_request_text || "";
+    if (!text.trim()) { showToast("Describe the service first.", "err"); return; }
+    const name = group.name || bike.client_name || "there";
+    const msg = `Hi ${name}, we're checking in on your ${bikePrimaryLabel(bike)} currently in storage at Garage51 🔧\n\n` +
+      `Our team has identified the following service work required:\n${text}\n\n` +
+      `This isn't included in your storage plan and will be priced separately. Please reply *YES* to confirm you'd like us to proceed, or let us know if you have any questions.`;
+    window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
+    const now = new Date().toISOString();
+    await supabase.from("storage_bikes").update({ service_request_text: text.trim(), service_request_sent_at: now }).eq("id", bike.id);
+    editBikeLocal(bike.id, { service_request_text: text.trim(), service_request_sent_at: now });
+    setServicePanel(null);
+    showToast("Service request sent via WhatsApp.");
+  }
+
+  async function createJobCard(bike: StorageBike, group: ClientGroup) {
+    if (!jobCardForm.work.trim()) { showToast("Describe the work required.", "err"); return; }
+    if (!jobCardForm.amount || Number(jobCardForm.amount) < 1) { showToast("Enter an estimated amount.", "err"); return; }
+    setCreatingJob(true);
+    const { data, error } = await supabase.from("enquiries").insert({
+      service_type: "workshop",
+      customer_name: bike.client_name || group.name || bike.name,
+      phone: bike.client_phone || group.phone || null,
+      email: bike.client_email || group.email || null,
+      stage: "booked",
+      job_status: "queued",
+      bike_details: bikePrimaryLabel(bike),
+      bike_year: bike.year || null,
+      work_required: jobCardForm.work.trim(),
+      assigned_to: jobCardForm.assignedTo || null,
+      estimated_value: Number(jobCardForm.amount),
+      preferred_date: jobCardForm.date || null,
+      notes: `Storage bike ${bike.reference_number || bike.id.slice(0, 8)} — service request`,
+    }).select().single();
+    if (error || !data) { showToast(error?.message || "Could not create job.", "err"); setCreatingJob(false); return; }
+    const enqId = (data as { id: string }).id;
+    await supabase.from("storage_bikes").update({ service_enquiry_id: enqId }).eq("id", bike.id);
+    editBikeLocal(bike.id, { service_enquiry_id: enqId });
+    setServiceEnquiries(prev => ({ ...prev, [enqId]: { ...data as ServiceEnquiry } }));
+    setJobCardPanel(null);
+    setJobCardForm({ work: "", assignedTo: "", amount: "", date: "" });
+    setCreatingJob(false);
+    showToast("Job card created — now in the workshop queue.");
+  }
+
+  async function sendServicePaymentWhatsApp(bike: StorageBike, group: ClientGroup, enq: ServiceEnquiry) {
+    const phone = pendingClient[group.key]?.phone || group.phone;
+    if (!phone) { showToast("No client phone number.", "err"); return; }
+    const amount = enq.estimated_value;
+    const name = group.name || bike.client_name || "there";
+    let paymentUrl = "";
+    if (amount > 0) {
+      try {
+        const res = await fetch("/api/payment-link", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            amount,
+            description: `Service — ${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""}`,
+          }),
+        });
+        const json = await res.json();
+        if (json.url && json.id) {
+          paymentUrl = json.url;
+          await supabase.from("enquiries").update({ payment_intent_id: json.id }).eq("id", enq.id);
+          setServiceEnquiries(prev => ({ ...prev, [enq.id]: { ...prev[enq.id], payment_intent_id: json.id } }));
+        }
+      } catch { /* proceed without link */ }
+    }
+    const msg = `Hi ${name}, we've scheduled the service for your ${bikePrimaryLabel(bike)} at Garage51! 🔧\n\n` +
+      `Work: ${enq.work_required || jobCardForm.work}\n` +
+      `Amount: AED ${amount.toLocaleString()}\n\n` +
+      (paymentUrl ? `Pay securely here:\n${paymentUrl}\n\n` : "") +
+      `Let us know if you have any questions. Thank you! 🙏`;
+    window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
+    showToast("WhatsApp opened with payment link.");
+  }
+
+  async function createServiceInvoice(bike: StorageBike, enq: ServiceEnquiry) {
+    const amount = enq.estimated_value;
+    const now = new Date().toISOString();
+    // Create Zoho invoice
+    if (amount > 0) {
+      try {
+        const res = await fetch("/api/zoho/create-invoice", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            customer_name: bike.client_name || bike.name,
+            phone: bike.client_phone || null,
+            email: bike.client_email || null,
+            line_item_name: "Motorcycle Service",
+            line_item_description: enq.work_required || `Service — ${bikePrimaryLabel(bike)}`,
+            amount,
+          }),
+        });
+        const json = await res.json();
+        if (json.zoho_invoice_number) {
+          showToast(`Invoice ${json.zoho_invoice_number} created ✓`);
+        } else {
+          showToast(`Invoice created ✓ (Zoho: ${json.error || "unavailable"})`);
+        }
+      } catch { showToast("Invoice marked — Zoho unavailable."); }
+    }
+    // Mark service cycle complete on the bike
+    await supabase.from("storage_bikes").update({ service_completed_at: now }).eq("id", bike.id);
+    editBikeLocal(bike.id, { service_completed_at: now });
+    // Mark enquiry as paid/complete
+    await supabase.from("enquiries").update({ stage: "paid", job_status: "completed" }).eq("id", enq.id);
+    setServiceEnquiries(prev => ({ ...prev, [enq.id]: { ...prev[enq.id], stage: "paid", job_status: "completed" } }));
+  }
+
+  async function resetServiceRequest(bike: StorageBike) {
+    await supabase.from("storage_bikes").update({
+      service_request_text: null, service_request_sent_at: null,
+      service_enquiry_id: null, service_completed_at: null,
+    }).eq("id", bike.id);
+    editBikeLocal(bike.id, { service_request_text: null, service_request_sent_at: null, service_enquiry_id: null, service_completed_at: null });
+    showToast("Service request cleared.");
   }
 
   async function createRenewalInvoice(bike: StorageBike) {
@@ -991,6 +1153,155 @@ export default function StorageBikesScreen() {
                                   </div>
                                 </div>
 
+                                {/* ---- SERVICE REQUEST ---- */}
+                                {(() => {
+                                  const svcEnq = bike.service_enquiry_id ? serviceEnquiries[bike.service_enquiry_id] : null;
+                                  const isComplete = !!bike.service_completed_at;
+                                  return (
+                                    <div style={{ ...s.section, borderTop: "1px solid #2A2623", marginTop: 8 }}>
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                                        <div style={s.sectionLabel}>SERVICE REQUEST</div>
+                                        {(bike.service_request_sent_at || bike.service_enquiry_id) && (
+                                          <button onClick={() => resetServiceRequest(bike)}
+                                            style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 11.5, cursor: "pointer" }}>
+                                            ↺ Clear
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      {/* STATE 1: No active request */}
+                                      {!bike.service_request_sent_at && !bike.service_enquiry_id && (
+                                        servicePanel === bike.id ? (
+                                          <div>
+                                            <textarea className="g51-input"
+                                              value={serviceDraft[bike.id] || ""}
+                                              onChange={e => setServiceDraft(prev => ({ ...prev, [bike.id]: e.target.value }))}
+                                              placeholder="Describe the service required — e.g. oil change, brake pads, chain replacement…"
+                                              rows={3}
+                                              style={{ ...s.input, width: "100%", resize: "vertical", marginBottom: 8 }} />
+                                            <div style={{ display: "flex", gap: 8 }}>
+                                              <button onClick={() => sendServiceRequest(bike, group)}
+                                                style={{ background: "#3B9EFF", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "8px 14px", cursor: "pointer" }}>
+                                                Send WhatsApp request
+                                              </button>
+                                              <button onClick={() => setServicePanel(null)} className="g51-btn g51-ghost" style={s.actionBtn}>Cancel</button>
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <button onClick={() => { setServicePanel(bike.id); setServiceDraft(prev => ({ ...prev, [bike.id]: bike.service_request_text || "" })); }}
+                                            className="g51-btn g51-ghost" style={s.actionBtn}>
+                                            + Request service from client
+                                          </button>
+                                        )
+                                      )}
+
+                                      {/* STATE 2: Request sent, awaiting job card */}
+                                      {bike.service_request_sent_at && !bike.service_enquiry_id && (
+                                        <div>
+                                          <div style={{ fontSize: 12.5, color: "#3B9EFF", fontWeight: 600, marginBottom: 4 }}>
+                                            ✓ Request sent · {fmtDate(bike.service_request_sent_at)}
+                                          </div>
+                                          <div style={{ fontSize: 12.5, color: "#9A938D", marginBottom: 10, fontStyle: "italic" }}>
+                                            {bike.service_request_text}
+                                          </div>
+                                          {jobCardPanel === bike.id ? (
+                                            <div style={{ background: "#1B1816", border: "1px solid #2A2623", borderRadius: 10, padding: "12px 14px" }}>
+                                              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 10 }}>JOB CARD DETAILS</div>
+                                              <div style={s.fieldRow}>
+                                                <label style={{ ...s.fieldCtrl, flex: "2 1 200px" }}>
+                                                  <span style={s.fieldLabel}>Work required</span>
+                                                  <textarea className="g51-input" value={jobCardForm.work}
+                                                    onChange={e => setJobCardForm(f => ({ ...f, work: e.target.value }))}
+                                                    rows={2} style={{ ...s.input, resize: "vertical" }} />
+                                                </label>
+                                                <label style={{ ...s.fieldCtrl, flex: "1 1 120px" }}>
+                                                  <span style={s.fieldLabel}>Estimated (AED)</span>
+                                                  <input className="g51-input" type="number" value={jobCardForm.amount}
+                                                    onChange={e => setJobCardForm(f => ({ ...f, amount: e.target.value }))} style={s.input} />
+                                                </label>
+                                              </div>
+                                              <div style={{ ...s.fieldRow, marginTop: 8 }}>
+                                                <label style={{ ...s.fieldCtrl, flex: "1 1 140px" }}>
+                                                  <span style={s.fieldLabel}>Assign to</span>
+                                                  <select className="g51-input" value={jobCardForm.assignedTo}
+                                                    onChange={e => setJobCardForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>
+                                                    <option value="">Unassigned</option>
+                                                    {profiles.filter(p => p.role === "mechanic" || p.role === "admin").map(p => (
+                                                      <option key={p.id} value={p.id}>{p.name || p.id}</option>
+                                                    ))}
+                                                  </select>
+                                                </label>
+                                                <label style={{ ...s.fieldCtrl, flex: "1 1 130px" }}>
+                                                  <span style={s.fieldLabel}>Preferred date</span>
+                                                  <input className="g51-input" type="date" value={jobCardForm.date}
+                                                    onChange={e => setJobCardForm(f => ({ ...f, date: e.target.value }))} style={s.input} />
+                                                </label>
+                                              </div>
+                                              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                                                <button onClick={() => createJobCard(bike, group)} disabled={creatingJob}
+                                                  style={{ background: "#ED1C24", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "8px 14px", cursor: "pointer" }}>
+                                                  {creatingJob ? "Creating…" : "Push to workshop queue"}
+                                                </button>
+                                                <button onClick={() => setJobCardPanel(null)} className="g51-btn g51-ghost" style={s.actionBtn}>Cancel</button>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <button onClick={() => { setJobCardPanel(bike.id); setJobCardForm(f => ({ ...f, work: bike.service_request_text || "" })); }}
+                                              style={{ background: "#ED1C2422", border: "1px solid #ED1C2466", borderRadius: 8, color: "#ED1C24", fontSize: 13, fontWeight: 700, padding: "7px 14px", cursor: "pointer" }}>
+                                              Create job card →
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+
+                                      {/* STATE 3: Job in queue — payment flow */}
+                                      {svcEnq && !isComplete && (
+                                        <div>
+                                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+                                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#3B9EFF" }}>
+                                              🔧 Job in workshop queue
+                                            </span>
+                                            <span style={{ fontSize: 11.5, color: "#6F6862" }}>
+                                              {svcEnq.job_status} · AED {svcEnq.estimated_value.toLocaleString()}
+                                            </span>
+                                          </div>
+                                          <div style={{ fontSize: 12.5, color: "#9A938D", marginBottom: 10, fontStyle: "italic" }}>
+                                            {svcEnq.work_required}
+                                          </div>
+                                          {!svcEnq.paid_at ? (
+                                            <button onClick={() => sendServicePaymentWhatsApp(bike, group, svcEnq)}
+                                              style={{ background: GREEN + "22", border: `1px solid ${GREEN}55`, borderRadius: 8, color: GREEN, fontSize: 13, fontWeight: 700, padding: "7px 14px", cursor: "pointer" }}>
+                                              WhatsApp + payment link · AED {svcEnq.estimated_value.toLocaleString()}
+                                            </button>
+                                          ) : (
+                                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                                              <span style={{ background: GOLD + "22", border: `1px solid ${GOLD}66`, borderRadius: 8, color: GOLD, fontSize: 12.5, fontWeight: 700, padding: "6px 13px" }}>
+                                                💳 Payment received
+                                              </span>
+                                              <button onClick={() => createServiceInvoice(bike, svcEnq)}
+                                                style={{ background: GOLD + "33", border: `1px solid ${GOLD}88`, borderRadius: 8, color: GOLD, fontSize: 13, fontWeight: 700, padding: "7px 14px", cursor: "pointer" }}>
+                                                🧾 Create invoice
+                                              </button>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+
+                                      {/* STATE 4: Complete */}
+                                      {isComplete && (
+                                        <div style={{ fontSize: 12.5, color: GREEN, fontWeight: 600 }}>
+                                          ✓ Service complete · {fmtDate(bike.service_completed_at)}
+                                          <button onClick={() => resetServiceRequest(bike)}
+                                            style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 11.5, cursor: "pointer", marginLeft: 10 }}>
+                                            Start new request
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })()}
+
+                                {/* ---- MAINTENANCE SERVICE ITEMS ---- */}
                                 {/* Service items */}
                                 {overdueItems.length > 0 && (
                                   <div style={{ background: RED + "0e", border: `1px solid ${RED}33`, borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
