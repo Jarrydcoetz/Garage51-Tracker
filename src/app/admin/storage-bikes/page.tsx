@@ -563,12 +563,11 @@ export default function StorageBikesScreen() {
       job_status: "queued",
       bike_details: bikePrimaryLabel(bike),
       bike_year: bike.year || null,
-      vin: bike.vin || null,
       work_required: jobCardForm.work.trim(),
       assigned_to: jobCardForm.assignedTo || null,
       estimated_value: Number(jobCardForm.amount),
       preferred_date: jobCardForm.date || null,
-      notes: `Storage bike ${bike.reference_number || bike.id.slice(0, 8)} — service confirmed by client`,
+      notes: `Storage bike ${bike.reference_number || bike.id.slice(0, 8)}${bike.vin ? ` · VIN: ${bike.vin}` : ""} — service confirmed by client`,
     }).select().single();
     if (error || !data) { showToast(error?.message || "Could not create job.", "err"); setCreatingJob(false); return; }
     const enqId = (data as { id: string }).id;
