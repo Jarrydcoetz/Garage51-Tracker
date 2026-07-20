@@ -4,11 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
-import {
-  SERVICE_ITEMS, SERVICE_LABEL, DUE_SOON_THRESHOLD_HOURS,
-  type ServiceLogEntry, hoursSince, hoursRemaining, itemStatus,
-  lastServicedAt,
-} from "../../../lib/bikeServiceShared";
+// bikeServiceShared no longer used — service tracking is now fully custom per bike
 
 const RED = "#ED1C24";
 const AMBER = "#FFB02E";
@@ -41,9 +37,15 @@ type ServiceEnquiry = {
   assigned_to: string | null;
 };
 type StaffProfile = { id: string; name: string | null; role: string };
-type ServiceDue = {
-  id: string; storage_bike_id: string; item_key: string;
-  interval_hours: number; hours_at_last_done: number;
+type SbServiceItem = {
+  id: string; bike_id: string; name: string;
+  interval_hours: number | null; last_done_hours: number | null;
+  active: boolean;
+};
+type SbServiceLog = {
+  id: string; bike_id: string; item_id: string | null; item_name: string;
+  done_at: string; done_at_hours: number | null; performed_by: string | null; notes: string | null;
+  created_at: string;
 };
 type ClientGroup = {
   key: string; name: string; phone: string; email: string | null;
@@ -130,12 +132,11 @@ export default function StorageBikesScreen() {
   const [myName, setMyName] = useState<string | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [bikes, setBikes] = useState<StorageBike[]>([]);
-  const [serviceDue, setServiceDue] = useState<ServiceDue[]>([]);
-  const [serviceLog, setServiceLog] = useState<ServiceLogEntry[]>([]);
+  const [svcItems, setSvcItems] = useState<SbServiceItem[]>([]);
+  const [svcLogs, setSvcLogs] = useState<SbServiceLog[]>([]);
   const [enquiries, setEnquiries] = useState<StorageEnquiry[]>([]);
   const [expandedBikes, setExpandedBikes] = useState<Set<string>>(new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [okExpanded, setOkExpanded] = useState<Set<string>>(new Set());
   const [adding, setAdding] = useState(false);
   const [creating, setCreating] = useState(false);
   const [addError, setAddError] = useState("");
@@ -144,11 +145,12 @@ export default function StorageBikesScreen() {
   const [waSent, setWaSent] = useState<Set<string>>(new Set());
   const [pendingClient, setPendingClient] = useState<Record<string, { name: string; phone: string; email: string }>>({});
   const [savingClient, setSavingClient] = useState<Record<string, boolean>>({});
-  const [logFormOpen, setLogFormOpen] = useState<{ bikeId: string; itemKey: string } | null>(null);
-  const [logHours, setLogHours] = useState("");
-  const [logBy, setLogBy] = useState("");
-  const [logNotes, setLogNotes] = useState("");
-  const [loggingItem, setLoggingItem] = useState(false);
+  // Custom service log state
+  const [newItemPanel, setNewItemPanel] = useState<string | null>(null); // bikeId
+  const [newItemForm, setNewItemForm] = useState({ name: "", intervalHours: "" });
+  const [logPanel, setLogPanel] = useState<string | null>(null); // itemId
+  const [logForm, setLogForm] = useState({ doneAt: new Date().toISOString().slice(0, 10), doneHours: "", by: "", notes: "" });
+  const [savingLog, setSavingLog] = useState(false);
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
   // Service request flow state
   const [servicePanel, setServicePanel] = useState<string | null>(null);
@@ -167,15 +169,15 @@ export default function StorageBikesScreen() {
       if (prof) setMyName((prof as { name: string | null }).name);
       const [{ data: b }, { data: sd }, { data: sl }, { data: enq }, { data: profData }] = await Promise.all([
         supabase.from("storage_bikes").select("*").eq("active", true).order("reference_number"),
-        supabase.from("storage_bikes_service_due").select("*"),
-        supabase.from("storage_bikes_service_log").select("*").order("created_at", { ascending: false }),
+        supabase.from("sb_service_items").select("*").eq("active", true).order("created_at"),
+        supabase.from("sb_service_log").select("*").order("created_at", { ascending: false }),
         supabase.from("enquiries").select("id,customer_name,phone,email,bike_details,storage_start_date,storage_end_date").eq("service_type", "motorcycle_storage"),
         supabase.from("profiles").select("id,name,role").eq("active", true),
       ]);
       const bikeList = (b as StorageBike[]) || [];
       setBikes(bikeList);
-      setServiceDue((sd as ServiceDue[]) || []);
-      setServiceLog((sl as ServiceLogEntry[]) || []);
+      setSvcItems((sd as SbServiceItem[]) || []);
+      setSvcLogs((sl as SbServiceLog[]) || []);
       setEnquiries((enq as StorageEnquiry[]) || []);
       setProfiles((profData as StaffProfile[]) || []);
 
@@ -228,8 +230,6 @@ export default function StorageBikesScreen() {
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
   function toggleBike(id: string) { setExpandedBikes(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   function toggleGroup(key: string) { setExpandedGroups(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; }); }
-  function toggleOk(id: string) { setOkExpanded(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
-
   // Group bikes by client phone (or name fallback)
   const clientGroups = useMemo<ClientGroup[]>(() => {
     const map = new Map<string, ClientGroup>();
@@ -253,17 +253,19 @@ export default function StorageBikesScreen() {
     );
   }, [bikes]);
 
-  // ---- service tracking helpers ----
-  function getLastDoneHours(bikeId: string, due: ServiceDue): number {
-    return lastServicedAt(bikeId, due.item_key, serviceLog, due.hours_at_last_done, "storage_bike_id");
+  // ---- custom service item helpers ----
+  function itemDueStatus(item: SbServiceItem, bikeHours: number): "due" | "due_soon" | "ok" | "manual" {
+    if (!item.interval_hours) return "manual";
+    const since = bikeHours - (item.last_done_hours ?? 0);
+    if (since >= item.interval_hours) return "due";
+    if (since >= item.interval_hours - 5) return "due_soon";
+    return "ok";
   }
-  function getStatus(bike: StorageBike, due: ServiceDue) {
-    return itemStatus(bike.engine_hours, getLastDoneHours(bike.id, due), due.interval_hours);
-  }
-
-  // Per-bike filter predicate — evaluated after getStatus is defined
   function bikeHasServiceDue(bike: StorageBike): boolean {
-    return serviceDue.filter(d => d.storage_bike_id === bike.id).some(d => getStatus(bike, d) !== "ok");
+    return svcItems.filter(i => i.bike_id === bike.id).some(i => {
+      const s = itemDueStatus(i, bike.engine_hours);
+      return s === "due" || s === "due_soon";
+    });
   }
   function bikeMatchesFilter(bike: StorageBike): boolean {
     const rs = renewalStatus(bike.storage_end_date, bike.renewal_paid_at);
@@ -277,74 +279,73 @@ export default function StorageBikesScreen() {
     }
   }
 
-  // Per-category counts for the filter bar
   const filterCounts = useMemo(() => ({
     all: bikes.length,
     renewal_overdue: bikes.filter(b => renewalStatus(b.storage_end_date, b.renewal_paid_at) === "overdue").length,
     renewal_due: bikes.filter(b => renewalStatus(b.storage_end_date, b.renewal_paid_at) === "due_soon").length,
-    service_due: bikes.filter(b => serviceDue.filter(d => d.storage_bike_id === b.id).some(d => itemStatus(b.engine_hours, lastServicedAt(b.id, d.item_key, serviceLog, d.hours_at_last_done, "storage_bike_id"), d.interval_hours) !== "ok")).length,
+    service_due: bikes.filter(b => bikeHasServiceDue(b)).length,
     attention: bikes.filter(b => {
       const rs = renewalStatus(b.storage_end_date, b.renewal_paid_at);
-      return rs === "overdue" || rs === "due_soon" || serviceDue.filter(d => d.storage_bike_id === b.id).some(d => itemStatus(b.engine_hours, lastServicedAt(b.id, d.item_key, serviceLog, d.hours_at_last_done, "storage_bike_id"), d.interval_hours) !== "ok");
+      return rs === "overdue" || rs === "due_soon" || rs === "paid" || bikeHasServiceDue(b);
     }).length,
-  }), [bikes, serviceDue, serviceLog]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [bikes, svcItems]);
 
-  // Client groups after applying the bike-level filter
   const filteredGroups = useMemo(() => {
     const q = search.trim().toLowerCase();
-
-    // Start with the status filter
     let groups = filterMode === "all"
       ? clientGroups
-      : clientGroups
-          .map(group => ({ ...group, bikes: group.bikes.filter(bikeMatchesFilter) }))
-          .filter(group => group.bikes.length > 0);
-
-    // Then apply the search on top
+      : clientGroups.map(group => ({ ...group, bikes: group.bikes.filter(bikeMatchesFilter) })).filter(g => g.bikes.length > 0);
     if (q) {
       groups = groups.map(group => {
-        // Client-level match: show entire group with all its bikes
-        const clientMatch =
-          group.name.toLowerCase().includes(q) ||
-          group.phone.includes(q) ||
-          (group.email || "").toLowerCase().includes(q);
+        const clientMatch = group.name.toLowerCase().includes(q) || group.phone.includes(q) || (group.email || "").toLowerCase().includes(q);
         if (clientMatch) return group;
-
-        // Bike-level match: filter down to matching bikes
-        const matchingBikes = group.bikes.filter(b =>
-          bikePrimaryLabel(b).toLowerCase().includes(q) ||
-          (b.reference_number || "").toLowerCase().includes(q) ||
-          (b.vin || "").toLowerCase().includes(q) ||
-          (b.bike_number || "").toLowerCase().includes(q)
-        );
-        return { ...group, bikes: matchingBikes };
-      }).filter(group => group.bikes.length > 0);
+        return { ...group, bikes: group.bikes.filter(b => bikePrimaryLabel(b).toLowerCase().includes(q) || (b.reference_number || "").toLowerCase().includes(q) || (b.vin || "").toLowerCase().includes(q) || (b.bike_number || "").toLowerCase().includes(q)) };
+      }).filter(g => g.bikes.length > 0);
     }
-
     return groups;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientGroups, filterMode, serviceDue, serviceLog, search]);
-  function openLogForm(bikeId: string, itemKey: string) {
-    const bike = bikes.find(b => b.id === bikeId);
-    setLogHours(String(bike?.engine_hours ?? ""));
-    setLogBy(myName || "");
-    setLogNotes("");
-    setLogFormOpen({ bikeId, itemKey });
-  }
-  async function submitLog(bike: StorageBike, due: ServiceDue) {
-    const hrs = Number(logHours);
-    if (!hrs || hrs <= 0) { showToast("Enter valid hours.", "err"); return; }
-    setLoggingItem(true);
-    const { data, error } = await supabase.from("storage_bikes_service_log").insert({
-      storage_bike_id: bike.id, item_key: due.item_key, hours_at_service: hrs,
-      performed_by: logBy.trim() || null, notes: logNotes.trim() || null,
+  }, [clientGroups, filterMode, svcItems, search]);
+
+  async function addServiceItem(bikeId: string, bike: StorageBike) {
+    if (!newItemForm.name.trim()) { showToast("Enter an item name.", "err"); return; }
+    const { data, error } = await supabase.from("sb_service_items").insert({
+      bike_id: bikeId,
+      name: newItemForm.name.trim(),
+      interval_hours: newItemForm.intervalHours ? Number(newItemForm.intervalHours) : null,
+      last_done_hours: newItemForm.intervalHours ? bike.engine_hours : null,
     }).select().single();
-    if (error || !data) { showToast(error?.message || "Could not log service.", "err"); setLoggingItem(false); return; }
-    await supabase.from("storage_bikes_service_due").update({ hours_at_last_done: hrs }).eq("id", due.id);
-    setServiceDue(prev => prev.map(d => d.id === due.id ? { ...d, hours_at_last_done: hrs } : d));
-    setServiceLog(prev => [data as ServiceLogEntry, ...prev]);
-    setLogFormOpen(null); setLoggingItem(false);
-    showToast(`${SERVICE_LABEL[due.item_key] || due.item_key} logged.`);
+    if (error || !data) { showToast(error?.message || "Could not add item.", "err"); return; }
+    setSvcItems(prev => [...prev, data as SbServiceItem]);
+    setNewItemPanel(null);
+    setNewItemForm({ name: "", intervalHours: "" });
+    showToast(`"${(data as SbServiceItem).name}" added.`);
+  }
+
+  async function removeServiceItem(item: SbServiceItem) {
+    await supabase.from("sb_service_items").update({ active: false }).eq("id", item.id);
+    setSvcItems(prev => prev.filter(i => i.id !== item.id));
+  }
+
+  async function logServiceDone(item: SbServiceItem, bike: StorageBike) {
+    setSavingLog(true);
+    const doneHours = logForm.doneHours ? Number(logForm.doneHours) : null;
+    const { data, error } = await supabase.from("sb_service_log").insert({
+      bike_id: bike.id, item_id: item.id, item_name: item.name,
+      done_at: logForm.doneAt || new Date().toISOString().slice(0, 10),
+      done_at_hours: doneHours, performed_by: logForm.by.trim() || null, notes: logForm.notes.trim() || null,
+    }).select().single();
+    if (error || !data) { showToast(error?.message || "Could not log.", "err"); setSavingLog(false); return; }
+    // Update last_done_hours on the item so status recalculates
+    if (doneHours) {
+      await supabase.from("sb_service_items").update({ last_done_hours: doneHours }).eq("id", item.id);
+      setSvcItems(prev => prev.map(i => i.id === item.id ? { ...i, last_done_hours: doneHours } : i));
+    }
+    setSvcLogs(prev => [data as SbServiceLog, ...prev]);
+    setLogPanel(null);
+    setLogForm({ doneAt: new Date().toISOString().slice(0, 10), doneHours: "", by: "", notes: "" });
+    setSavingLog(false);
+    showToast(`${item.name} logged.`);
   }
 
   // ---- bike field helpers ----
@@ -720,14 +721,6 @@ export default function StorageBikesScreen() {
       }
     } catch { showToast("Could not reach payment service.", "err"); }
   }
-  function requestFromClient(group: ClientGroup, dueItems: ServiceDue[], bike: StorageBike) {
-    const phone = pendingClient[group.key]?.phone || group.phone;
-    if (!phone) { showToast("No phone number for this client.", "err"); return; }
-    const list = dueItems.map(d => SERVICE_LABEL[d.item_key] || d.item_key).join(", ");
-    const msg = `Hi ${group.name}, your ${bikePrimaryLabel(bike)} is due for: ${list}. This isn't included in the storage plan and would be invoiced separately — let us know if you'd like us to proceed.`;
-    window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
-  }
-
   // ---- add bike ----
   async function createBike() {
     if (!form.client_name.trim()) { setAddError("Client name is required."); return; }
@@ -748,17 +741,9 @@ export default function StorageBikesScreen() {
     }).select().single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not add bike."); return; }
     const bike = data as StorageBike;
-    const dueRows: ServiceDue[] = [];
-    for (const item of SERVICE_ITEMS) {
-      const { data: d } = await supabase.from("storage_bikes_service_due").insert({
-        storage_bike_id: bike.id, item_key: item.key, interval_hours: item.defaultInterval, hours_at_last_done: startingHours,
-      }).select().single();
-      if (d) dueRows.push(d as ServiceDue);
-    }
     setBikes(prev => [...prev, bike].sort((a, b) => (a.reference_number || "").localeCompare(b.reference_number || "")));
-    setServiceDue(prev => [...prev, ...dueRows]);
     setCreating(false); setForm({ ...BLANK_BIKE }); setAdding(false);
-    showToast(`Added ${bikePrimaryLabel(bike)} — ref ${bike.reference_number || "pending"}`);
+    showToast(`Added ${bikePrimaryLabel(bike)} — ref ${bike.reference_number || "pending"}. Open the bike to add service items.`);
   }
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
@@ -990,18 +975,15 @@ export default function StorageBikesScreen() {
 
                       {/* Bike cards within the group */}
                       {group.bikes.map((bike, bikeIdx) => {
-                        const dues = serviceDue.filter(d => d.storage_bike_id === bike.id);
-                        const overdueItems = dues.filter(d => getStatus(bike, d) === "overdue");
-                        const dueSoonItems = dues.filter(d => getStatus(bike, d) === "due_soon");
-                        const okItems = dues.filter(d => getStatus(bike, d) === "ok");
+                        const bikeItems = svcItems.filter(i => i.bike_id === bike.id);
+                        const dueItems = bikeItems.filter(i => itemDueStatus(i, bike.engine_hours) === "due");
+                        const dueSoonItemsList = bikeItems.filter(i => itemDueStatus(i, bike.engine_hours) === "due_soon");
                         const isBikeOpen = expandedBikes.has(bike.id);
-                        const isOkOpen = okExpanded.has(bike.id);
                         const rs = renewalStatus(bike.storage_end_date, bike.renewal_paid_at);
                         const daysLeft = daysUntil(bike.storage_end_date);
-                        const bikeLog = serviceLog.filter(e => e.storage_bike_id === bike.id).slice(0, 6);
-                        const total = dues.length;
-                        const overdueW = total > 0 ? (overdueItems.length / total) * 100 : 0;
-                        const dueSoonW = total > 0 ? (dueSoonItems.length / total) * 100 : 0;
+                        const total = bikeItems.filter(i => i.interval_hours).length;
+                        const overdueW = total > 0 ? (dueItems.length / total) * 100 : 0;
+                        const dueSoonW = total > 0 ? (dueSoonItemsList.length / total) * 100 : 0;
                         const isLast = bikeIdx === group.bikes.length - 1;
 
                         return (
@@ -1301,117 +1283,150 @@ export default function StorageBikesScreen() {
                                   );
                                 })()}
 
-                                {/* ---- MAINTENANCE SERVICE ITEMS ---- */}
-                                {/* Service items */}
-                                {overdueItems.length > 0 && (
-                                  <div style={{ background: RED + "0e", border: `1px solid ${RED}33`, borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
-                                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: RED, marginBottom: 8 }}>SERVICE OVERDUE</div>
-                                    {overdueItems.map(due => {
-                                      const lastAt = getLastDoneHours(bike.id, due);
-                                      const overBy = hoursSince(bike.engine_hours, lastAt) - due.interval_hours;
-                                      const isThisOpen = logFormOpen?.bikeId === bike.id && logFormOpen?.itemKey === due.item_key;
-                                      return (
-                                        <div key={due.item_key} style={{ marginBottom: 10 }}>
-                                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                            <span style={{ flex: "1 1 auto", fontSize: 14, fontWeight: 600 }}>{SERVICE_LABEL[due.item_key] || due.item_key}</span>
-                                            <span style={{ fontSize: 12.5, color: RED, fontWeight: 700 }}>{overBy.toFixed(0)}h overdue</span>
-                                            {!isThisOpen && <button onClick={() => openLogForm(bike.id, due.item_key)} className="g51-btn g51-ghost" style={s.actionBtn}>Log service</button>}
+                                {/* ---- CUSTOM SERVICE LOG ---- */}
+                                {(() => {
+                                  const items = svcItems.filter(i => i.bike_id === bike.id);
+                                  const logs = svcLogs.filter(l => l.bike_id === bike.id).slice(0, 8);
+                                  return (
+                                    <div style={{ ...s.section, borderTop: "1px solid #2A2623", marginTop: 8 }}>
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                                        <div style={s.sectionLabel}>SERVICE LOG</div>
+                                        {newItemPanel !== bike.id && (
+                                          <button onClick={() => { setNewItemPanel(bike.id); setNewItemForm({ name: "", intervalHours: "" }); }}
+                                            style={{ background: "transparent", border: "none", color: "#3B9EFF", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                                            + Add item
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      {/* Add item form */}
+                                      {newItemPanel === bike.id && (
+                                        <div style={{ background: "#1B1816", border: "1px solid #2A2623", borderRadius: 10, padding: "11px 13px", marginBottom: 10 }}>
+                                          <div style={s.fieldRow}>
+                                            <label style={{ ...s.fieldCtrl, flex: "2 1 160px" }}>
+                                              <span style={s.fieldLabel}>Item name</span>
+                                              <input className="g51-input" value={newItemForm.name}
+                                                onChange={e => setNewItemForm(f => ({ ...f, name: e.target.value }))}
+                                                placeholder="e.g. Oil change, Chain, Suspension service"
+                                                style={s.input} autoFocus />
+                                            </label>
+                                            <label style={{ ...s.fieldCtrl, flex: "1 1 110px" }}>
+                                              <span style={s.fieldLabel}>Track every (hours)</span>
+                                              <input className="g51-input" type="number" value={newItemForm.intervalHours}
+                                                onChange={e => setNewItemForm(f => ({ ...f, intervalHours: e.target.value }))}
+                                                placeholder="blank = manual"
+                                                style={s.input} />
+                                            </label>
                                           </div>
-                                          {isThisOpen && <LogForm hrs={logHours} by={logBy} notes={logNotes} setHrs={setLogHours} setBy={setLogBy} setNotes={setLogNotes} loading={loggingItem} onSave={() => submitLog(bike, due)} onCancel={() => setLogFormOpen(null)} />}
-                                        </div>
-                                      );
-                                    })}
-                                    <button onClick={() => requestFromClient(group, overdueItems, bike)} className="g51-btn g51-ghost"
-                                      style={{ ...s.actionBtn, color: AMBER, borderColor: AMBER + "55" }}>Request from client</button>
-                                  </div>
-                                )}
-                                {dueSoonItems.length > 0 && (
-                                  <div style={{ background: AMBER + "0e", border: `1px solid ${AMBER}33`, borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
-                                    <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: AMBER, marginBottom: 8 }}>SERVICE DUE WITHIN {DUE_SOON_THRESHOLD_HOURS}H</div>
-                                    {dueSoonItems.map(due => {
-                                      const lastAt = getLastDoneHours(bike.id, due);
-                                      const remaining = hoursRemaining(bike.engine_hours, lastAt, due.interval_hours);
-                                      const isThisOpen = logFormOpen?.bikeId === bike.id && logFormOpen?.itemKey === due.item_key;
-                                      return (
-                                        <div key={due.item_key} style={{ marginBottom: 10 }}>
-                                          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                            <span style={{ flex: "1 1 auto", fontSize: 14, fontWeight: 600 }}>{SERVICE_LABEL[due.item_key] || due.item_key}</span>
-                                            <span style={{ fontSize: 12.5, color: AMBER, fontWeight: 700 }}>{remaining.toFixed(1)}h left</span>
-                                            {!isThisOpen && <button onClick={() => openLogForm(bike.id, due.item_key)} className="g51-btn g51-ghost" style={s.actionBtn}>Log service</button>}
+                                          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                                            <button onClick={() => addServiceItem(bike.id, bike)}
+                                              style={{ background: GREEN, border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "7px 14px", cursor: "pointer" }}>
+                                              Add
+                                            </button>
+                                            <button onClick={() => setNewItemPanel(null)} className="g51-btn g51-ghost" style={s.actionBtn}>Cancel</button>
                                           </div>
-                                          {isThisOpen && <LogForm hrs={logHours} by={logBy} notes={logNotes} setHrs={setLogHours} setBy={setLogBy} setNotes={setLogNotes} loading={loggingItem} onSave={() => submitLog(bike, due)} onCancel={() => setLogFormOpen(null)} />}
                                         </div>
-                                      );
-                                    })}
-                                  </div>
-                                )}
-                                {okItems.length > 0 && (
-                                  <div style={{ background: "#1B1816", border: "1px solid #2A2623", borderRadius: 10, marginBottom: 10 }}>
-                                    <button onClick={() => toggleOk(bike.id)} className="g51-btn"
-                                      style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 13px", background: "transparent", border: "none", color: "#9A938D", cursor: "pointer", fontSize: 12.5, fontWeight: 600 }}>
-                                      <span>{okItems.length} service items in good standing</span>
-                                      <Chevron open={isOkOpen} />
-                                    </button>
-                                    {isOkOpen && (
-                                      <div style={{ padding: "0 13px 10px" }}>
-                                        {okItems.map(due => {
-                                          const lastAt = getLastDoneHours(bike.id, due);
-                                          const remaining = hoursRemaining(bike.engine_hours, lastAt, due.interval_hours);
-                                          const isThisOpen = logFormOpen?.bikeId === bike.id && logFormOpen?.itemKey === due.item_key;
-                                          return (
-                                            <div key={due.item_key} style={{ marginBottom: 8 }}>
-                                              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                                                <span style={{ flex: "1 1 auto", fontSize: 13 }}>{SERVICE_LABEL[due.item_key] || due.item_key}</span>
-                                                <span style={{ fontSize: 11.5, color: GREEN, fontWeight: 600 }}>{remaining.toFixed(0)}h left</span>
-                                                {!isThisOpen && <button onClick={() => openLogForm(bike.id, due.item_key)} className="g51-btn g51-ghost" style={{ ...s.actionBtn, fontSize: 11.5 }}>Log</button>}
-                                              </div>
-                                              {isThisOpen && <LogForm hrs={logHours} by={logBy} notes={logNotes} setHrs={setLogHours} setBy={setLogBy} setNotes={setLogNotes} loading={loggingItem} onSave={() => submitLog(bike, due)} onCancel={() => setLogFormOpen(null)} />}
+                                      )}
+
+                                      {/* Items list */}
+                                      {items.length === 0 && newItemPanel !== bike.id && (
+                                        <div style={{ fontSize: 12.5, color: "#6F6862", fontStyle: "italic", marginBottom: 8 }}>
+                                          No service items tracked yet — click + Add item to start.
+                                        </div>
+                                      )}
+                                      {items.map(item => {
+                                        const status = itemDueStatus(item, bike.engine_hours);
+                                        const since = item.last_done_hours != null ? bike.engine_hours - item.last_done_hours : null;
+                                        const isLogOpen = logPanel === item.id;
+                                        const statusColor = status === "due" ? RED : status === "due_soon" ? AMBER : status === "ok" ? GREEN : "#6F6862";
+                                        return (
+                                          <div key={item.id} style={{ marginBottom: 8 }}>
+                                            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                              <span style={{ flex: "1 1 140px", fontSize: 13.5, fontWeight: 500 }}>{item.name}</span>
+                                              {status !== "manual" && (
+                                                <span style={{ fontSize: 12, color: statusColor, fontWeight: 600 }}>
+                                                  {status === "due" ? "⚠ Due" : status === "due_soon" ? "⏰ Due soon" : "✓ OK"}
+                                                  {since != null && item.interval_hours && ` · ${since.toFixed(0)}h / ${item.interval_hours}h`}
+                                                </span>
+                                              )}
+                                              {status === "manual" && (
+                                                <span style={{ fontSize: 11.5, color: "#6F6862" }}>
+                                                  {since != null ? `Last at ${item.last_done_hours}h` : "Not yet logged"}
+                                                </span>
+                                              )}
+                                              {!isLogOpen && (
+                                                <button onClick={() => { setLogPanel(item.id); setLogForm({ doneAt: new Date().toISOString().slice(0, 10), doneHours: String(bike.engine_hours || ""), by: myName || "", notes: "" }); }}
+                                                  className="g51-btn g51-ghost" style={{ ...s.actionBtn, fontSize: 11.5 }}>Log</button>
+                                              )}
+                                              <button onClick={() => removeServiceItem(item)}
+                                                style={{ background: "transparent", border: "none", color: "#3A352F", fontSize: 15, cursor: "pointer", lineHeight: 1, padding: "0 2px" }} title="Remove">×</button>
                                             </div>
-                                          );
-                                        })}
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
+                                            {/* Inline log form */}
+                                            {isLogOpen && (
+                                              <div style={{ background: "#141211", border: "1px solid #2A2623", borderRadius: 9, padding: "10px 12px", marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+                                                <label style={{ display: "grid", gap: 3 }}>
+                                                  <span style={{ fontSize: 10, color: "#6F6862", textTransform: "uppercase", letterSpacing: "0.07em" }}>Date</span>
+                                                  <input type="date" value={logForm.doneAt} onChange={e => setLogForm(f => ({ ...f, doneAt: e.target.value }))}
+                                                    style={{ ...s.input, width: 130, padding: "6px 9px" }} />
+                                                </label>
+                                                <label style={{ display: "grid", gap: 3 }}>
+                                                  <span style={{ fontSize: 10, color: "#6F6862", textTransform: "uppercase", letterSpacing: "0.07em" }}>Engine hours</span>
+                                                  <input type="number" value={logForm.doneHours} onChange={e => setLogForm(f => ({ ...f, doneHours: e.target.value }))}
+                                                    style={{ ...s.input, width: 80, padding: "6px 9px" }} />
+                                                </label>
+                                                <label style={{ display: "grid", gap: 3, flex: "1 1 100px" }}>
+                                                  <span style={{ fontSize: 10, color: "#6F6862", textTransform: "uppercase", letterSpacing: "0.07em" }}>Done by</span>
+                                                  <input type="text" value={logForm.by} onChange={e => setLogForm(f => ({ ...f, by: e.target.value }))}
+                                                    style={{ ...s.input, padding: "6px 9px" }} />
+                                                </label>
+                                                <label style={{ display: "grid", gap: 3, flex: "2 1 140px" }}>
+                                                  <span style={{ fontSize: 10, color: "#6F6862", textTransform: "uppercase", letterSpacing: "0.07em" }}>Notes</span>
+                                                  <input type="text" value={logForm.notes} onChange={e => setLogForm(f => ({ ...f, notes: e.target.value }))} placeholder="optional"
+                                                    style={{ ...s.input, padding: "6px 9px" }} />
+                                                </label>
+                                                <div style={{ display: "flex", gap: 6 }}>
+                                                  <button onClick={() => logServiceDone(item, bike)} disabled={savingLog}
+                                                    style={{ background: GREEN, border: "none", borderRadius: 7, color: "#fff", fontSize: 13, fontWeight: 700, padding: "7px 13px", cursor: "pointer" }}>
+                                                    {savingLog ? "…" : "Save"}
+                                                  </button>
+                                                  <button onClick={() => setLogPanel(null)}
+                                                    style={{ background: "transparent", border: "1px solid #3A352F", borderRadius: 7, color: "#9A938D", fontSize: 13, padding: "7px 10px", cursor: "pointer" }}>
+                                                    Cancel
+                                                  </button>
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
 
-                                {/* Service history */}
-                                {bikeLog.length > 0 && (
-                                  <div style={s.section}>
-                                    <div style={s.sectionLabel}>RECENT SERVICE</div>
-                                    {bikeLog.map(entry => (
-                                      <div key={entry.id} style={{ display: "flex", gap: 10, fontSize: 12, color: "#9A938D", marginBottom: 5, flexWrap: "wrap" }}>
-                                        <span style={{ color: "#C9C2BC", fontWeight: 500 }}>{SERVICE_LABEL[entry.item_key] || entry.item_key}</span>
-                                        <span>{entry.hours_at_service}h</span>
-                                        {entry.performed_by && <span>by {entry.performed_by}</span>}
-                                        <span style={{ color: "#6F6862" }}>{new Date(entry.created_at).toLocaleDateString()}</span>
-                                        {entry.notes && <span style={{ fontStyle: "italic" }}>{entry.notes}</span>}
-                                      </div>
-                                    ))}
-                                  </div>
-                                )}
+                                      {/* History */}
+                                      {logs.length > 0 && (
+                                        <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #2A2623" }}>
+                                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 6 }}>HISTORY</div>
+                                          {logs.map(entry => (
+                                            <div key={entry.id} style={{ display: "flex", gap: 10, fontSize: 12, color: "#9A938D", marginBottom: 4, flexWrap: "wrap" }}>
+                                              <span style={{ color: "#C9C2BC", fontWeight: 500 }}>{entry.item_name}</span>
+                                              <span>{entry.done_at}</span>
+                                              {entry.done_at_hours && <span>at {entry.done_at_hours}h</span>}
+                                              {entry.performed_by && <span>by {entry.performed_by}</span>}
+                                              {entry.notes && <span style={{ fontStyle: "italic" }}>{entry.notes}</span>}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
 
-                                {/* Edit intervals / remove */}
-                                <details style={{ marginTop: 4 }}>
-                                  <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Edit service intervals / remove bike</summary>
-                                  <div style={{ marginTop: 8 }}>
-                                    {dues.map(due => (
-                                      <div key={due.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-                                        <span style={{ flex: "1 1 140px", fontSize: 12.5 }}>{SERVICE_LABEL[due.item_key] || due.item_key}</span>
-                                        <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 12 }}>
-                                          Interval
-                                          <input className="g51-input" type="number" value={due.interval_hours}
-                                            onChange={e => setServiceDue(prev => prev.map(d => d.id === due.id ? { ...d, interval_hours: Number(e.target.value) } : d))}
-                                            onBlur={async e => { await supabase.from("storage_bikes_service_due").update({ interval_hours: Number(e.target.value) }).eq("id", due.id); }}
-                                            style={{ ...s.input, width: 56, padding: "4px 7px" }} />h
-                                        </label>
-                                      </div>
-                                    ))}
-                                    <button onClick={() => removeBike(bike)} className="g51-btn g51-ghost"
-                                      style={{ ...s.actionBtn, color: "#FF7A7A", marginTop: 8 }}>
-                                      Remove {bikePrimaryLabel(bike)}
-                                    </button>
-                                  </div>
-                                </details>
+                                      {/* Remove bike */}
+                                      <details style={{ marginTop: 10 }}>
+                                        <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Remove bike from storage</summary>
+                                        <button onClick={() => removeBike(bike)} className="g51-btn g51-ghost"
+                                          style={{ ...s.actionBtn, color: "#FF7A7A", marginTop: 8 }}>
+                                          Remove "{bikePrimaryLabel(bike)}"
+                                        </button>
+                                      </details>
+                                    </div>
+                                  );
+                                })()}
                               </div>
                             )}
                           </div>
@@ -1430,72 +1445,3 @@ export default function StorageBikesScreen() {
     </main>
   );
 }
-
-function LogForm({ hrs, by, notes, setHrs, setBy, setNotes, loading, onSave, onCancel }: {
-  hrs: string; by: string; notes: string;
-  setHrs: (v: string) => void; setBy: (v: string) => void; setNotes: (v: string) => void;
-  loading: boolean; onSave: () => void; onCancel: () => void;
-}) {
-  return (
-    <div style={{ background: "#141211", border: "1px solid #2A2623", borderRadius: 9, padding: "10px 12px", marginTop: 8, display: "flex", gap: 8, alignItems: "flex-start", flexWrap: "wrap" }}>
-      <label style={{ display: "grid", gap: 4 }}>
-        <span style={{ fontSize: 10, letterSpacing: "0.07em", textTransform: "uppercase", color: "#6F6862" }}>Hours at service</span>
-        <input type="number" value={hrs} onChange={e => setHrs(e.target.value)} style={{ width: 72, background: "#221F1D", border: "1px solid #322E2A", borderRadius: 7, color: "#F4F2EF", fontSize: 14, padding: "7px 9px", fontFamily: "inherit" }} />
-      </label>
-      <label style={{ display: "grid", gap: 4, flex: "1 1 120px" }}>
-        <span style={{ fontSize: 10, letterSpacing: "0.07em", textTransform: "uppercase", color: "#6F6862" }}>Performed by</span>
-        <input type="text" value={by} onChange={e => setBy(e.target.value)} placeholder="Name" style={{ background: "#221F1D", border: "1px solid #322E2A", borderRadius: 7, color: "#F4F2EF", fontSize: 14, padding: "7px 9px", fontFamily: "inherit", width: "100%", boxSizing: "border-box" }} />
-      </label>
-      <label style={{ display: "grid", gap: 4, flex: "2 1 180px" }}>
-        <span style={{ fontSize: 10, letterSpacing: "0.07em", textTransform: "uppercase", color: "#6F6862" }}>Notes (optional)</span>
-        <input type="text" value={notes} onChange={e => setNotes(e.target.value)} placeholder="e.g. oil brand, parts used" style={{ background: "#221F1D", border: "1px solid #322E2A", borderRadius: 7, color: "#F4F2EF", fontSize: 14, padding: "7px 9px", fontFamily: "inherit", width: "100%", boxSizing: "border-box" }} />
-      </label>
-      <div style={{ display: "flex", gap: 7, alignItems: "flex-end", paddingBottom: 1 }}>
-        <button disabled={loading} onClick={onSave} style={{ background: "#2FBF71", border: "none", borderRadius: 7, color: "#fff", fontSize: 13, fontWeight: 700, padding: "8px 14px", cursor: "pointer" }}>{loading ? "Saving…" : "Save"}</button>
-        <button onClick={onCancel} style={{ background: "transparent", border: "1px solid #3A352F", borderRadius: 7, color: "#9A938D", fontSize: 13, padding: "8px 10px", cursor: "pointer" }}>Cancel</button>
-      </div>
-    </div>
-  );
-}
-
-const s: Record<string, CSSProperties> = {
-  loading: { minHeight: "100vh", background: "#181615", color: "#9A938D", display: "grid", placeItems: "center", fontFamily: "system-ui, sans-serif" },
-  page: { minHeight: "100vh", background: "#181615", color: "#F4F2EF", fontFamily: "system-ui, -apple-system, sans-serif", colorScheme: "dark", paddingBottom: 60, position: "relative" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "13px 20px", borderBottom: "1px solid #2A2623", position: "sticky", top: 0, background: "#181615", zIndex: 50 },
-  logo: { height: 30, width: "auto" },
-  menuBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
-  menuOverlay: { position: "fixed", inset: 0, zIndex: 48 } as CSSProperties,
-  menuDropdown: { position: "absolute", top: 57, right: 16, background: "#221F1D", border: "1px solid #3A352F", borderRadius: 13, padding: "6px", zIndex: 49, minWidth: 200, boxShadow: "0 16px 40px rgba(0,0,0,0.5)" } as CSSProperties,
-  menuItem: { display: "block", width: "100%", textAlign: "left", background: "transparent", border: "none", color: "#F4F2EF", fontSize: 15, fontWeight: 500, padding: "12px 14px", cursor: "pointer", borderRadius: 9, fontFamily: "inherit" } as CSSProperties,
-  menuDivider: { height: 1, background: "#2A2623", margin: "4px 0" },
-  ghostBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 9, padding: "9px 14px", fontSize: 13, fontWeight: 500, cursor: "pointer", fontFamily: "inherit" },
-  primaryBtn: { background: "#ED1C24", color: "#fff", border: "none", borderRadius: 9, padding: "9px 18px", fontSize: 13, fontWeight: 700, cursor: "pointer" },
-  actionBtn: { background: "transparent", color: "#B5AEA8", border: "1px solid #3A352F", borderRadius: 7, padding: "5px 11px", fontSize: 12.5, fontWeight: 500, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 },
-  wrap: { maxWidth: 900, margin: "0 auto", padding: "24px 16px 0" },
-  h1: { fontSize: 24, fontWeight: 800, margin: "0 0 6px" },
-  sub: { color: "#9A938D", fontSize: 14, margin: "0 0 18px" },
-  empty: { color: "#8C857F", textAlign: "center" as const, padding: "40px 20px", border: "1px dashed #322E2A", borderRadius: 14, fontSize: 14 },
-  // Group card
-  groupCard: { background: "#1E1B19", border: "1px solid #2F2B27", borderRadius: 14, overflow: "hidden" },
-  groupHead: { display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", cursor: "pointer" },
-  groupAvatar: { width: 38, height: 38, borderRadius: "50%", background: "#3B9EFF22", color: "#3B9EFF", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 700, flexShrink: 0 },
-  groupName: { fontWeight: 700, fontSize: 16 },
-  groupCount: { fontSize: 11, color: "#6F6862", background: "#2A2623", borderRadius: 20, padding: "2px 8px" },
-  badge: { fontSize: 10.5, fontWeight: 700, textTransform: "uppercase" as const, letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "2px 8px", whiteSpace: "nowrap" as const },
-  // Bike card within group
-  bikeHead: { display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", cursor: "pointer", background: "#221F1D" },
-  bikePrimary: { fontWeight: 600, fontSize: 14.5 },
-  refTag: { fontFamily: "monospace", fontSize: 11, fontWeight: 700, background: "#2A2623", color: "#9A938D", borderRadius: 6, padding: "2px 7px", letterSpacing: "0.04em" },
-  bikeNumTag: { fontSize: 11, color: "#6F6862", background: "#2A2623", borderRadius: 6, padding: "2px 7px" },
-  // Sections within expanded view
-  section: { padding: "12px 16px" },
-  sectionHead: { fontWeight: 700, fontSize: 15, padding: "14px 17px 10px" },
-  sectionLabel: { fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6F6862", marginBottom: 8 },
-  fieldRow: { display: "flex", gap: 10, flexWrap: "wrap" as const },
-  fieldCtrl: { display: "grid", gap: 5, flex: "1 1 160px" },
-  fieldLabel: { fontSize: 11, letterSpacing: "0.07em", textTransform: "uppercase" as const, color: "#9A938D" },
-  input: { width: "100%", boxSizing: "border-box" as const, background: "#141211", border: "1px solid #322E2A", borderRadius: 9, color: "#F4F2EF", fontSize: 14, padding: "9px 12px", fontFamily: "inherit" },
-  toast: { position: "fixed", left: "50%", bottom: 22, transform: "translateX(-50%)", zIndex: 100, maxWidth: "calc(100vw - 32px)", padding: "12px 18px", borderRadius: 11, fontSize: 14, fontWeight: 600, boxShadow: "0 12px 32px rgba(0,0,0,0.45)", border: "1px solid", textAlign: "center" as const },
-  toastOk: { background: "#10301C", color: "#7CE0A6", borderColor: "#2FBF7155" },
-  toastErr: { background: "#3A1518", color: "#FF9B9B", borderColor: "#ED1C2455" },
-};
