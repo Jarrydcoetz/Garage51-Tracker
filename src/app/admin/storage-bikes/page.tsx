@@ -1,4 +1,4 @@
-"use client";
+x"use client";
 
 import { useEffect, useState, useRef, useMemo } from "react";
 import type { CSSProperties } from "react";
@@ -26,6 +26,7 @@ type StorageBike = {
   renewal_paid_at: string | null;
   renewal_invoiced_at: string | null;
   service_request_text: string | null;
+  service_request_cost: number | null;
   service_request_sent_at: string | null;
   service_enquiry_id: string | null;
   service_completed_at: string | null;
@@ -154,7 +155,7 @@ export default function StorageBikesScreen() {
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
   // Service request flow state
   const [servicePanel, setServicePanel] = useState<string | null>(null);
-  const [serviceDraft, setServiceDraft] = useState<Record<string, string>>({});
+  const [serviceDraft, setServiceDraft] = useState<Record<string, { text: string; cost: string }>>({});
   const [jobCardPanel, setJobCardPanel] = useState<string | null>(null);
   const [jobCardForm, setJobCardForm] = useState({ work: "", assignedTo: "", amount: "", date: "" });
   const [creatingJob, setCreatingJob] = useState(false);
@@ -525,16 +526,26 @@ export default function StorageBikesScreen() {
   async function sendServiceRequest(bike: StorageBike, group: ClientGroup) {
     const phone = pendingClient[group.key]?.phone || group.phone;
     if (!phone) { showToast("No client phone number.", "err"); return; }
-    const text = serviceDraft[bike.id] || bike.service_request_text || "";
-    if (!text.trim()) { showToast("Describe the service first.", "err"); return; }
+    const draft = serviceDraft[bike.id] || { text: bike.service_request_text || "", cost: String(bike.service_request_cost || "") };
+    if (!draft.text.trim()) { showToast("Describe the service first.", "err"); return; }
     const name = group.name || bike.client_name || "there";
-    const msg = `Hi ${name}, we're checking in on your ${bikePrimaryLabel(bike)} currently in storage at Garage51 🔧\n\n` +
-      `Our team has identified the following service work required:\n${text}\n\n` +
-      `This isn't included in your storage plan and will be priced separately. Please reply *YES* to confirm you'd like us to proceed, or let us know if you have any questions.`;
+    const costLine = draft.cost && Number(draft.cost) > 0
+      ? `\nEstimated cost: AED ${Number(draft.cost).toLocaleString()}`
+      : "";
+    const msg =
+      `Hi ${name}, we're checking in on your ${bikePrimaryLabel(bike)} in storage at Garage51 🔧\n\n` +
+      `Service required:\n${draft.text}${costLine}\n\n` +
+      `This work isn't included in your storage plan and will be invoiced separately. ` +
+      `Please reply *YES* to confirm you'd like us to proceed, or let us know if you have any questions.`;
     window.open(`https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`, "_blank");
     const now = new Date().toISOString();
-    await supabase.from("storage_bikes").update({ service_request_text: text.trim(), service_request_sent_at: now }).eq("id", bike.id);
-    editBikeLocal(bike.id, { service_request_text: text.trim(), service_request_sent_at: now });
+    const cost = draft.cost && Number(draft.cost) > 0 ? Number(draft.cost) : null;
+    await supabase.from("storage_bikes").update({
+      service_request_text: draft.text.trim(),
+      service_request_cost: cost,
+      service_request_sent_at: now,
+    }).eq("id", bike.id);
+    editBikeLocal(bike.id, { service_request_text: draft.text.trim(), service_request_cost: cost, service_request_sent_at: now });
     setServicePanel(null);
     showToast("Service request sent via WhatsApp.");
   }
@@ -552,11 +563,12 @@ export default function StorageBikesScreen() {
       job_status: "queued",
       bike_details: bikePrimaryLabel(bike),
       bike_year: bike.year || null,
+      vin: bike.vin || null,
       work_required: jobCardForm.work.trim(),
       assigned_to: jobCardForm.assignedTo || null,
       estimated_value: Number(jobCardForm.amount),
       preferred_date: jobCardForm.date || null,
-      notes: `Storage bike ${bike.reference_number || bike.id.slice(0, 8)} — service request`,
+      notes: `Storage bike ${bike.reference_number || bike.id.slice(0, 8)} — service confirmed by client`,
     }).select().single();
     if (error || !data) { showToast(error?.message || "Could not create job.", "err"); setCreatingJob(false); return; }
     const enqId = (data as { id: string }).id;
@@ -636,10 +648,10 @@ export default function StorageBikesScreen() {
 
   async function resetServiceRequest(bike: StorageBike) {
     await supabase.from("storage_bikes").update({
-      service_request_text: null, service_request_sent_at: null,
-      service_enquiry_id: null, service_completed_at: null,
+      service_request_text: null, service_request_cost: null,
+      service_request_sent_at: null, service_enquiry_id: null, service_completed_at: null,
     }).eq("id", bike.id);
-    editBikeLocal(bike.id, { service_request_text: null, service_request_sent_at: null, service_enquiry_id: null, service_completed_at: null });
+    editBikeLocal(bike.id, { service_request_text: null, service_request_cost: null, service_request_sent_at: null, service_enquiry_id: null, service_completed_at: null });
     showToast("Service request cleared.");
   }
 
@@ -1151,59 +1163,107 @@ export default function StorageBikesScreen() {
                                         )}
                                       </div>
 
-                                      {/* STATE 1: No active request */}
+                                      {/* STATE 1 — Request panel */}
                                       {!bike.service_request_sent_at && !bike.service_enquiry_id && (
                                         servicePanel === bike.id ? (
                                           <div>
-                                            <textarea className="g51-input"
-                                              value={serviceDraft[bike.id] || ""}
-                                              onChange={e => setServiceDraft(prev => ({ ...prev, [bike.id]: e.target.value }))}
-                                              placeholder="Describe the service required — e.g. oil change, brake pads, chain replacement…"
-                                              rows={3}
-                                              style={{ ...s.input, width: "100%", resize: "vertical", marginBottom: 8 }} />
+                                            <label style={{ ...s.fieldCtrl, width: "100%", marginBottom: 8 }}>
+                                              <span style={s.fieldLabel}>Service description</span>
+                                              <textarea className="g51-input"
+                                                value={serviceDraft[bike.id]?.text ?? (bike.service_request_text || "")}
+                                                onChange={e => setServiceDraft(prev => ({ ...prev, [bike.id]: { ...prev[bike.id], text: e.target.value, cost: prev[bike.id]?.cost ?? "" } }))}
+                                                placeholder="e.g. Oil change, chain adjustment, brake pad replacement…"
+                                                rows={3} style={{ ...s.input, width: "100%", resize: "vertical" }} />
+                                            </label>
+                                            <label style={{ ...s.fieldCtrl, width: "100%", marginBottom: 10 }}>
+                                              <span style={s.fieldLabel}>Estimated cost (AED)</span>
+                                              <input className="g51-input" type="number"
+                                                value={serviceDraft[bike.id]?.cost ?? (bike.service_request_cost ? String(bike.service_request_cost) : "")}
+                                                onChange={e => setServiceDraft(prev => ({ ...prev, [bike.id]: { ...prev[bike.id], text: prev[bike.id]?.text ?? "", cost: e.target.value } }))}
+                                                placeholder="Included in the WhatsApp message" style={s.input} />
+                                            </label>
                                             <div style={{ display: "flex", gap: 8 }}>
                                               <button onClick={() => sendServiceRequest(bike, group)}
-                                                style={{ background: "#3B9EFF", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "8px 14px", cursor: "pointer" }}>
+                                                style={{ background: "#3B9EFF", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "8px 16px", cursor: "pointer" }}>
                                                 Send WhatsApp request
                                               </button>
                                               <button onClick={() => setServicePanel(null)} className="g51-btn g51-ghost" style={s.actionBtn}>Cancel</button>
                                             </div>
                                           </div>
                                         ) : (
-                                          <button onClick={() => { setServicePanel(bike.id); setServiceDraft(prev => ({ ...prev, [bike.id]: bike.service_request_text || "" })); }}
+                                          <button
+                                            onClick={() => {
+                                              setServicePanel(bike.id);
+                                              setServiceDraft(prev => ({ ...prev, [bike.id]: { text: bike.service_request_text || "", cost: bike.service_request_cost ? String(bike.service_request_cost) : "" } }));
+                                            }}
                                             className="g51-btn g51-ghost" style={s.actionBtn}>
                                             + Request service from client
                                           </button>
                                         )
                                       )}
 
-                                      {/* STATE 2: Request sent, awaiting job card */}
+                                      {/* STATE 2 — Request sent, awaiting job card creation */}
                                       {bike.service_request_sent_at && !bike.service_enquiry_id && (
                                         <div>
                                           <div style={{ fontSize: 12.5, color: "#3B9EFF", fontWeight: 600, marginBottom: 4 }}>
                                             ✓ Request sent · {fmtDate(bike.service_request_sent_at)}
                                           </div>
-                                          <div style={{ fontSize: 12.5, color: "#9A938D", marginBottom: 10, fontStyle: "italic" }}>
+                                          <div style={{ fontSize: 12.5, color: "#9A938D", marginBottom: bike.service_request_cost ? 2 : 10, fontStyle: "italic" }}>
                                             {bike.service_request_text}
                                           </div>
+                                          {bike.service_request_cost && (
+                                            <div style={{ fontSize: 12.5, color: "#9A938D", marginBottom: 10 }}>
+                                              Estimate quoted: <strong style={{ color: "#C9C2BC" }}>AED {bike.service_request_cost.toLocaleString()}</strong>
+                                            </div>
+                                          )}
+
                                           {jobCardPanel === bike.id ? (
-                                            <div style={{ background: "#1B1816", border: "1px solid #2A2623", borderRadius: 10, padding: "12px 14px" }}>
-                                              <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 10 }}>JOB CARD DETAILS</div>
-                                              <div style={s.fieldRow}>
-                                                <label style={{ ...s.fieldCtrl, flex: "2 1 200px" }}>
-                                                  <span style={s.fieldLabel}>Work required</span>
-                                                  <textarea className="g51-input" value={jobCardForm.work}
-                                                    onChange={e => setJobCardForm(f => ({ ...f, work: e.target.value }))}
-                                                    rows={2} style={{ ...s.input, resize: "vertical" }} />
-                                                </label>
-                                                <label style={{ ...s.fieldCtrl, flex: "1 1 120px" }}>
-                                                  <span style={s.fieldLabel}>Estimated (AED)</span>
-                                                  <input className="g51-input" type="number" value={jobCardForm.amount}
-                                                    onChange={e => setJobCardForm(f => ({ ...f, amount: e.target.value }))} style={s.input} />
-                                                </label>
+                                            /* ---- Job card form ---- */
+                                            <div style={{ background: "#141211", border: "1px solid #3A352F", borderRadius: 12, overflow: "hidden", marginTop: 8 }}>
+                                              {/* Header: client + bike context */}
+                                              <div style={{ background: "#1B1816", borderBottom: "1px solid #2A2623", padding: "12px 14px" }}>
+                                                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6F6862", marginBottom: 8 }}>JOB CARD</div>
+                                                <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                                                  <div>
+                                                    <div style={{ fontSize: 10, color: "#6F6862", marginBottom: 2 }}>CLIENT</div>
+                                                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{bike.client_name || group.name}</div>
+                                                    {(bike.client_phone || group.phone) && <div style={{ fontSize: 12, color: "#9A938D" }}>{bike.client_phone || group.phone}</div>}
+                                                  </div>
+                                                  <div>
+                                                    <div style={{ fontSize: 10, color: "#6F6862", marginBottom: 2 }}>BIKE</div>
+                                                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{bikePrimaryLabel(bike)}</div>
+                                                    <div style={{ fontSize: 12, color: "#9A938D" }}>
+                                                      {bike.reference_number && <span>{bike.reference_number}</span>}
+                                                      {bike.vin && <span> · VIN: {bike.vin}</span>}
+                                                    </div>
+                                                  </div>
+                                                </div>
                                               </div>
-                                              <div style={{ ...s.fieldRow, marginTop: 8 }}>
-                                                <label style={{ ...s.fieldCtrl, flex: "1 1 140px" }}>
+
+                                              {/* Editable job details */}
+                                              <div style={{ padding: "12px 14px" }}>
+                                                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6F6862", marginBottom: 10 }}>JOB DETAILS</div>
+                                                <div style={s.fieldRow}>
+                                                  <label style={{ ...s.fieldCtrl, flex: "2 1 200px" }}>
+                                                    <span style={s.fieldLabel}>Work required</span>
+                                                    <textarea className="g51-input" value={jobCardForm.work}
+                                                      onChange={e => setJobCardForm(f => ({ ...f, work: e.target.value }))}
+                                                      rows={3} style={{ ...s.input, resize: "vertical" }} />
+                                                  </label>
+                                                  <div style={{ flex: "1 1 140px", display: "flex", flexDirection: "column", gap: 8 }}>
+                                                    <label style={s.fieldCtrl}>
+                                                      <span style={s.fieldLabel}>Estimated value (AED)</span>
+                                                      <input className="g51-input" type="number" value={jobCardForm.amount}
+                                                        onChange={e => setJobCardForm(f => ({ ...f, amount: e.target.value }))} style={s.input} />
+                                                    </label>
+                                                    <label style={s.fieldCtrl}>
+                                                      <span style={s.fieldLabel}>Preferred date</span>
+                                                      <input className="g51-input" type="date" value={jobCardForm.date}
+                                                        onChange={e => setJobCardForm(f => ({ ...f, date: e.target.value }))} style={s.input} />
+                                                    </label>
+                                                  </div>
+                                                </div>
+                                                <label style={{ ...s.fieldCtrl, marginTop: 8, width: "100%" }}>
                                                   <span style={s.fieldLabel}>Assign to</span>
                                                   <select className="g51-input" value={jobCardForm.assignedTo}
                                                     onChange={e => setJobCardForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>
@@ -1213,42 +1273,43 @@ export default function StorageBikesScreen() {
                                                     ))}
                                                   </select>
                                                 </label>
-                                                <label style={{ ...s.fieldCtrl, flex: "1 1 130px" }}>
-                                                  <span style={s.fieldLabel}>Preferred date</span>
-                                                  <input className="g51-input" type="date" value={jobCardForm.date}
-                                                    onChange={e => setJobCardForm(f => ({ ...f, date: e.target.value }))} style={s.input} />
-                                                </label>
-                                              </div>
-                                              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                                                <button onClick={() => createJobCard(bike, group)} disabled={creatingJob}
-                                                  style={{ background: "#ED1C24", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "8px 14px", cursor: "pointer" }}>
-                                                  {creatingJob ? "Creating…" : "Push to workshop queue"}
-                                                </button>
-                                                <button onClick={() => setJobCardPanel(null)} className="g51-btn g51-ghost" style={s.actionBtn}>Cancel</button>
+                                                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                                                  <button onClick={() => createJobCard(bike, group)} disabled={creatingJob}
+                                                    style={{ background: "#ED1C24", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "9px 18px", cursor: "pointer", opacity: creatingJob ? 0.6 : 1 }}>
+                                                    {creatingJob ? "Creating…" : "Push to workshop queue"}
+                                                  </button>
+                                                  <button onClick={() => setJobCardPanel(null)} className="g51-btn g51-ghost" style={s.actionBtn}>Cancel</button>
+                                                </div>
                                               </div>
                                             </div>
                                           ) : (
-                                            <button onClick={() => { setJobCardPanel(bike.id); setJobCardForm(f => ({ ...f, work: bike.service_request_text || "" })); }}
+                                            <button
+                                              onClick={() => {
+                                                setJobCardPanel(bike.id);
+                                                setJobCardForm({
+                                                  work: bike.service_request_text || "",
+                                                  assignedTo: "",
+                                                  amount: bike.service_request_cost ? String(bike.service_request_cost) : "",
+                                                  date: "",
+                                                });
+                                              }}
                                               style={{ background: "#ED1C2422", border: "1px solid #ED1C2466", borderRadius: 8, color: "#ED1C24", fontSize: 13, fontWeight: 700, padding: "7px 14px", cursor: "pointer" }}>
-                                              Create job card →
+                                              Client confirmed — create job card →
                                             </button>
                                           )}
                                         </div>
                                       )}
 
-                                      {/* STATE 3: Job in queue — payment flow */}
+                                      {/* STATE 3 — Job in queue, payment flow */}
                                       {svcEnq && !isComplete && (
                                         <div>
-                                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-                                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#3B9EFF" }}>
-                                              🔧 Job in workshop queue
-                                            </span>
-                                            <span style={{ fontSize: 11.5, color: "#6F6862" }}>
+                                          <div style={{ background: "#1B1816", border: "1px solid #2A2623", borderRadius: 10, padding: "10px 14px", marginBottom: 10 }}>
+                                            <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#3B9EFF", marginBottom: 6 }}>JOB IN WORKSHOP QUEUE</div>
+                                            <div style={{ fontSize: 13, fontWeight: 600 }}>{svcEnq.work_required}</div>
+                                            <div style={{ fontSize: 12, color: "#9A938D", marginTop: 3 }}>
                                               {svcEnq.job_status} · AED {svcEnq.estimated_value.toLocaleString()}
-                                            </span>
-                                          </div>
-                                          <div style={{ fontSize: 12.5, color: "#9A938D", marginBottom: 10, fontStyle: "italic" }}>
-                                            {svcEnq.work_required}
+                                              {profiles.find(p => p.id === svcEnq.assigned_to)?.name && ` · ${profiles.find(p => p.id === svcEnq.assigned_to)!.name}`}
+                                            </div>
                                           </div>
                                           {!svcEnq.paid_at ? (
                                             <button onClick={() => sendServicePaymentWhatsApp(bike, group, svcEnq)}
@@ -1269,13 +1330,13 @@ export default function StorageBikesScreen() {
                                         </div>
                                       )}
 
-                                      {/* STATE 4: Complete */}
+                                      {/* STATE 4 — Complete */}
                                       {isComplete && (
-                                        <div style={{ fontSize: 12.5, color: GREEN, fontWeight: 600 }}>
-                                          ✓ Service complete · {fmtDate(bike.service_completed_at)}
+                                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                          <span style={{ fontSize: 12.5, color: GREEN, fontWeight: 600 }}>✓ Service complete · {fmtDate(bike.service_completed_at)}</span>
                                           <button onClick={() => resetServiceRequest(bike)}
-                                            style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 11.5, cursor: "pointer", marginLeft: 10 }}>
-                                            Start new request
+                                            style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 11.5, cursor: "pointer" }}>
+                                            New request
                                           </button>
                                         </div>
                                       )}
