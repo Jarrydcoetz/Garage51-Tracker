@@ -46,6 +46,7 @@ type SbServiceItem = {
 type SbServiceLog = {
   id: string; bike_id: string; item_id: string | null; item_name: string;
   done_at: string; done_at_hours: number | null; performed_by: string | null; notes: string | null;
+  enquiry_id: string | null; invoice_ref: string | null; amount_charged: number | null;
   created_at: string;
 };
 type ClientGroup = {
@@ -615,7 +616,10 @@ export default function StorageBikesScreen() {
   async function createServiceInvoice(bike: StorageBike, enq: ServiceEnquiry) {
     const amount = enq.estimated_value;
     const now = new Date().toISOString();
-    // Create Zoho invoice
+    const mechanic = profiles.find(p => p.id === enq.assigned_to)?.name || null;
+    let invoiceRef: string | null = null;
+
+    // 1. Create Zoho invoice
     if (amount > 0) {
       try {
         const res = await fetch("/api/zoho/create-invoice", {
@@ -630,20 +634,41 @@ export default function StorageBikesScreen() {
           }),
         });
         const json = await res.json();
-        if (json.zoho_invoice_number) {
-          showToast(`Invoice ${json.zoho_invoice_number} created ✓`);
-        } else {
-          showToast(`Invoice created ✓ (Zoho: ${json.error || "unavailable"})`);
-        }
-      } catch { showToast("Invoice marked — Zoho unavailable."); }
+        invoiceRef = json.zoho_invoice_number || null;
+        showToast(invoiceRef ? `Invoice ${invoiceRef} created ✓` : `Invoice recorded (Zoho: ${json.error || "unavailable"})`);
+      } catch { showToast("Invoice recorded — Zoho unavailable."); }
     }
-    // Mark service cycle complete on the bike
+
+    // 2. Write service log entry — this is the permanent audit record.
+    //    It captures: what was done, who did it, client approval date,
+    //    amount charged, and the Zoho invoice reference.
+    const noteParts = [
+      bike.service_request_sent_at ? `Client approved: ${fmtDate(bike.service_request_sent_at)}` : null,
+      invoiceRef ? `Invoice: ${invoiceRef}` : null,
+    ].filter(Boolean).join(" · ");
+
+    const { data: logEntry } = await supabase.from("sb_service_log").insert({
+      bike_id: bike.id,
+      item_id: null,
+      item_name: enq.work_required || `Workshop service — ${bikePrimaryLabel(bike)}`,
+      done_at: now.slice(0, 10),
+      done_at_hours: bike.engine_hours || null,
+      performed_by: mechanic,
+      notes: noteParts || null,
+      enquiry_id: enq.id,
+      invoice_ref: invoiceRef,
+      amount_charged: amount || null,
+    }).select().single();
+
+    if (logEntry) setSvcLogs(prev => [logEntry as SbServiceLog, ...prev]);
+
+    // 3. Mark bike service cycle complete and enquiry closed
     await supabase.from("storage_bikes").update({ service_completed_at: now }).eq("id", bike.id);
     editBikeLocal(bike.id, { service_completed_at: now });
-    // Mark enquiry as paid/complete
     await supabase.from("enquiries").update({ stage: "paid", job_status: "completed" }).eq("id", enq.id);
     setServiceEnquiries(prev => ({ ...prev, [enq.id]: { ...prev[enq.id], stage: "paid", job_status: "completed" } }));
   }
+
 
   async function resetServiceRequest(bike: StorageBike) {
     await supabase.from("storage_bikes").update({
@@ -732,6 +757,52 @@ export default function StorageBikesScreen() {
       }
     } catch { showToast("Could not reach payment service.", "err"); }
   }
+  function exportServiceHistory(bike: StorageBike) {
+    const logs = svcLogs.filter(l => l.bike_id === bike.id);
+    if (logs.length === 0) { showToast("No service history to export yet."); return; }
+    const header = [
+      "Date", "Description", "Type", "Engine Hours",
+      "Staff Member", "Client Approval", "Amount (AED)",
+      "Invoice Ref", "Job Card Ref", "Notes"
+    ];
+    const rows = logs.map(l => {
+      const isWorkshop = !!l.enquiry_id;
+      const clientApproval = isWorkshop
+        ? (bike.service_request_sent_at ? fmtDate(bike.service_request_sent_at) : "On record")
+        : "N/A (maintenance)";
+      return [
+        l.done_at,
+        l.item_name,
+        isWorkshop ? "Workshop job" : "Maintenance",
+        l.done_at_hours ?? "",
+        l.performed_by ?? "",
+        clientApproval,
+        l.amount_charged ?? "",
+        l.invoice_ref ?? "",
+        l.enquiry_id ? l.enquiry_id.slice(0, 8).toUpperCase() : "",
+        l.notes ?? "",
+      ];
+    });
+    const csv = [header, ...rows]
+      .map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    // Header block for the report
+    const reportHeader = [
+      `"Garage51 Service History Report"`,
+      `"Bike: ${bikePrimaryLabel(bike)}"`,
+      `"Ref: ${bike.reference_number || "—"}"`,
+      `"VIN: ${bike.vin || "—"}"`,
+      `"Client: ${bike.client_name || "—"}"`,
+      `"Exported: ${new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" })}"`,
+      `""`,
+    ].join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([reportHeader + "\n" + csv], { type: "text/csv" }));
+    a.download = `${(bikePrimaryLabel(bike) + "-" + (bike.reference_number || "")).replace(/\s+/g, "-")}-service-history.csv`;
+    a.click();
+    showToast(`Exported ${logs.length} service record${logs.length !== 1 ? "s" : ""}.`);
+  }
+
   // ---- add bike ----
   async function createBike() {
     if (!form.client_name.trim()) { setAddError("Client name is required."); return; }
@@ -1460,24 +1531,45 @@ export default function StorageBikesScreen() {
                                         );
                                       })}
 
-                                      {/* History */}
-                                      {logs.length > 0 && (
-                                        <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #2A2623" }}>
-                                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862", marginBottom: 6 }}>HISTORY</div>
-                                          {logs.map(entry => (
-                                            <div key={entry.id} style={{ display: "flex", gap: 10, fontSize: 12, color: "#9A938D", marginBottom: 4, flexWrap: "wrap" }}>
-                                              <span style={{ color: "#C9C2BC", fontWeight: 500 }}>{entry.item_name}</span>
-                                              <span>{entry.done_at}</span>
-                                              {entry.done_at_hours && <span>at {entry.done_at_hours}h</span>}
-                                              {entry.performed_by && <span>by {entry.performed_by}</span>}
-                                              {entry.notes && <span style={{ fontStyle: "italic" }}>{entry.notes}</span>}
-                                            </div>
-                                          ))}
+                                      {/* History + export */}
+                                      <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #2A2623" }}>
+                                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                                          <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", color: "#6F6862" }}>
+                                            SERVICE HISTORY{svcLogs.filter(l => l.bike_id === bike.id).length > 0 ? ` (${svcLogs.filter(l => l.bike_id === bike.id).length})` : ""}
+                                          </div>
+                                          {svcLogs.filter(l => l.bike_id === bike.id).length > 0 && (
+                                            <button onClick={() => exportServiceHistory(bike)}
+                                              style={{ background: "transparent", border: "1px solid #3A352F", borderRadius: 7, color: "#9A938D", fontSize: 11, fontWeight: 600, padding: "3px 9px", cursor: "pointer" }}>
+                                              Export CSV
+                                            </button>
+                                          )}
                                         </div>
-                                      )}
+                                        {logs.length === 0 && <div style={{ fontSize: 12, color: "#6F6862", fontStyle: "italic" }}>No history yet.</div>}
+                                        {logs.map(entry => {
+                                          const isWorkshop = !!entry.enquiry_id;
+                                          return (
+                                            <div key={entry.id} style={{ marginBottom: 8, paddingBottom: 8, borderBottom: "1px solid #2A2623" }}>
+                                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
+                                                {isWorkshop && (
+                                                  <span style={{ fontSize: 10, fontWeight: 700, background: "#3B9EFF22", color: "#3B9EFF", borderRadius: 5, padding: "1px 6px" }}>Workshop</span>
+                                                )}
+                                                <span style={{ fontSize: 13, fontWeight: 600, color: "#C9C2BC" }}>{entry.item_name}</span>
+                                              </div>
+                                              <div style={{ display: "flex", gap: 10, fontSize: 11.5, color: "#9A938D", flexWrap: "wrap" }}>
+                                                <span>📅 {entry.done_at}</span>
+                                                {entry.done_at_hours && <span>at {entry.done_at_hours}h</span>}
+                                                {entry.performed_by && <span>👤 {entry.performed_by}</span>}
+                                                {entry.amount_charged && <span style={{ color: GREEN, fontWeight: 600 }}>AED {entry.amount_charged.toLocaleString()}</span>}
+                                                {entry.invoice_ref && <span style={{ color: GOLD, fontWeight: 600 }}>🧾 {entry.invoice_ref}</span>}
+                                              </div>
+                                              {entry.notes && <div style={{ fontSize: 11, color: "#6F6862", marginTop: 2, fontStyle: "italic" }}>{entry.notes}</div>}
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
 
                                       {/* Remove bike */}
-                                      <details style={{ marginTop: 10 }}>
+                                      <details style={{ marginTop: 4 }}>
                                         <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Remove bike from storage</summary>
                                         <button onClick={() => removeBike(bike)} className="g51-btn g51-ghost"
                                           style={{ ...s.actionBtn, color: "#FF7A7A", marginTop: 8 }}>
