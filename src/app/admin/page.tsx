@@ -1132,9 +1132,12 @@ export default function Admin() {
                   <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 60, background: "#221F1D", border: "1px solid #3A352F", borderRadius: 10, overflow: "hidden", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", marginTop: 2 }}>
                     {matches.map(c => (
                       <button key={c.phone} onMouseDown={() => {
-                        set("customer_name", c.name);
-                        set("phone", c.phone);
-                        set("email", c.email || "");
+                        setForm(prev => ({
+                          ...prev,
+                          customer_name: c.name,
+                          phone: c.phone,
+                          email: c.email || "",
+                        }));
                         setClientSearch(c.name);
                         setShowClientDrop(false);
                       }}
