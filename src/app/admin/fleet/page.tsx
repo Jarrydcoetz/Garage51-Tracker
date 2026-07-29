@@ -16,15 +16,25 @@ const GREEN = "#2FBF71";
 
 const CATEGORIES = [
   { key: "rental", label: "Rental" },
+  { key: "race", label: "Race bikes" },
   { key: "desert_tour", label: "Desert Tour" },
   { key: "other", label: "Other" },
 ];
-const CAT_COLOR: Record<string, string> = { rental: "#3B9EFF", desert_tour: AMBER, other: "#9A938D" };
+const RENTAL_SUB = [
+  { key: "mx", label: "MX Rental" },
+  { key: "rally", label: "Rally Rental" },
+];
+const CAT_COLOR: Record<string, string> = {
+  rental: "#3B9EFF",
+  race: "#ED1C24",
+  desert_tour: AMBER,
+  other: "#9A938D",
+};
 
-type FleetBike = { id: string; name: string; category: string | null; make: string | null; model: string | null; year: string | null; engine_hours: number; active: boolean };
+type FleetBike = { id: string; name: string; category: string | null; sub_category: string | null; make: string | null; model: string | null; year: string | null; engine_hours: number; vin: string | null; active: boolean };
 type ServiceDue = { id: string; bike_id: string; item_key: string; interval_hours: number; hours_at_last_done: number };
 
-const BLANK_BIKE = { name: "", category: "rental", make: "", model: "", year: "", engine_hours: 0 };
+const BLANK_BIKE = { name: "", category: "rental", sub_category: "", make: "", model: "", year: "", engine_hours: 0, vin: "" };
 
 const CSS = `
 .g51-btn{transition:background .15s ease,border-color .15s ease,opacity .15s ease;}
@@ -150,8 +160,10 @@ export default function FleetScreen() {
     const startingHours = Number(form.engine_hours) || 0;
     const { data, error } = await supabase.from("fleet_bikes").insert({
       name: form.name.trim(), category: form.category || null,
+      sub_category: form.category === "rental" ? (form.sub_category || null) : null,
       make: form.make.trim() || null, model: form.model.trim() || null,
       year: form.year.trim() || null, engine_hours: startingHours,
+      vin: form.vin.trim() || null,
     }).select().single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not add bike."); return; }
     const bike = data as FleetBike;
@@ -247,6 +259,13 @@ export default function FleetScreen() {
                 <select className="g51-input" value={form.category} onChange={e => set("category", e.target.value)} style={s.input}>
                   {CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
                 </select></label>
+              {form.category === "rental" && (
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Rental type</span>
+                  <select className="g51-input" value={form.sub_category} onChange={e => set("sub_category", e.target.value)} style={s.input}>
+                    <option value="">Select type</option>
+                    {RENTAL_SUB.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                  </select></label>
+              )}
             </div>
             <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Make</span><input className="g51-input" value={form.make} onChange={e => set("make", e.target.value)} style={s.input} /></label>
@@ -254,6 +273,8 @@ export default function FleetScreen() {
               <label style={s.ctrl}><span style={s.ctrlLabel}>Year</span><input className="g51-input" value={form.year} onChange={e => set("year", e.target.value)} style={s.input} /></label>
             </div>
             <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>VIN</span>
+                <input className="g51-input" value={form.vin} onChange={e => set("vin", e.target.value)} placeholder="Chassis / VIN number" style={s.input} /></label>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Current engine hours</span>
                 <input className="g51-input" type="number" value={form.engine_hours} onChange={e => set("engine_hours", Number(e.target.value))} style={s.input} /></label>
             </div>
@@ -294,11 +315,17 @@ export default function FleetScreen() {
                         <span style={{ ...s.pill, color: catColor, borderColor: catColor + "66", background: catColor + "1c" }}>
                           {CATEGORIES.find(c => c.key === bike.category)?.label || "Other"}
                         </span>
+                        {bike.category === "rental" && bike.sub_category && (
+                          <span style={{ ...s.pill, color: catColor, borderColor: catColor + "44", background: catColor + "12", fontSize: 10 }}>
+                            {RENTAL_SUB.find(r => r.key === bike.sub_category)?.label || bike.sub_category}
+                          </span>
+                        )}
                         {overdueItems.length > 0 && <span style={{ ...s.badge, color: RED, borderColor: RED + "55", background: RED + "18" }}>⚠ {overdueItems.length} overdue</span>}
                         {dueSoonItems.length > 0 && overdueItems.length === 0 && <span style={{ ...s.badge, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>⏰ {dueSoonItems.length} due soon</span>}
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 5, flexWrap: "wrap" }}>
                         <span style={s.bikeSub}>{[bike.make, bike.model, bike.year].filter(Boolean).join(" ") || "No make/model set"}</span>
+                        {bike.vin && <><span style={s.dotSep}>·</span><span style={{ ...s.bikeSub, fontFamily: "monospace", fontSize: 11 }}>VIN: {bike.vin}</span></>}
                         <span style={s.dotSep}>·</span>
                         <label style={{ display: "inline-flex", alignItems: "center", gap: 5 }} onClick={e => e.stopPropagation()}>
                           <input className="g51-input" type="number" value={bike.engine_hours}
