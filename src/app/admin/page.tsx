@@ -378,6 +378,9 @@ export default function Admin() {
   const [creating, setCreating] = useState(false);
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK });
+  const [clientSearch, setClientSearch] = useState("");
+  const [clientList, setClientList] = useState<{ name: string; phone: string; email: string | null }[]>([]);
+  const [showClientDrop, setShowClientDrop] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [zohoBusy, setZohoBusy] = useState<string | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
@@ -422,6 +425,37 @@ export default function Admin() {
         .select("*, sessions(*), client:clients(id, name, whatsapp, zoho_contact_id)")
         .order("created_at", { ascending: false });
       setRows((rowsData as Enquiry[]) || []);
+
+      // Build client memory: merge clients table + unique phones from enquiries + storage bikes
+      const [{ data: cliData }, { data: enqContacts }, { data: sbContacts }] = await Promise.all([
+        supabase.from("clients").select("name, whatsapp, email"),
+        supabase.from("enquiries").select("customer_name, phone, email").order("created_at", { ascending: false }),
+        supabase.from("storage_bikes").select("client_name, client_phone, client_email").eq("active", true),
+      ]);
+      const seen = new Set<string>();
+      const merged: { name: string; phone: string; email: string | null }[] = [];
+      // Clients table first (canonical)
+      for (const c of (cliData || []) as { name: string | null; whatsapp: string | null; email: string | null }[]) {
+        const phone = (c.whatsapp || "").trim();
+        if (!phone || seen.has(phone)) continue;
+        seen.add(phone);
+        merged.push({ name: c.name || "", phone, email: c.email });
+      }
+      // Storage bike owners
+      for (const b of (sbContacts || []) as { client_name: string | null; client_phone: string | null; client_email: string | null }[]) {
+        const phone = (b.client_phone || "").trim();
+        if (!phone || seen.has(phone)) continue;
+        seen.add(phone);
+        merged.push({ name: b.client_name || "", phone, email: b.client_email });
+      }
+      // Enquiry history (deduplicated)
+      for (const e of (enqContacts || []) as { customer_name: string; phone: string; email: string | null }[]) {
+        const phone = (e.phone || "").trim();
+        if (!phone || seen.has(phone)) continue;
+        seen.add(phone);
+        merged.push({ name: e.customer_name, phone, email: e.email });
+      }
+      setClientList(merged);
       const [{ data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
         supabase.from("parts").select("*").eq("active", true).order("name"),
         supabase.from("stock_movements").select("id, part_id, quantity, reason, enquiry_id, service_product_application_id, cost_price_snapshot, sell_price_snapshot, created_at"),
@@ -884,6 +918,7 @@ export default function Admin() {
     setCreating(false);
     setRows(prev => [enq, ...prev]);
     setForm({ ...BLANK });
+    setClientSearch("");
     setAdding(false);
     showToast(`Booking created for ${form.customer_name}.`);
   }
@@ -1068,6 +1103,51 @@ export default function Admin() {
         {adding && (
           <div style={s.addPanel}>
             <div style={s.addTitle}>New booking</div>
+
+            {/* Client search — select existing to auto-fill, or skip to type manually */}
+            <div style={{ marginBottom: 12, position: "relative" }}>
+              <label style={s.ctrl}>
+                <span style={s.ctrlLabel}>Search existing client</span>
+                <div style={{ position: "relative" }}>
+                  <input className="g51-input"
+                    placeholder="Type name or phone to find an existing client…"
+                    value={clientSearch}
+                    onChange={e => { setClientSearch(e.target.value); setShowClientDrop(true); }}
+                    onFocus={() => setShowClientDrop(true)}
+                    onBlur={() => setTimeout(() => setShowClientDrop(false), 150)}
+                    style={{ ...s.input, paddingRight: clientSearch ? 28 : s.input.padding }} />
+                  {clientSearch && (
+                    <button onClick={() => { setClientSearch(""); setShowClientDrop(false); }}
+                      style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+                  )}
+                </div>
+              </label>
+              {showClientDrop && clientSearch.trim().length > 0 && (() => {
+                const q = clientSearch.toLowerCase();
+                const matches = clientList.filter(c =>
+                  c.name.toLowerCase().includes(q) || c.phone.includes(q) || (c.email || "").toLowerCase().includes(q)
+                ).slice(0, 8);
+                if (matches.length === 0) return null;
+                return (
+                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 60, background: "#221F1D", border: "1px solid #3A352F", borderRadius: 10, overflow: "hidden", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", marginTop: 2 }}>
+                    {matches.map(c => (
+                      <button key={c.phone} onMouseDown={() => {
+                        set("customer_name", c.name);
+                        set("phone", c.phone);
+                        set("email", c.email || "");
+                        setClientSearch(c.name);
+                        setShowClientDrop(false);
+                      }}
+                        style={{ display: "flex", flexDirection: "column", width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid #2A2623", padding: "10px 14px", cursor: "pointer", color: "#F4F2EF", fontFamily: "inherit" }}>
+                        <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "(no name)"}</span>
+                        <span style={{ fontSize: 12, color: "#9A938D", marginTop: 2 }}>{c.phone}{c.email ? ` · ${c.email}` : ""}</span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
             <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
                 <input className="g51-input" value={form.customer_name} onChange={e => set("customer_name", e.target.value)} style={s.input} /></label>
