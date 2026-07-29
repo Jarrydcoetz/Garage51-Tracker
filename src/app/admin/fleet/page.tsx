@@ -68,6 +68,9 @@ export default function FleetScreen() {
   const [creating, setCreating] = useState(false);
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK_BIKE });
+  const [search, setSearch] = useState("");
+  const [filterCat, setFilterCat] = useState("all");
+  const [filterAttn, setFilterAttn] = useState(false);
   const [logFormOpen, setLogFormOpen] = useState<{ bikeId: string; itemKey: string } | null>(null);
   const [logHours, setLogHours] = useState("");
   const [logBy, setLogBy] = useState("");
@@ -207,6 +210,33 @@ export default function FleetScreen() {
     return acc + overdue + dueSoon;
   }, 0);
 
+  // Filter + search
+  const bikeNeedsAttention = (bike: FleetBike) => {
+    const dues = serviceDue.filter(d => d.bike_id === bike.id);
+    return dues.some(d => getStatus(bike, d) === "overdue" || getStatus(bike, d) === "due_soon");
+  };
+  const visibleBikes = bikes.filter(bike => {
+    if (filterCat !== "all" && bike.category !== filterCat) return false;
+    if (filterAttn && !bikeNeedsAttention(bike)) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return (
+        bike.name.toLowerCase().includes(q) ||
+        (bike.make || "").toLowerCase().includes(q) ||
+        (bike.model || "").toLowerCase().includes(q) ||
+        (bike.vin || "").toLowerCase().includes(q) ||
+        (bike.year || "").includes(q)
+      );
+    }
+    return true;
+  });
+  const catCounts = Object.fromEntries(
+    ["all", ...CATEGORIES.map(c => c.key)].map(key => [
+      key,
+      key === "all" ? bikes.length : bikes.filter(b => b.category === key).length,
+    ])
+  );
+
   return (
     <main style={s.page}>
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
@@ -238,11 +268,45 @@ export default function FleetScreen() {
         <h1 style={s.h1}>Fleet bikes</h1>
         <p style={s.sub}>Items sorted by urgency — overdue first. Log service directly on each item to build the history record.</p>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
           <button onClick={() => setAdding(a => !a)} className="g51-btn g51-ghost" style={s.ghostBtn}>
             {adding ? "Cancel" : "+ Add bike"}
           </button>
           <button onClick={syncAllChecklists} className="g51-btn g51-ghost" style={s.ghostBtn}>Sync checklist to all bikes</button>
+        </div>
+
+        {/* Search */}
+        <div style={{ position: "relative", marginBottom: 12 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "#6F6862", pointerEvents: "none" }}>
+            <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+          </svg>
+          <input className="g51-input" placeholder="Search by name, make, model, VIN…"
+            value={search} onChange={e => setSearch(e.target.value)}
+            style={{ ...s.input, paddingLeft: 34 }} />
+          {search && (
+            <button onClick={() => setSearch("")}
+              style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
+          )}
+        </div>
+
+        {/* Category filter pills */}
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
+          {[{ key: "all", label: "All" }, ...CATEGORIES].map(({ key, label }) => {
+            const count = catCounts[key] ?? 0;
+            const isActive = filterCat === key;
+            const color = key === "all" ? "#9A938D" : (CAT_COLOR[key] || "#9A938D");
+            return (
+              <button key={key} onClick={() => setFilterCat(key)}
+                style={{ background: isActive ? color + "22" : "transparent", border: `1px solid ${isActive ? color : "#2F2B27"}`, borderRadius: 20, color: isActive ? color : "#9A938D", fontSize: 12.5, fontWeight: isActive ? 700 : 500, padding: "5px 12px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6 }}>
+                {label}
+                <span style={{ background: isActive ? color + "33" : "#2A2623", borderRadius: 10, padding: "1px 6px", fontSize: 11, fontWeight: 700, color: isActive ? color : "#6F6862" }}>{count}</span>
+              </button>
+            );
+          })}
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: filterAttn ? AMBER : "#9A938D", cursor: "pointer", marginLeft: 4 }}>
+            <input type="checkbox" checked={filterAttn} onChange={e => setFilterAttn(e.target.checked)} />
+            Needs attention only
+          </label>
         </div>
 
         {totalAttention > 0 && (
@@ -286,11 +350,13 @@ export default function FleetScreen() {
           </div>
         )}
 
-        {bikes.length === 0 ? (
-          <div style={s.empty}>No fleet bikes yet — add one above.</div>
+        {visibleBikes.length === 0 ? (
+          <div style={s.empty}>
+            {search ? `No bikes match "${search}".` : filterAttn ? "No bikes need attention right now." : "No fleet bikes yet — add one above."}
+          </div>
         ) : (
           <div style={s.card}>
-            {bikes.map((bike, idx) => {
+            {visibleBikes.map((bike, idx) => {
               const dues = serviceDue.filter(d => d.bike_id === bike.id);
               const overdueItems = dues.filter(d => getStatus(bike, d) === "overdue");
               const dueSoonItems = dues.filter(d => getStatus(bike, d) === "due_soon");
@@ -303,7 +369,7 @@ export default function FleetScreen() {
               const dueSoonWidth = total > 0 ? (dueSoonItems.length / total) * 100 : 0;
               const okWidth = 100 - overdueWidth - dueSoonWidth;
               const bikeLog = serviceLog.filter(e => e.bike_id === bike.id).slice(0, 8);
-              const isLast = idx === bikes.length - 1;
+              const isLast = idx === visibleBikes.length - 1;
 
               return (
                 <div key={bike.id} className="g51-bike-card" style={{ ...(isLast ? { borderBottom: "none" } : {}) }}>
