@@ -417,6 +417,7 @@ export default function Admin() {
         supabase.from("profiles").select("id, name, role, active, whatsapp").eq("active", true).order("name"),
       ]);
       if ((prof as Profile | null)?.role === "mechanic") { router.replace("/admin/workshop"); return; }
+      if ((prof as Profile | null)?.role === "facilities") { router.replace("/admin/overview"); return; }
       setMe((prof as Profile) || null);
       setStaff((people as Profile[]) || []);
       setReady(true);

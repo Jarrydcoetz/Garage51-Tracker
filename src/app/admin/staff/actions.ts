@@ -7,7 +7,7 @@ const SECRET = process.env.SUPABASE_SECRET_KEY!;
 const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://garage51-tracker.vercel.app";
 
-const ROLES = ["admin", "coach", "mechanic"];
+const ROLES = ["admin", "coach", "mechanic", "facilities"];
 
 // Service-role client: full access, used for the privileged operations.
 const admin = createClient(URL, SECRET);

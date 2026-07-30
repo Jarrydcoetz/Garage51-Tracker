@@ -22,6 +22,7 @@ export default function Login() {
     const role = (prof as { role: string } | null)?.role;
     if (role === "admin") router.push("/admin/overview");
     else if (role === "mechanic") router.push("/admin/workshop");
+    else if (role === "facilities") router.push("/admin/overview");
     else router.push("/admin");
   }
   return (

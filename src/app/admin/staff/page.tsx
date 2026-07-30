@@ -7,8 +7,8 @@ import { supabase } from "../../../lib/supabase-browser";
 import { inviteStaff, setStaffActive, setStaffRole, setStaffWhatsapp } from "./actions";
 
 const RED = "#ED1C24";
-const ROLES = ["admin", "coach", "mechanic"];
-const ROLE_COLOR: Record<string, string> = { admin: "#ED1C24", coach: "#3B9EFF", mechanic: "#FFB02E" };
+const ROLES = ["admin", "coach", "mechanic", "facilities"];
+const ROLE_COLOR: Record<string, string> = { admin: "#ED1C24", coach: "#3B9EFF", mechanic: "#FFB02E", facilities: "#2FBF71" };
 
 type Profile = {
   id: string;
@@ -183,7 +183,7 @@ export default function StaffScreen() {
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Staff</h1>
-        <p style={s.sub}>Invite coaches and mechanics, and manage their access. Invited staff set their own password from the email link.</p>
+        <p style={s.sub}>Invite coaches, mechanics, and facilities staff. Invited staff set their own password from the email link.</p>
 
         <div style={s.card}>
           <div style={s.cardTitle}>Invite a staff member</div>
@@ -196,6 +196,7 @@ export default function StaffScreen() {
               <select className="g51-input" value={form.role} onChange={e => set("role", e.target.value)} style={s.input}>
                 <option value="coach">coach</option>
                 <option value="mechanic">mechanic</option>
+                <option value="facilities">facilities</option>
                 <option value="admin">admin</option>
               </select></label>
             <label style={s.ctrl}><span style={s.ctrlLabel}>WhatsApp</span>
