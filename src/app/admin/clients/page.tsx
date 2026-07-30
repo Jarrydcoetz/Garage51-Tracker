@@ -674,7 +674,21 @@ export default function ClientsScreen() {
                         style={{ ...s.input, width: "100%", resize: "vertical" }}
                       />
 
-                      <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #2A2623" }}>
+                      <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #2A2623", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                        <button
+                          onClick={() => {
+                            const p = new URLSearchParams({
+                              create: "1",
+                              category: "client",
+                              linked_label: `${client.name}${client.phone ? ` · ${client.phone}` : ""}`,
+                              ...(client.phone ? { linked_client_phone: client.phone } : {}),
+                            });
+                            window.open(`/admin/tasks?${p.toString()}`, "_blank");
+                          }}
+                          className="g51-btn g51-ghost"
+                          style={{ ...s.ghostBtn, color: "#A78BFA", borderColor: "#A78BFA44", fontSize: 12.5 }}>
+                          + Create task for this client
+                        </button>
                         <button onClick={() => deleteClient(client)}
                           className="g51-btn g51-ghost"
                           style={{ ...s.ghostBtn, color: "#FF6B6B", borderColor: "#FF6B6B44", fontSize: 12.5 }}>

@@ -1569,6 +1569,25 @@ export default function StorageBikesScreen() {
                                       </div>
 
                                       {/* Remove bike */}
+                                      {/* Quick task create */}
+                                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px solid #2A2623" }}>
+                                        <button
+                                          onClick={() => {
+                                            const p = new URLSearchParams({
+                                              create: "1",
+                                              category: "storage",
+                                              linked_label: `${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""} — ${bike.client_name || group.name}`,
+                                              ...(bike.id ? { linked_storage_bike_id: bike.id } : {}),
+                                              ...(bike.client_phone || group.phone ? { linked_client_phone: bike.client_phone || group.phone } : {}),
+                                            });
+                                            window.open(`/admin/tasks?${p.toString()}`, "_blank");
+                                          }}
+                                          className="g51-btn g51-ghost"
+                                          style={{ ...s.actionBtn, color: "#A78BFA", borderColor: "#A78BFA44", fontSize: 12 }}>
+                                          + Create task for this bike
+                                        </button>
+                                      </div>
+
                                       <details style={{ marginTop: 4 }}>
                                         <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Remove bike from storage</summary>
                                         <button onClick={() => removeBike(bike)} className="g51-btn g51-ghost"

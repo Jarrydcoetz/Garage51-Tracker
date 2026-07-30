@@ -54,6 +54,8 @@ export default function OverviewScreen() {
   const [storageBikes, setStorageBikes] = useState<StorageBikeLite[]>([]);
   const [storageDue, setStorageDue] = useState<StorageDueLite[]>([]);
   const [staff, setStaff] = useState<StaffLite[]>([]);
+  const [openTasks, setOpenTasks] = useState(0);
+  const [overdueTasks, setOverdueTasks] = useState(0);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -89,6 +91,12 @@ export default function OverviewScreen() {
       setStorageBikes((storageData as StorageBikeLite[]) || []);
       setStorageDue((storageDueData as StorageDueLite[]) || []);
       setStaff((staffData as StaffLite[]) || []);
+      // Tasks summary
+      const { data: taskData } = await supabase.from("tasks").select("status,due_date").neq("status", "done");
+      const open = (taskData || []).length;
+      const overdue = (taskData || []).filter((t: { status: string; due_date: string | null }) => t.due_date && new Date(t.due_date) < new Date()).length;
+      setOpenTasks(open);
+      setOverdueTasks(overdue);
       setReady(true);
     });
   }, [router]);
@@ -234,6 +242,14 @@ export default function OverviewScreen() {
             headline={`${uniqueClients} total`}
             sub="Booking history, LTV, bikes on file, notes"
             onClick={() => router.push("/admin/clients")}
+          />
+          <ModuleCard
+            title="Tasks"
+            headline={`${openTasks} open`}
+            sub={overdueTasks > 0 ? `${overdueTasks} overdue — needs attention` : "All tasks on track"}
+            badgeCount={overdueTasks}
+            badgeLabel="overdue"
+            onClick={() => router.push("/admin/tasks")}
           />
         </div>
       </div>

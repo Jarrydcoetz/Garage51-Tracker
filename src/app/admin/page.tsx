@@ -1089,6 +1089,7 @@ export default function Admin() {
               <button onClick={() => router.push("/admin/clients")} className="g51-btn g51-ghost" style={s.ghostBtn}>Clients</button>
             </>
           )}
+          <button onClick={() => router.push("/admin/tasks")} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, color: "#A78BFA", borderColor: "#A78BFA44" }}>Tasks</button>
           <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
         </div>
       </header>
@@ -1356,6 +1357,20 @@ export default function Admin() {
                       <div style={s.contact}>
                         <a href={`tel:${r.phone}`} style={s.link}>{r.phone}</a>
                         {r.email && <span style={s.muted2}>{r.email}</span>}
+                        {/* Quick task link for this booking */}
+                        <button
+                          onClick={() => {
+                            const p = new URLSearchParams({
+                              create: "1", category: "admin",
+                              linked_label: `${r.customer_name} — ${r.service_type}`,
+                              linked_enquiry_id: r.id,
+                              ...(r.phone ? { linked_client_phone: r.phone } : {}),
+                            });
+                            window.open(`/admin/tasks?${p.toString()}`, "_blank");
+                          }}
+                          style={{ background: "transparent", border: "none", color: "#A78BFA", fontSize: 12, cursor: "pointer", padding: 0, fontFamily: "inherit", textDecoration: "underline" }}>
+                          + Create task
+                        </button>
                         {r.refund_due && (
                           <span style={s.refund}>Refund due
                             <button onClick={() => clearRefund(r)} className="g51-btn" style={s.refundClear}>Mark refunded</button>
