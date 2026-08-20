@@ -157,14 +157,13 @@ function bookingState(r: Enquiry): string {
   if (r.stage === "lost") return "lost";
   // Payment confirmed — either via Ziina webhook (paid_at) or manual admin update (stage === "paid")
   if (r.paid_at || r.stage === "paid") return "paid";
+  // If pushed to workshop queue, show workshop status regardless of service_type
+  if (r.job_status === "completed") return "completed";
+  if (r.job_status === "in_progress") return "in progress";
+  if (r.job_status === "waiting_parts") return "waiting parts";
+  if (r.job_status === "queued") return "queued";
   if (r.stage === "new") return "new";
   if (r.stage === "contacted") return "contacted";
-  if (r.service_type === "workshop") {
-    if (r.job_status === "completed") return "completed";
-    if (r.job_status === "in_progress") return "in progress";
-    if (r.job_status === "waiting_parts") return "waiting parts";
-    if (r.job_status === "queued") return "queued";
-  }
   if (r.service_type === "motorcycle_storage") {
     return r.storage_end_date && new Date(r.storage_end_date) < new Date() ? "completed" : "booked";
   }
@@ -1321,17 +1320,31 @@ export default function Admin() {
               const sc = STATE_COLOR[st] || "#9A938D";
               const done = completedCount(r);
               const isPkg = r.sessions_total > 1;
+              const isAcademy = r.service_type === "academy";
+              const isPaid = !!(r.paid_at || r.stage === "paid");
+              const hasRemainingSessions = isPkg && done < r.sessions_total && !["cancelled", "lost", "completed"].includes(st);
               const conflicted = bookingHasConflict(rows, r);
               const renewal = storageRenewalStatus(r);
               const sortedSessions = [...(r.sessions || [])].sort((a, b) => a.seq - b.seq);
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
                   <div className="g51-row g51-card-head" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
-                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: sc, flexShrink: 0 }} />
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: isPaid ? GOLD : sc, flexShrink: 0 }} />
                     <div style={s.headMain}>
                       <div style={s.nameRow}>
                         <span style={s.name}>{r.customer_name}</span>
-                        <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
+                        {/* Paid badge — always gold when payment received */}
+                        {isPaid && (
+                          <span style={{ ...s.pill, color: GOLD, borderColor: GOLD + "66", background: GOLD + "1c" }}>paid</span>
+                        )}
+                        {/* Show "booked" alongside "paid" if there are still sessions to run */}
+                        {isPaid && hasRemainingSessions && (
+                          <span style={{ ...s.pill, color: "#A78BFA", borderColor: "#A78BFA66", background: "#A78BFA1c" }}>booked</span>
+                        )}
+                        {/* Normal single state badge when not paid */}
+                        {!isPaid && (
+                          <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
+                        )}
                         {conflicted && <span style={s.conflictBadge} title="One of this booking's sessions overlaps another booking for the same staff member">⚠ Conflict</span>}
                         {renewal === "overdue" && <span style={s.conflictBadge} title="This storage term has ended — confirm renewal payment or arrange bike pick-up">⚠ Pick-up overdue</span>}
                         {renewal === "due_soon" && <span style={s.renewalDueBadge} title="This storage term ends soon — confirm renewal or pick-up">⏰ Renewal due</span>}
@@ -1342,7 +1355,13 @@ export default function Admin() {
                         <span style={s.dotSep}>·</span>
                         {nextLabel(r)}
                         {r.selection && <><span style={s.dotSep}>·</span>{r.selection}</>}
-                        {isPkg && <><span style={s.dotSep}>·</span>session {done}/{r.sessions_total}</>}
+                        {/* Session progress — visible on the card without expanding */}
+                        {isPkg && isAcademy && (
+                          <><span style={s.dotSep}>·</span>
+                          <span style={{ color: done >= r.sessions_total ? "#2FBF71" : "#C9C2BC", fontWeight: done > 0 ? 600 : 400 }}>
+                            {done}/{r.sessions_total} sessions{done >= r.sessions_total ? " ✓" : " completed"}
+                          </span></>
+                        )}
                       </div>
                     </div>
                     <div className="g51-head-right" style={s.headRight}>
