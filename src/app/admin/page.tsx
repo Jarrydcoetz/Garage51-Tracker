@@ -133,7 +133,7 @@ const BLANK = {
   customer_name: "", phone: "", email: "", service_type: "academy",
   source: "whatsapp", stage: "new", estimated_value: 0, booking_at: "", notes: "",
   storage_start_date: "", storage_end_date: "", bike_category: "adult", storage_term: "month_to_month",
-  preferred_date: "", sessions_total: 1,
+  preferred_date: "", sessions_total: 1, bike_details: "",
 };
 
 // ---- session / state helpers ----------------------------------------------
