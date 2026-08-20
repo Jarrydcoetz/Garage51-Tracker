@@ -1325,7 +1325,12 @@ export default function Admin() {
               const hasRemainingSessions = isPkg && done < r.sessions_total && !["cancelled", "lost", "completed"].includes(st);
               const conflicted = bookingHasConflict(rows, r);
               const renewal = storageRenewalStatus(r);
-              const sortedSessions = [...(r.sessions || [])].sort((a, b) => a.seq - b.seq);
+              const sortedSessions = [...(r.sessions || [])].sort((a, b) => {
+                if (!a.scheduled_at && !b.scheduled_at) return (a.seq ?? 0) - (b.seq ?? 0);
+                if (!a.scheduled_at) return 1;
+                if (!b.scheduled_at) return -1;
+                return new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime();
+              });
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
                   <div className="g51-row g51-card-head" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
@@ -1511,43 +1516,19 @@ export default function Admin() {
                               style={{ ...s.input, width: 70, padding: "6px 8px" }} />
                           </label>
                         </div>
-                        {sortedSessions.map(ss => {
+                        {sortedSessions.map((ss, idx) => {
                           const conflict = findConflict(rows, r, ss);
                           return (
                           <div key={ss.id} style={s.sesRow}>
-                            <span style={s.sesSeq}>#{ss.seq}</span>
+                            <span style={s.sesSeq}>#{idx + 1}</span>
                             <input className="g51-input" type="datetime-local"
                               value={isoToLocalInput(ss.scheduled_at)}
                               onChange={e => {
                                 const iso = localInputToIso(e.target.value);
-
-                                // 1. Compute the full new sessions array in one pass:
-                                //    apply the new date, sort by date, re-assign seq 1,2,3...
-                                const withNewDate = r.sessions.map(s =>
-                                  s.id === ss.id ? { ...s, scheduled_at: iso } : s
-                                );
-                                const sorted = [...withNewDate].sort((a, b) => {
-                                  if (!a.scheduled_at && !b.scheduled_at) return 0;
-                                  if (!a.scheduled_at) return 1;
-                                  if (!b.scheduled_at) return -1;
-                                  return new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime();
-                                });
-                                const resequenced = sorted.map((s, idx) => ({ ...s, seq: idx + 1 }));
-
-                                // 2. Single state update — no competing setRows calls
-                                setRows(prev => prev.map(booking =>
-                                  booking.id !== r.id ? booking : { ...booking, sessions: resequenced }
-                                ));
-
-                                // 3. Persist date change + any seq changes to DB
+                                // Update scheduled_at in state — sortedSessions sorts by date
+                                // so the display reorders immediately without any seq juggling
+                                editSessionLocal(r.id, ss.id, { scheduled_at: iso });
                                 persistSession(ss.id, { scheduled_at: iso });
-                                resequenced.forEach(s => {
-                                  const orig = r.sessions.find(o => o.id === s.id);
-                                  if (orig && orig.seq !== s.seq) {
-                                    supabase.from("sessions").update({ seq: s.seq }).eq("id", s.id);
-                                  }
-                                });
-
                                 syncSessionToCalendar(r, { ...ss, scheduled_at: iso });
                                 if (iso) {
                                   sendStaffWhatsApp(r.assigned_to, name =>
