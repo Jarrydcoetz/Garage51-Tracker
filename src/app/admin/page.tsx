@@ -101,6 +101,7 @@ const SOURCES = [
 const STATE_COLOR: Record<string, string> = {
   new: "#3B9EFF", contacted: "#FFB02E", booked: "#A78BFA",
   completed: "#2FBF71", cancelled: "#C77B6B", lost: "#6E6862",
+  paid: "#FFC400", queued: "#3B9EFF", "in progress": "#FFB02E", "waiting parts": "#C77B6B",
 };
 const PAID_COLOR = "#FFC400";
 // Sessions now carry their own real duration_minutes (auto-populated by a DB
@@ -154,8 +155,16 @@ function completedCount(r: Enquiry): number {
 function bookingState(r: Enquiry): string {
   if (r.stage === "cancelled") return "cancelled";
   if (r.stage === "lost") return "lost";
+  // Payment confirmed — either via Ziina webhook (paid_at) or manual admin update (stage === "paid")
+  if (r.paid_at || r.stage === "paid") return "paid";
   if (r.stage === "new") return "new";
   if (r.stage === "contacted") return "contacted";
+  if (r.service_type === "workshop") {
+    if (r.job_status === "completed") return "completed";
+    if (r.job_status === "in_progress") return "in progress";
+    if (r.job_status === "waiting_parts") return "waiting parts";
+    if (r.job_status === "queued") return "queued";
+  }
   if (r.service_type === "motorcycle_storage") {
     return r.storage_end_date && new Date(r.storage_end_date) < new Date() ? "completed" : "booked";
   }
