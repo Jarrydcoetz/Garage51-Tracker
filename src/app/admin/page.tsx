@@ -595,30 +595,6 @@ export default function Admin() {
     await supabase.from("sessions").update(patch).eq("id", sessId);
   }
 
-  // After any date change, re-sort all sessions for the booking by scheduled_at
-  // and re-assign seq numbers 1, 2, 3... so the card always shows chronological order.
-  // Sessions without a date sort to the end.
-  async function reorderSessionsByDate(enqId: string, sessions: Session[]) {
-    const sorted = [...sessions].sort((a, b) => {
-      if (!a.scheduled_at && !b.scheduled_at) return 0;
-      if (!a.scheduled_at) return 1;
-      if (!b.scheduled_at) return -1;
-      return new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime();
-    });
-    const updates = sorted.map((ss, i) => ({ id: ss.id, seq: i + 1 }));
-    // Only persist sessions whose seq actually changed
-    const changed = updates.filter((u, i) => sessions.find(ss => ss.id === u.id)?.seq !== u.seq);
-    if (changed.length === 0) return;
-    // Update local state with new seq numbers
-    setRows(prev => prev.map(r => {
-      if (r.id !== enqId) return r;
-      const seqMap = Object.fromEntries(updates.map(u => [u.id, u.seq]));
-      return { ...r, sessions: r.sessions.map(ss => ({ ...ss, seq: seqMap[ss.id] ?? ss.seq })) };
-    }));
-    // Persist each changed seq to the database
-    await Promise.all(changed.map(u => supabase.from("sessions").update({ seq: u.seq }).eq("id", u.id)));
-  }
-
   // Pushes a session's current schedule/status to Google Calendar (create, update,
   // or remove the event as appropriate), then saves the returned event ID. Failures
   // are surfaced as a toast but never block the Supabase save that already happened.
@@ -1544,12 +1520,35 @@ export default function Admin() {
                               value={isoToLocalInput(ss.scheduled_at)}
                               onChange={e => {
                                 const iso = localInputToIso(e.target.value);
-                                editSessionLocal(r.id, ss.id, { scheduled_at: iso });
+
+                                // 1. Compute the full new sessions array in one pass:
+                                //    apply the new date, sort by date, re-assign seq 1,2,3...
+                                const withNewDate = r.sessions.map(s =>
+                                  s.id === ss.id ? { ...s, scheduled_at: iso } : s
+                                );
+                                const sorted = [...withNewDate].sort((a, b) => {
+                                  if (!a.scheduled_at && !b.scheduled_at) return 0;
+                                  if (!a.scheduled_at) return 1;
+                                  if (!b.scheduled_at) return -1;
+                                  return new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime();
+                                });
+                                const resequenced = sorted.map((s, idx) => ({ ...s, seq: idx + 1 }));
+
+                                // 2. Single state update — no competing setRows calls
+                                setRows(prev => prev.map(booking =>
+                                  booking.id !== r.id ? booking : { ...booking, sessions: resequenced }
+                                ));
+
+                                // 3. Persist date change + any seq changes to DB
                                 persistSession(ss.id, { scheduled_at: iso });
+                                resequenced.forEach(s => {
+                                  const orig = r.sessions.find(o => o.id === s.id);
+                                  if (orig && orig.seq !== s.seq) {
+                                    supabase.from("sessions").update({ seq: s.seq }).eq("id", s.id);
+                                  }
+                                });
+
                                 syncSessionToCalendar(r, { ...ss, scheduled_at: iso });
-                                // Re-number all sessions by date so seq always reflects chronological order
-                                const updatedSessions = r.sessions.map(s => s.id === ss.id ? { ...s, scheduled_at: iso } : s);
-                                reorderSessionsByDate(r.id, updatedSessions);
                                 if (iso) {
                                   sendStaffWhatsApp(r.assigned_to, name =>
                                     `Hi ${name}, your ${r.service_type.replace("_", " ")} booking with ${r.customer_name} is now set for ${formatSessionTime(iso)}.`);
