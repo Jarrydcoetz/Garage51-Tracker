@@ -1329,13 +1329,13 @@ export default function Admin() {
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
                   <div className="g51-row g51-card-head" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
-                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: isPaid ? GOLD : sc, flexShrink: 0 }} />
+                    <span style={{ width: 9, height: 9, borderRadius: "50%", background: isPaid ? PAID_COLOR : sc, flexShrink: 0 }} />
                     <div style={s.headMain}>
                       <div style={s.nameRow}>
                         <span style={s.name}>{r.customer_name}</span>
                         {/* Paid badge — always gold when payment received */}
                         {isPaid && (
-                          <span style={{ ...s.pill, color: GOLD, borderColor: GOLD + "66", background: GOLD + "1c" }}>paid</span>
+                          <span style={{ ...s.pill, color: PAID_COLOR, borderColor: PAID_COLOR + "66", background: PAID_COLOR + "1c" }}>paid</span>
                         )}
                         {/* Show "booked" alongside "paid" if there are still sessions to run */}
                         {isPaid && hasRemainingSessions && (
