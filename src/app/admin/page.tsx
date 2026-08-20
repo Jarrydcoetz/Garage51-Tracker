@@ -379,8 +379,9 @@ export default function Admin() {
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK });
   const [clientSearch, setClientSearch] = useState("");
-  const [clientList, setClientList] = useState<{ name: string; phone: string; email: string | null }[]>([]);
+  const [clientList, setClientList] = useState<{ name: string; phone: string; email: string | null; bikes: string[] }[]>([]);
   const [showClientDrop, setShowClientDrop] = useState(false);
+  const [clientBikes, setClientBikes] = useState<string[]>([]);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [zohoBusy, setZohoBusy] = useState<string | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
@@ -431,30 +432,37 @@ export default function Admin() {
       const [{ data: cliData }, { data: enqContacts }, { data: sbContacts }] = await Promise.all([
         supabase.from("clients").select("name, whatsapp, email"),
         supabase.from("enquiries").select("customer_name, phone, email").order("created_at", { ascending: false }),
-        supabase.from("storage_bikes").select("client_name, client_phone, client_email").eq("active", true),
+        supabase.from("storage_bikes").select("client_name, client_phone, client_email, make, model, year, vin, reference_number").eq("active", true),
       ]);
       const seen = new Set<string>();
-      const merged: { name: string; phone: string; email: string | null }[] = [];
+      const merged: { name: string; phone: string; email: string | null; bikes: string[] }[] = [];
       // Clients table first (canonical)
       for (const c of (cliData || []) as { name: string | null; whatsapp: string | null; email: string | null }[]) {
         const phone = (c.whatsapp || "").trim();
         if (!phone || seen.has(phone)) continue;
         seen.add(phone);
-        merged.push({ name: c.name || "", phone, email: c.email });
+        merged.push({ name: c.name || "", phone, email: c.email, bikes: [] });
       }
-      // Storage bike owners
-      for (const b of (sbContacts || []) as { client_name: string | null; client_phone: string | null; client_email: string | null }[]) {
+      // Storage bike owners — attach bike make/model labels per phone
+      const sbList = (sbContacts || []) as { client_name: string | null; client_phone: string | null; client_email: string | null; make: string | null; model: string | null; year: string | null; vin: string | null; reference_number: string | null }[];
+      for (const b of sbList) {
         const phone = (b.client_phone || "").trim();
-        if (!phone || seen.has(phone)) continue;
-        seen.add(phone);
-        merged.push({ name: b.client_name || "", phone, email: b.client_email });
+        if (!phone) continue;
+        const bikeLabel = [b.make, b.model, b.year].filter(Boolean).join(" ");
+        const existing = merged.find(m => m.phone === phone);
+        if (existing) {
+          if (bikeLabel && !existing.bikes.includes(bikeLabel)) existing.bikes.push(bikeLabel);
+        } else {
+          seen.add(phone);
+          merged.push({ name: b.client_name || "", phone, email: b.client_email, bikes: bikeLabel ? [bikeLabel] : [] });
+        }
       }
       // Enquiry history (deduplicated)
       for (const e of (enqContacts || []) as { customer_name: string; phone: string; email: string | null }[]) {
         const phone = (e.phone || "").trim();
         if (!phone || seen.has(phone)) continue;
         seen.add(phone);
-        merged.push({ name: e.customer_name, phone, email: e.email });
+        merged.push({ name: e.customer_name, phone, email: e.email, bikes: [] });
       }
       setClientList(merged);
       const [{ data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
@@ -746,7 +754,16 @@ export default function Admin() {
     showToast(`Applied "${product.name}" — ${aed(product.price)}.`);
   }
 
-  // One-time, staff-triggered roll-up — adding parts, products, or hours
+  async function removeServiceProduct(app: ServiceProductApplication) {
+    if (!window.confirm(`Remove "${app.name_snapshot}" from this job? This will also restore any stock decremented by the product recipe.`)) return;
+    // Delete the stock movements that belong to this application (restores inventory)
+    await supabase.from("stock_movements").delete().eq("service_product_application_id", app.id);
+    setMovements(prev => prev.filter(m => m.service_product_application_id !== app.id));
+    // Delete the application itself
+    await supabase.from("service_product_applications").delete().eq("id", app.id);
+    setApplications(prev => prev.filter(a => a.id !== app.id));
+    showToast(`"${app.name_snapshot}" removed.`);
+  } — adding parts, products, or hours
   // never silently changes the price on its own. Same "stay in the loop"
   // pattern as the rest of this app's money-touching actions.
   function addPartsAndLabourToEstimate(row: Enquiry) {
@@ -920,6 +937,7 @@ export default function Admin() {
     setRows(prev => [enq, ...prev]);
     setForm({ ...BLANK });
     setClientSearch("");
+    setClientBikes([]);
     setAdding(false);
     showToast(`Booking created for ${form.customer_name}.`);
   }
@@ -1139,13 +1157,19 @@ export default function Admin() {
                           customer_name: c.name,
                           phone: c.phone,
                           email: c.email || "",
+                          // Auto-fill bike details if exactly one storage bike on record
+                          ...(c.bikes.length === 1 ? { bike_details: c.bikes[0] } : {}),
                         }));
+                        setClientBikes(c.bikes.length > 1 ? c.bikes : []);
                         setClientSearch(c.name);
                         setShowClientDrop(false);
                       }}
                         style={{ display: "flex", flexDirection: "column", width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid #2A2623", padding: "10px 14px", cursor: "pointer", color: "#F4F2EF", fontFamily: "inherit" }}>
                         <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "(no name)"}</span>
                         <span style={{ fontSize: 12, color: "#9A938D", marginTop: 2 }}>{c.phone}{c.email ? ` · ${c.email}` : ""}</span>
+                        {c.bikes.length > 0 && (
+                          <span style={{ fontSize: 11.5, color: "#3B9EFF", marginTop: 3 }}>🏍 {c.bikes.join(" · ")}</span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -1159,6 +1183,22 @@ export default function Admin() {
               <label style={s.ctrl}><span style={s.ctrlLabel}>Phone *</span>
                 <input className="g51-input" value={form.phone} onChange={e => set("phone", e.target.value)} style={s.input} /></label>
             </div>
+            {/* Multi-bike picker: shown when a client has more than one storage bike on record */}
+            {clientBikes.length > 1 && (
+              <div style={{ marginBottom: 10, background: "#1B1816", border: "1px solid #3B9EFF44", borderRadius: 9, padding: "8px 12px" }}>
+                <div style={{ fontSize: 11, color: "#3B9EFF", fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>
+                  Multiple bikes on record — select one
+                </div>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  {clientBikes.map(bike => (
+                    <button key={bike} onClick={() => set("bike_details", bike)}
+                      style={{ background: form.bike_details === bike ? "#3B9EFF22" : "transparent", border: `1px solid ${form.bike_details === bike ? "#3B9EFF" : "#3A352F"}`, borderRadius: 8, color: form.bike_details === bike ? "#3B9EFF" : "#B5AEA8", fontSize: 13, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", fontWeight: form.bike_details === bike ? 700 : 400 }}>
+                      {bike}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
                 <input className="g51-input" value={form.email} onChange={e => set("email", e.target.value)} style={s.input} /></label>
@@ -1584,9 +1624,12 @@ export default function Admin() {
                                   </div>
                                 )}
                                 {appliedProducts.map(app => (
-                                  <div key={app.id} style={s.sesRow}>
+                                  <div key={app.id} style={{ ...s.sesRow, alignItems: "center" }}>
                                     <span style={{ flex: "1 1 auto" }}>{app.name_snapshot} <span style={{ opacity: 0.6 }}>(fixed price)</span></span>
                                     <span style={{ fontWeight: 700 }}>{aed(app.price_snapshot)}</span>
+                                    <button onClick={() => removeServiceProduct(app)}
+                                      title="Remove this product"
+                                      style={{ background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 17, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
                                   </div>
                                 ))}
                                 {usedLines.map(line => {
