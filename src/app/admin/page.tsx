@@ -763,7 +763,9 @@ export default function Admin() {
     await supabase.from("service_product_applications").delete().eq("id", app.id);
     setApplications(prev => prev.filter(a => a.id !== app.id));
     showToast(`"${app.name_snapshot}" removed.`);
-  } — adding parts, products, or hours
+  }
+
+  // One-time, staff-triggered roll-up — adding parts, products, or hours
   // never silently changes the price on its own. Same "stay in the loop"
   // pattern as the rest of this app's money-touching actions.
   function addPartsAndLabourToEstimate(row: Enquiry) {
