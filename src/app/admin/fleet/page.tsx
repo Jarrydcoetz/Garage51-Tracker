@@ -5,11 +5,11 @@ import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
 import {
-import { AdminNav } from "../../../components/AdminNav";
   SERVICE_ITEMS, SERVICE_LABEL, DUE_SOON_THRESHOLD_HOURS,
   type ServiceLogEntry, hoursSince, hoursRemaining, itemStatus,
   lastServicedAt,
 } from "../../../lib/bikeServiceShared";
+import { AdminNav } from "../../../components/AdminNav";
 
 const RED = "#ED1C24";
 const AMBER = "#FFB02E";
