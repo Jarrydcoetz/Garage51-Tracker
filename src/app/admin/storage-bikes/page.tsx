@@ -840,7 +840,7 @@ export default function StorageBikesScreen() {
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <AdminNav page="storage" isAdmin={me?.role === "admin"} />
+        <AdminNav page="storage" isAdmin={true} />
       </header>
       
 

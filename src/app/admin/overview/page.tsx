@@ -160,7 +160,7 @@ export default function OverviewScreen() {
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
         <div style={{ display: "flex", gap: 10, alignItems: "center", position: "relative" }}>
           <button onClick={async () => { await supabase.auth.signOut(); router.replace("/login"); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
-          <AdminNav page="overview" isAdmin={me?.role === "admin"} />
+          <AdminNav page="overview" isAdmin={true} />
         </div>
       </header>
 

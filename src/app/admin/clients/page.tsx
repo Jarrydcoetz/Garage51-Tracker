@@ -400,7 +400,7 @@ export default function ClientsScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <AdminNav page="clients" isAdmin={me?.role === "admin"} />
+        <AdminNav page="clients" isAdmin={true} />
       </header>
 
       
