@@ -1237,7 +1237,7 @@ export default function Admin() {
                 <select className="g51-input" value={wsForm.assignedTo} onChange={e => setWsForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>
                   <option value="">Unassigned</option>
                   {staff.filter(p => p.role === "mechanic" || p.role === "admin").map(p => (
-                    <option key={p.id} value={p.id}>{p.name || p.email}</option>
+                    <option key={p.id} value={p.id}>{p.name || p.id}</option>
                   ))}
                 </select></label>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Estimated (AED)</span>
