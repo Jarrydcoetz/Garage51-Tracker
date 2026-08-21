@@ -242,7 +242,7 @@ export default function FleetScreen() {
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <AdminNav page="fleet" isAdmin={me?.role === "admin"} />
+        <AdminNav page="fleet" isAdmin={true} />
       </header>
 
       
