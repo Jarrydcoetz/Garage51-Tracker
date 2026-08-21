@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
+import { AdminNav } from "../../../components/AdminNav";
 import {
   type Part,
   type StockMovement as Movement,
@@ -82,7 +83,7 @@ function Chevron({ open }: { open: boolean }) {
 export default function PartsScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [myRole, setMyRole] = useState<string | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
@@ -107,6 +108,8 @@ export default function PartsScreen() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
+      const { data: prof } = await supabase.from("profiles").select("role").eq("id", data.session.user.id).single();
+      setMyRole((prof as { role: string } | null)?.role || null);
       const [{ data: p }, { data: m }, { data: s }, { data: sp }, { data: spi }] = await Promise.all([
         supabase.from("parts").select("*").eq("active", true).order("name"),
         supabase.from("stock_movements").select("id, part_id, quantity, reason, created_at"),
@@ -241,27 +244,10 @@ export default function PartsScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <button onClick={() => setMenuOpen(m => !m)} className="g51-btn g51-ghost" style={s.menuBtn} aria-label="Menu">
-          {menuOpen ? (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-          ) : (
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
-          )}
-        </button>
+        <div style={{ position: "relative" }}><AdminNav page="parts" isAdmin={myRole === 'admin'} /></div>
       </header>
 
-      {menuOpen && (
-        <>
-          <div onClick={() => setMenuOpen(false)} style={s.menuOverlay} />
-          <nav style={s.menuDropdown}>
-            <button onClick={() => { router.push("/admin/fleet"); setMenuOpen(false); }} style={s.menuItem}>Fleet Bikes</button>
-            <button onClick={() => { router.push("/admin/storage-bikes"); setMenuOpen(false); }} style={s.menuItem}>Storage Bikes</button>
-            <button onClick={() => { router.push("/admin"); setMenuOpen(false); }} style={s.menuItem}>Bookings</button>
-            <div style={s.menuDivider} />
-            <button onClick={() => { router.push("/admin/overview"); setMenuOpen(false); }} style={s.menuItem}>← Overview</button>
-          </nav>
-        </>
-      )}
+      
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Parts &amp; inventory</h1>

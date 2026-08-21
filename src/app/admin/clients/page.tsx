@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
+import { AdminNav } from "../../../components/AdminNav";
 
 const RED = "#ED1C24";
 const GREEN = "#2FBF71";
@@ -115,7 +116,6 @@ nav button:hover{background:#2A2624 !important;}
 export default function ClientsScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [enquiries, setEnquiries] = useState<EnquiryLite[]>([]);
   const [clientRows, setClientRows] = useState<ClientRow[]>([]);
   const [storageBikes, setStorageBikes] = useState<StorageBikeLite[]>([]);
@@ -400,28 +400,10 @@ export default function ClientsScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <button onClick={() => setMenuOpen(m => !m)} className="g51-btn g51-ghost" style={s.menuBtn} aria-label="Menu">
-          {menuOpen
-            ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-            : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
-          }
-        </button>
+        <AdminNav page="clients" isAdmin={me?.role === "admin"} />
       </header>
 
-      {menuOpen && (
-        <>
-          <div onClick={() => setMenuOpen(false)} style={s.menuOverlay} />
-          <nav style={s.menuDropdown}>
-            <button onClick={() => { router.push("/admin"); setMenuOpen(false); }} style={s.menuItem}>Bookings</button>
-            <button onClick={() => { router.push("/admin/workshop"); setMenuOpen(false); }} style={s.menuItem}>Workshop</button>
-            <button onClick={() => { router.push("/admin/parts"); setMenuOpen(false); }} style={s.menuItem}>Parts & Inventory</button>
-            <button onClick={() => { router.push("/admin/fleet"); setMenuOpen(false); }} style={s.menuItem}>Fleet Bikes</button>
-            <button onClick={() => { router.push("/admin/storage-bikes"); setMenuOpen(false); }} style={s.menuItem}>Storage Bikes</button>
-            <div style={s.menuDivider} />
-            <button onClick={() => { router.push("/admin/overview"); setMenuOpen(false); }} style={s.menuItem}>← Overview</button>
-          </nav>
-        </>
-      )}
+      
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Clients</h1>

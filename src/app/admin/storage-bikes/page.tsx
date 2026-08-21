@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useMemo } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
+import { AdminNav } from "../../../components/AdminNav";
 // bikeServiceShared no longer used — service tracking is now fully custom per bike
 
 const RED = "#ED1C24";
@@ -132,7 +133,6 @@ export default function StorageBikesScreen() {
   const [filterMode, setFilterMode] = useState<"all" | "renewal_overdue" | "renewal_due" | "service_due" | "attention">("all");
   const [search, setSearch] = useState("");
   const [myName, setMyName] = useState<string | null>(null);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [bikes, setBikes] = useState<StorageBike[]>([]);
   const [svcItems, setSvcItems] = useState<SbServiceItem[]>([]);
   const [svcLogs, setSvcLogs] = useState<SbServiceLog[]>([]);
@@ -840,25 +840,9 @@ export default function StorageBikesScreen() {
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <button onClick={() => setMenuOpen(m => !m)} className="g51-btn g51-ghost" style={s.menuBtn} aria-label="Menu">
-          {menuOpen
-            ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-            : <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
-          }
-        </button>
+        <AdminNav page="storage" isAdmin={me?.role === "admin"} />
       </header>
-      {menuOpen && (
-        <>
-          <div onClick={() => setMenuOpen(false)} style={s.menuOverlay} />
-          <nav style={s.menuDropdown}>
-            <button onClick={() => { router.push("/admin/parts"); setMenuOpen(false); }} style={s.menuItem}>Parts & Inventory</button>
-            <button onClick={() => { router.push("/admin/fleet"); setMenuOpen(false); }} style={s.menuItem}>Fleet Bikes</button>
-            <button onClick={() => { router.push("/admin"); setMenuOpen(false); }} style={s.menuItem}>Bookings</button>
-            <div style={s.menuDivider} />
-            <button onClick={() => { router.push("/admin/overview"); setMenuOpen(false); }} style={s.menuItem}>← Overview</button>
-          </nav>
-        </>
-      )}
+      
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Storage bikes</h1>

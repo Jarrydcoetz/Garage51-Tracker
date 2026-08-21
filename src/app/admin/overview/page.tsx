@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
 import { type Part, type StockMovement, stockFor, isLowStock } from "../../../lib/partsShared";
 import { isItemDue } from "../../../lib/bikeServiceShared";
+import { AdminNav } from "../../../components/AdminNav";
 
 const RED = "#ED1C24";
 
@@ -157,7 +158,10 @@ export default function OverviewScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <button onClick={async () => { await supabase.auth.signOut(); router.replace("/login"); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", position: "relative" }}>
+          <button onClick={async () => { await supabase.auth.signOut(); router.replace("/login"); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Log out</button>
+          <AdminNav page="overview" isAdmin={me?.role === "admin"} />
+        </div>
       </header>
 
       <div style={s.wrap}>

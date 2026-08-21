@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
+import { AdminNav } from "../../components/AdminNav";
 import { STORAGE_TERMS, storageTermMonths, storageTotalPrice, addMonths } from "../../lib/storagePricing";
 import {
   type Part,
@@ -390,6 +391,12 @@ export default function Admin() {
   const [clientList, setClientList] = useState<{ name: string; phone: string; email: string | null; bikes: string[] }[]>([]);
   const [showClientDrop, setShowClientDrop] = useState(false);
   const [clientBikes, setClientBikes] = useState<string[]>([]);
+  // Workshop intake form
+  const [wsOpen, setWsOpen] = useState(false);
+  const [wsClientSearch, setWsClientSearch] = useState("");
+  const [wsShowDrop, setWsShowDrop] = useState(false);
+  const [wsForm, setWsForm] = useState({ client: "", phone: "", email: "", make: "", model: "", year: "", vin: "", work: "", assignedTo: "", amount: "", date: "" });
+  const [creatingWs, setCreatingWs] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
   const [zohoBusy, setZohoBusy] = useState<string | null>(null);
   const [parts, setParts] = useState<Part[]>([]);
@@ -993,6 +1000,37 @@ export default function Admin() {
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
 
+  async function createWorkshopIntake() {
+    if (!wsForm.client.trim() || !wsForm.phone.trim()) { showToast("Client name and phone are required.", "err"); return; }
+    if (!wsForm.work.trim()) { showToast("Work required field is empty.", "err"); return; }
+    setCreatingWs(true);
+    const bikeDetails = [wsForm.make, wsForm.model, wsForm.year].filter(Boolean).join(" ");
+    const vinNote = wsForm.vin.trim() ? `VIN: ${wsForm.vin.trim()}` : null;
+    const { data, error } = await supabase.from("enquiries").insert({
+      service_type: "workshop",
+      customer_name: wsForm.client.trim(),
+      phone: wsForm.phone.trim(),
+      email: wsForm.email.trim() || null,
+      bike_details: bikeDetails || null,
+      work_required: wsForm.work.trim(),
+      assigned_to: wsForm.assignedTo || null,
+      estimated_value: Number(wsForm.amount) || 0,
+      preferred_date: wsForm.date || null,
+      stage: "booked",
+      job_status: "queued",
+      source: "internal",
+      notes: vinNote,
+      sessions_total: 0,
+    }).select("*, sessions(*), client:clients(id,name,whatsapp,zoho_contact_id)").single();
+    if (error || !data) { showToast(error?.message || "Could not create workshop job.", "err"); setCreatingWs(false); return; }
+    setRows(prev => [data as Enquiry, ...prev]);
+    setWsForm({ client: "", phone: "", email: "", make: "", model: "", year: "", vin: "", work: "", assignedTo: "", amount: "", date: "" });
+    setWsClientSearch("");
+    setWsOpen(false);
+    setCreatingWs(false);
+    showToast(`Workshop job created — ${wsForm.client.trim()} added to queue.`);
+  }
+
   const scoped = me?.role === "admin" ? rows : rows.filter(r => r.assigned_to === me?.id);
 
   const pipeline = scoped.filter(r => ["new", "contacted"].includes(r.stage)).reduce((a, r) => a + (r.estimated_value || 0), 0);
@@ -1105,21 +1143,13 @@ export default function Admin() {
           </div>
         </div>
         <div style={s.headerActions}>
-          <button onClick={() => { setAdding(a => !a); setAddError(""); }} className="g51-btn g51-primary" style={s.primaryBtn}>+ New booking</button>
-          {me?.role === "admin" && (
-            <button onClick={() => router.push("/admin/overview")} className="g51-btn g51-ghost" style={s.ghostBtn}>Overview</button>
-          )}
-          <button onClick={() => router.push("/admin/parts")} className="g51-btn g51-ghost" style={s.ghostBtn}>Parts</button>
-          <button onClick={() => router.push("/admin/fleet")} className="g51-btn g51-ghost" style={s.ghostBtn}>Fleet</button>
-          <button onClick={() => router.push("/admin/storage-bikes")} className="g51-btn g51-ghost" style={s.ghostBtn}>Storage Bikes</button>
-          {me?.role === "admin" && (
-            <>
-              <button onClick={() => router.push("/admin/staff")} className="g51-btn g51-ghost" style={s.ghostBtn}>Staff</button>
-              <button onClick={() => router.push("/admin/clients")} className="g51-btn g51-ghost" style={s.ghostBtn}>Clients</button>
-            </>
-          )}
-          <button onClick={() => router.push("/admin/tasks")} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, color: "#A78BFA", borderColor: "#A78BFA44" }}>Tasks</button>
+          <button onClick={() => { setAdding(a => !a); setAddError(""); if (wsOpen) setWsOpen(false); }} className="g61-btn g51-primary" style={s.primaryBtn}>+ New booking</button>
+          <button onClick={() => { setWsOpen(o => !o); if (adding) { setAdding(false); } }}
+            style={{ ...s.primaryBtn, background: "#993C1D22", border: "1px solid #993C1D66", color: "#D85A30" }}>
+            + Workshop intake
+          </button>
           <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
+          <AdminNav page="bookings" isAdmin={me?.role === "admin"} />
         </div>
       </header>
 
@@ -1129,6 +1159,101 @@ export default function Admin() {
           <Stat label="Booked" sub="Awaiting payment" value={aed(booked)} color="#A78BFA" />
           <Stat label="Earned" sub="Paid" value={aed(earned)} color="#2FBF71" />
         </div>
+
+        {/* Workshop intake inline panel */}
+        {wsOpen && (
+          <div style={{ ...s.addPanel, borderColor: "#993C1D55", marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <span style={{ ...s.addTitle, color: "#D85A30", margin: 0 }}>Workshop intake</span>
+              <button onClick={() => setWsOpen(false)} style={{ background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 20, lineHeight: 1 }}>×</button>
+            </div>
+
+            {/* Client search */}
+            <div style={{ marginBottom: 10, position: "relative" }}>
+              <label style={s.ctrl}>
+                <span style={s.ctrlLabel}>Search existing client</span>
+                <input className="g51-input"
+                  placeholder="Type name or phone…"
+                  value={wsClientSearch}
+                  onChange={e => { setWsClientSearch(e.target.value); setWsShowDrop(true); }}
+                  onFocus={() => setWsShowDrop(true)}
+                  onBlur={() => setTimeout(() => setWsShowDrop(false), 150)}
+                  style={s.input} />
+              </label>
+              {wsShowDrop && wsClientSearch.trim().length > 0 && (() => {
+                const q = wsClientSearch.toLowerCase();
+                const matches = clientList.filter(c =>
+                  c.name.toLowerCase().includes(q) || c.phone.includes(q)
+                ).slice(0, 6);
+                if (!matches.length) return null;
+                return (
+                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 60, background: "#221F1D", border: "1px solid #3A352F", borderRadius: 10, overflow: "hidden", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", marginTop: 2 }}>
+                    {matches.map(c => (
+                      <button key={c.phone} onMouseDown={() => {
+                        setWsForm(f => ({
+                          ...f, client: c.name, phone: c.phone, email: c.email || "",
+                          ...(c.bikes.length === 1 ? { make: c.bikes[0].split(" ")[0] || "", model: c.bikes[0].split(" ").slice(1, -1).join(" ") || "", year: c.bikes[0].split(" ").at(-1) || "" } : {}),
+                        }));
+                        setWsClientSearch(c.name); setWsShowDrop(false);
+                      }}
+                        style={{ display: "flex", flexDirection: "column", width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid #2A2623", padding: "9px 14px", cursor: "pointer", color: "#F4F2EF", fontFamily: "inherit" }}>
+                        <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "(no name)"}</span>
+                        <span style={{ fontSize: 12, color: "#9A938D" }}>{c.phone}{c.bikes.length > 0 ? ` · ${c.bikes.join(", ")}` : ""}</span>
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Client details */}
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Client name *</span>
+                <input className="g51-input" value={wsForm.client} onChange={e => setWsForm(f => ({ ...f, client: e.target.value }))} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Phone *</span>
+                <input className="g51-input" value={wsForm.phone} onChange={e => setWsForm(f => ({ ...f, phone: e.target.value }))} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
+                <input className="g51-input" value={wsForm.email} onChange={e => setWsForm(f => ({ ...f, email: e.target.value }))} style={s.input} /></label>
+            </div>
+
+            {/* Bike details */}
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Make</span>
+                <input className="g51-input" value={wsForm.make} onChange={e => setWsForm(f => ({ ...f, make: e.target.value }))} placeholder="e.g. Yamaha" style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Model</span>
+                <input className="g51-input" value={wsForm.model} onChange={e => setWsForm(f => ({ ...f, model: e.target.value }))} placeholder="e.g. YZ450F" style={s.input} /></label>
+              <label style={{ ...s.ctrl, flex: "0 0 90px" }}><span style={s.ctrlLabel}>Year</span>
+                <input className="g51-input" value={wsForm.year} onChange={e => setWsForm(f => ({ ...f, year: e.target.value }))} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>VIN (optional)</span>
+                <input className="g51-input" value={wsForm.vin} onChange={e => setWsForm(f => ({ ...f, vin: e.target.value }))} style={s.input} /></label>
+            </div>
+
+            {/* Job details */}
+            <label style={{ ...s.ctrl, display: "grid", marginBottom: 10 }}><span style={s.ctrlLabel}>Work required *</span>
+              <textarea className="g51-input" value={wsForm.work} onChange={e => setWsForm(f => ({ ...f, work: e.target.value }))}
+                placeholder="Describe the work to be done…" rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+            <div style={s.controls}>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Assign to</span>
+                <select className="g51-input" value={wsForm.assignedTo} onChange={e => setWsForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>
+                  <option value="">Unassigned</option>
+                  {staff.filter(p => p.role === "mechanic" || p.role === "admin").map(p => (
+                    <option key={p.id} value={p.id}>{p.name || p.email}</option>
+                  ))}
+                </select></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Estimated (AED)</span>
+                <input className="g51-input" type="number" value={wsForm.amount} onChange={e => setWsForm(f => ({ ...f, amount: e.target.value }))} style={s.input} /></label>
+              <label style={s.ctrl}><span style={s.ctrlLabel}>Preferred date</span>
+                <input className="g51-input" type="date" value={wsForm.date} onChange={e => setWsForm(f => ({ ...f, date: e.target.value }))} style={s.input} /></label>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button onClick={createWorkshopIntake} disabled={creatingWs}
+                style={{ background: "#ED1C24", color: "#fff", border: "none", borderRadius: 9, padding: "10px 18px", fontSize: 14, fontWeight: 700, cursor: "pointer", opacity: creatingWs ? 0.6 : 1 }}>
+                {creatingWs ? "Creating…" : "Push to workshop queue"}
+              </button>
+              <button onClick={() => setWsOpen(false)} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
+            </div>
+          </div>
+        )}
 
         {adding && (
           <div style={s.addPanel}>
@@ -1216,9 +1341,8 @@ export default function Admin() {
                 <select className="g51-input" value={form.service_type} onChange={e => set("service_type", e.target.value)} style={s.input}>
                   <option value="academy">academy</option>
                   <option value="rental">rental</option>
-                  <option value="desert_tour">desert_tour</option>
-                  <option value="workshop">workshop</option>
-                  <option value="motorcycle_storage">motorcycle_storage</option>
+                  <option value="desert_tour">desert tour</option>
+                  <option value="motorcycle_storage">motorcycle storage</option>
                 </select></label>
             </div>
             <div style={s.controls}>

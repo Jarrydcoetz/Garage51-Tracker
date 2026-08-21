@@ -5,6 +5,7 @@ import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
 import { inviteStaff, setStaffActive, setStaffRole, setStaffWhatsapp } from "./actions";
+import { AdminNav } from "../../../components/AdminNav";
 
 const RED = "#ED1C24";
 const ROLES = ["admin", "coach", "mechanic", "facilities"];
@@ -141,7 +142,7 @@ export default function StaffScreen() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
         <div style={s.headRight}>
-          <button onClick={() => router.push("/admin")} className="g51-btn g51-ghost" style={s.ghostBtn}>← Dashboard</button>
+          <div style={{ position: "relative" }}><AdminNav page="staff" isAdmin={true} /></div>
           <div style={s.profileWrap}>
             <button onClick={() => setProfileOpen(o => !o)} className="g51-btn g51-ghost" style={s.profileBtn} aria-label="Account">
               <span style={{ ...s.avatar, background: myColor }}>{initials}</span>
