@@ -43,6 +43,7 @@ type Job = {
   work_required: string | null;
   job_status: string | null;
   labour_hours: number | null;
+  estimated_value: number | null;
   assigned_to: string | null;
   stage: string;
 };
@@ -97,7 +98,7 @@ export default function WorkshopScreen() {
 
       const [{ data: jobsData }, { data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
         supabase.from("enquiries")
-          .select("id, customer_name, bike_details, bike_year, bike_hours, work_required, job_status, labour_hours, assigned_to, stage")
+          .select("id, customer_name, bike_details, bike_year, bike_hours, work_required, job_status, labour_hours, estimated_value, assigned_to, stage")
           .eq("service_type", "workshop")
           .not("job_status", "is", null)
           .order("created_at", { ascending: true }),
@@ -140,8 +141,22 @@ export default function WorkshopScreen() {
     if (error) showToast(error.message || "Could not save.", "err");
   }
   function setStatus(job: Job, status: string) {
-    editJobLocal(job.id, { job_status: status });
-    saveJob(job.id, { job_status: status });
+    if (status === "completed") {
+      // Calculate the final total from all actual work done and write it back
+      // to estimated_value — this becomes the billing amount on the bookings page.
+      const usedLines = partsUsedFor(job.id, movements);
+      const partsTotal = partsUsedTotal(usedLines);
+      const productsList = applicationsFor(job.id, applications);
+      const productsTotal = applicationsTotal(productsList);
+      const labourTotal = labourCharge(job.labour_hours);
+      const finalTotal = Math.round((partsTotal + productsTotal + labourTotal) * 100) / 100;
+      editJobLocal(job.id, { job_status: status, estimated_value: finalTotal });
+      saveJob(job.id, { job_status: status, estimated_value: finalTotal } as Partial<Job>);
+      showToast(`Job completed · total AED ${finalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
+    } else {
+      editJobLocal(job.id, { job_status: status });
+      saveJob(job.id, { job_status: status });
+    }
   }
   function setHours(job: Job, hours: number | null) {
     editJobLocal(job.id, { labour_hours: hours });
@@ -243,6 +258,7 @@ export default function WorkshopScreen() {
                       </div>
                       <div style={s.jobSub}>
                         {job.bike_details || "No bike details"}{job.bike_year ? ` · ${job.bike_year}` : ""}
+                        {job.job_status === "completed" && job.estimated_value ? ` · ${aed(job.estimated_value)}` : ""}
                       </div>
                     </div>
                     <Chevron open={open} />
