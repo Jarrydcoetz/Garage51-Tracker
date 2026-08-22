@@ -679,6 +679,18 @@ export default function StorageBikesScreen() {
     showToast("Service request cleared.");
   }
 
+  // Manual payment flow — for cash / bank transfer / card payments taken outside Ziina.
+  // Sets renewal_paid_at directly so the existing "Create invoice" button becomes available,
+  // exactly the same as if the Ziina webhook had fired.
+  async function markPaidManually(bike: StorageBike, group: ClientGroup) {
+    const months = selectedPkg[bike.id];
+    if (!months) { showToast("Select a renewal period first.", "err"); return; }
+    const now = new Date().toISOString();
+    await supabase.from("storage_bikes").update({ renewal_paid_at: now }).eq("id", bike.id);
+    editBikeLocal(bike.id, { renewal_paid_at: now });
+    showToast(`Payment recorded for ${group.name || bike.client_name || "client"} — ${months}m. Now create the invoice.`);
+  }
+
   async function createRenewalInvoice(bike: StorageBike) {
     const months = selectedPkg[bike.id];
     if (!months) { showToast("Select a package first.", "err"); return; }
@@ -1120,7 +1132,7 @@ export default function StorageBikesScreen() {
                                   })}
                                 </div>
 
-                                {/* PRE-PAYMENT: WhatsApp (now auto-creates and includes payment link) */}
+                                {/* PRE-PAYMENT: WhatsApp (auto-creates and includes payment link) */}
                                 {!bike.renewal_paid_at && (
                                   <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
                                     <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
@@ -1129,6 +1141,12 @@ export default function StorageBikesScreen() {
                                         ? `✓ Sent${selectedPkg[bike.id] ? ` — ${selectedPkg[bike.id]}m` : ""}`
                                         : selectedPkg[bike.id] ? `WhatsApp + payment link — ${selectedPkg[bike.id]}m` : "WhatsApp"}
                                     </button>
+                                    {selectedPkg[bike.id] && (
+                                      <button onClick={() => markPaidManually(bike, group)}
+                                        style={{ ...s.actionBtn, color: GOLD, borderColor: GOLD + "66", background: GOLD + "11", fontSize: 12 }}>
+                                        ✓ Manual payment received
+                                      </button>
+                                    )}
                                     {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
                                       <button onClick={() => resetBikePackage(bike.id)}
                                         style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
@@ -1155,6 +1173,14 @@ export default function StorageBikesScreen() {
                                         ↺ Reset
                                       </button>
                                     )}
+                                    <button onClick={async () => {
+                                      if (!window.confirm("Clear payment status? This will un-mark this renewal as paid.")) return;
+                                      await supabase.from("storage_bikes").update({ renewal_paid_at: null, renewal_payment_intent_id: null }).eq("id", bike.id);
+                                      editBikeLocal(bike.id, { renewal_paid_at: null, renewal_payment_intent_id: null });
+                                      showToast("Payment status cleared.");
+                                    }} style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", marginLeft: 4 }}>
+                                      Undo paid
+                                    </button>
                                   </div>
                                 )}
                               </div>
