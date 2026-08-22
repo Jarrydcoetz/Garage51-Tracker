@@ -1005,7 +1005,6 @@ export default function Admin() {
     if (!wsForm.work.trim()) { showToast("Work required field is empty.", "err"); return; }
     setCreatingWs(true);
     const bikeDetails = [wsForm.make, wsForm.model, wsForm.year].filter(Boolean).join(" ");
-    const vinNote = wsForm.vin.trim() ? `VIN: ${wsForm.vin.trim()}` : null;
     const { data, error } = await supabase.from("enquiries").insert({
       service_type: "workshop",
       customer_name: wsForm.client.trim(),
@@ -1019,7 +1018,7 @@ export default function Admin() {
       stage: "booked",
       job_status: "queued",
       source: "internal",
-      notes: vinNote,
+      notes: wsForm.vin.trim() ? `VIN: ${wsForm.vin.trim()}` : "",
       sessions_total: 0,
     }).select("*, sessions(*), client:clients(id,name,whatsapp,zoho_contact_id)").single();
     if (error || !data) { showToast(error?.message || "Could not create workshop job.", "err"); setCreatingWs(false); return; }
