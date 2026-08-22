@@ -1106,14 +1106,17 @@ export default function StorageBikesScreen() {
                             </div>
 
                                                         {/* Renewal package strip */}
-                            {(rs === "overdue" || rs === "due_soon" || rs === "paid") && (
-                              <div style={{ margin: "0 14px 10px", background: rs === "paid" ? GOLD + "15" : rs === "overdue" ? RED + "0e" : AMBER + "0e", border: `1px solid ${rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER}33`, borderRadius: 10, padding: "10px 14px" }}>
-                                <div style={{ fontSize: 12.5, fontWeight: 700, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : AMBER, marginBottom: 8 }}>
+                            {/* RENEWAL SECTION — always visible in expanded card so admin can process payment regardless of status */}
+                            {(rs === "overdue" || rs === "due_soon" || rs === "paid" || isBikeOpen) && (
+                              <div style={{ margin: "0 14px 10px", background: rs === "paid" ? GOLD + "15" : rs === "overdue" ? RED + "0e" : rs === "due_soon" ? AMBER + "0e" : "#1B1816", border: `1px solid ${rs === "paid" ? GOLD : rs === "overdue" ? RED : rs === "due_soon" ? AMBER : "#2A2623"}33`, borderRadius: 10, padding: "10px 14px" }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : rs === "due_soon" ? AMBER : "#9A938D", marginBottom: 8 }}>
                                   {rs === "paid"
                                     ? "💳 Payment received — confirm the renewal period and create the invoice"
                                     : rs === "overdue"
                                     ? `${Math.abs(daysLeft)} day${Math.abs(daysLeft) !== 1 ? "s" : ""} overdue`
-                                    : `Due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`}
+                                    : rs === "due_soon"
+                                    ? `Due in ${daysLeft} day${daysLeft !== 1 ? "s" : ""}`
+                                    : "Renewal — process payment"}
                                 </div>
 
                                 {/* Package selector */}
