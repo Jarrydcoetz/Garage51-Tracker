@@ -812,7 +812,8 @@ export default function Admin() {
     setLinkBusy(row.id);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const authHeader = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
+      const authHeader: Record<string, string> = session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` } : {};
       const res = await fetch("/api/payment-link", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeader },
@@ -837,7 +838,8 @@ export default function Admin() {
     setZohoBusy(row.id);
     try {
       const { data: { session: zohoSession } } = await supabase.auth.getSession();
-      const zohoAuthHeader = zohoSession?.access_token ? { Authorization: `Bearer ${zohoSession.access_token}` } : {};
+      const zohoAuthHeader: Record<string, string> = zohoSession?.access_token
+        ? { Authorization: `Bearer ${zohoSession.access_token}` } : {};
       const res = await fetch("/api/zoho/create-invoice", {
         method: "POST",
         headers: { "Content-Type": "application/json", ...zohoAuthHeader },

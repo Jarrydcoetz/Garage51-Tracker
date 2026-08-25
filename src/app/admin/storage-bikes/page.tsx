@@ -590,7 +590,7 @@ export default function StorageBikesScreen() {
     if (amount > 0) {
       try {
         const res = await fetch("/api/payment-link", {
-          method: "POST", headers: { "Content-Type": "application/json", ...(await supabase.auth.getSession().then(r => r.data.session?.access_token ? { Authorization: `Bearer ${r.data.session.access_token}` } : {})) },
+          method: "POST", headers: { "Content-Type": "application/json", ...(await supabase.auth.getSession().then(r => r.data.session?.access_token ? { Authorization: `Bearer ${r.data.session.access_token}` } : {}) as Record<string, string>) },
           body: JSON.stringify({
             amount,
             description: `Service — ${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""}`,
@@ -623,7 +623,7 @@ export default function StorageBikesScreen() {
     if (amount > 0) {
       try {
         const res = await fetch("/api/zoho/create-invoice", {
-          method: "POST", headers: { "Content-Type": "application/json", ...(await supabase.auth.getSession().then(r => r.data.session?.access_token ? { Authorization: `Bearer ${r.data.session.access_token}` } : {})) },
+          method: "POST", headers: { "Content-Type": "application/json", ...(await supabase.auth.getSession().then(r => r.data.session?.access_token ? { Authorization: `Bearer ${r.data.session.access_token}` } : {}) as Record<string, string>) },
           body: JSON.stringify({
             customer_name: bike.client_name || bike.name,
             phone: bike.client_phone || null,
@@ -718,7 +718,7 @@ export default function StorageBikesScreen() {
     if (amount > 0) {
       try {
         const res = await fetch("/api/zoho/create-invoice", {
-          method: "POST", headers: { "Content-Type": "application/json", ...(await supabase.auth.getSession().then(r => r.data.session?.access_token ? { Authorization: `Bearer ${r.data.session.access_token}` } : {})) },
+          method: "POST", headers: { "Content-Type": "application/json", ...(await supabase.auth.getSession().then(r => r.data.session?.access_token ? { Authorization: `Bearer ${r.data.session.access_token}` } : {}) as Record<string, string>) },
           body: JSON.stringify({
             customer_name: bike.client_name || bike.name,
             phone: bike.client_phone || null,
