@@ -1,51 +1,57 @@
 import { NextResponse } from "next/server";
+import { verifyAdmin, unauthorised } from "../../../lib/api-auth";
+export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const key = process.env.ZIINA_API_KEY;
-  if (!key) {
-    return NextResponse.json({ error: "Payment service is not configured." }, { status: 500 });
-  }
+  // Must be an authenticated user (any role — mechanics and admin both send payment links)
+  const userId = await verifyAdmin(req, "any");
+  if (!userId) return unauthorised();
 
-  let body: { amount?: number; message?: string };
+  let body: { amount: number; description?: string };
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "Invalid request." }, { status: 400 });
+    return NextResponse.json({ error: "Invalid JSON." }, { status: 400 });
   }
 
-  const aed = Number(body.amount);
-  if (!aed || aed < 2) {
-    return NextResponse.json({ error: "Amount must be at least AED 2." }, { status: 400 });
+  const { amount, description } = body;
+  if (!amount || amount <= 0) {
+    return NextResponse.json({ error: "Invalid amount." }, { status: 400 });
   }
 
-  const origin = new URL(req.url).origin;
+  const apiKey = process.env.ZIINA_API_KEY;
+  const isTest = process.env.ZIINA_TEST === "true";
+
+  if (!apiKey) {
+    return NextResponse.json({ error: "Payment gateway not configured." }, { status: 500 });
+  }
 
   try {
     const res = await fetch("https://api-v2.ziina.com/api/payment_intent", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${key}`,
+        Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        amount: Math.round(aed * 100), // Ziina expects fils (AED x 100)
+        amount: Math.round(amount * 100), // fils
         currency_code: "AED",
-        message: body.message || "Garage51 booking",
-        success_url: `${origin}/payment-success`,
-        cancel_url: `${origin}/`,
-        test: process.env.ZIINA_TEST === "true",
+        description: description || "Garage51 payment",
+        test: isTest,
+        transaction_source: "directlink",
       }),
     });
 
-    const data = await res.json();
     if (!res.ok) {
-      return NextResponse.json(
-        { error: data?.message || "Could not create payment link." },
-        { status: 502 }
-      );
+      const err = await res.text();
+      console.error("Ziina payment intent error:", res.status);
+      return NextResponse.json({ error: "Could not create payment link." }, { status: 502 });
     }
-    return NextResponse.json({ url: data.redirect_url, id: data.id });
-  } catch {
-    return NextResponse.json({ error: "Could not reach the payment service." }, { status: 502 });
+
+    const data = await res.json();
+    return NextResponse.json({ id: data.id, url: data.payment_link_url ?? data.url });
+  } catch (err) {
+    console.error("Payment link error:", err instanceof Error ? err.message : "unknown");
+    return NextResponse.json({ error: "Payment gateway error." }, { status: 500 });
   }
 }

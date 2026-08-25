@@ -811,9 +811,11 @@ export default function Admin() {
     if (amount < 2) { showToast("Set an estimated value of at least AED 2 before creating a payment link.", "err"); return; }
     setLinkBusy(row.id);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const authHeader = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {};
       const res = await fetch("/api/payment-link", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeader },
         body: JSON.stringify({ amount, message: `Garage51 - ${row.customer_name}` }),
       });
       const data = await res.json();
@@ -834,9 +836,11 @@ export default function Admin() {
   async function createZohoInvoiceForBooking(row: Enquiry) {
     setZohoBusy(row.id);
     try {
+      const { data: { session: zohoSession } } = await supabase.auth.getSession();
+      const zohoAuthHeader = zohoSession?.access_token ? { Authorization: `Bearer ${zohoSession.access_token}` } : {};
       const res = await fetch("/api/zoho/create-invoice", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...zohoAuthHeader },
         body: JSON.stringify({
           zoho_contact_id: row.client?.zoho_contact_id || null,
           customer_name: row.customer_name,

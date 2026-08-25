@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { verifyAdmin, unauthorised } from "../../../../lib/api-auth";
 import { createZohoContact, createZohoInvoice, invoiceWebUrl } from "../../../../lib/zohoBooks";
 
 type Body = {
@@ -12,6 +13,10 @@ type Body = {
 };
 
 export async function POST(req: Request) {
+  // Must be an authenticated admin
+  const adminId = await verifyAdmin(req);
+  if (!adminId) return unauthorised();
+
   let payload: Body;
   try {
     payload = await req.json();
@@ -24,8 +29,6 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Reuse the stored contact if this customer already has one — only
-    // create a new Zoho contact the first time we invoice them.
     let contactId = payload.zoho_contact_id || null;
     if (!contactId) {
       contactId = await createZohoContact({
@@ -50,8 +53,9 @@ export async function POST(req: Request) {
       invoice_url: invoiceWebUrl(invoiceId),
     });
   } catch (err) {
-    console.error("Zoho invoice creation failed:", err, "| request payload:", JSON.stringify(payload));
+    // Trim PII — log the error message only, never the full payload
     const message = err instanceof Error ? err.message : "Could not create the Zoho invoice.";
+    console.error("Zoho invoice creation failed:", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
