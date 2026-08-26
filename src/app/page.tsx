@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { submitEnquiry } from "./actions";
@@ -78,18 +78,20 @@ const ACADEMY_OWNGEAR: Pkg[] = [
   { key: "group", label: "Your own group (min 2 riders)", price: 420, perRider: true },
   { key: "custom", label: "Not sure / need a custom solution", price: null },
 ];
+// ✅ Pricing from intake sheet — updated Aug 2026
 const ACADEMY_JUNIOR: Pkg[] = [
   { key: "single", label: "Single lesson (2 hours)", price: 1320 },
   { key: "pack3", label: "3-lesson package (3 x 2h)", price: 3600 },
   { key: "pack5", label: "5-lesson package (5 x 2h)", price: 5400 },
-  { key: "group", label: "Your own group (min 2, under 125cc)", price: 800, perRider: true },
+  { key: "group_ycf", label: "Group — YCF (50/88/125cc), min 3 riders", price: 750, perRider: true },
+  { key: "group_tc65", label: "Group — TC65 / SX85, min 3 riders", price: 950, perRider: true },
   { key: "custom", label: "Not sure / need a custom solution", price: null },
 ];
 const ACADEMY_ADULT: Pkg[] = [
   { key: "single", label: "Single lesson (2 hours, over 125cc)", price: 1650 },
   { key: "pack3", label: "3-lesson package (3 x 2h)", price: 4450 },
   { key: "pack5", label: "5-lesson package (5 x 2h)", price: 6600 },
-  { key: "group", label: "Your own group (min 2, over 125cc)", price: 1200, perRider: true },
+  { key: "group", label: "Your own group (min 3, over 125cc)", price: 1050, perRider: true },
   { key: "custom", label: "Not sure / need a custom solution", price: null },
 ];
 
@@ -107,17 +109,28 @@ const RENTAL_BIKES: Bike[] = [
     { key: "1h", label: "1 hour", price: 300 }, { key: "2h", label: "2 hours", price: 500 }] },
 ];
 
+// ✅ Desert pricing from intake sheet — DDE 4h corrected to AED 2,800
 const DESERT: Pkg[] = [
   { key: "guide2h", label: "2-hour Guide Hire (your own bike/gear)", price: 690 },
   { key: "desmo2h", label: "2-hour Desmo450 private tour (single)", price: 1850 },
-  { key: "desmo4h", label: "4-hour Desmo450 private tour (single)", price: 2400 },
-  { key: "group", label: "Group booking request", price: null },
+  { key: "desmo4h", label: "4-hour Desmo450 private tour (single)", price: 2800 },
+  { key: "group", label: "Group booking / custom tour", price: null },
+  { key: "multiday", label: "Multi-day desert tour (2–5 nights)", price: null },
+];
+
+// ✅ Memberships — Silver / Gold / Platinum
+const MEMBERSHIP_PKGS: Pkg[] = [
+  { key: "silver", label: "Silver membership", price: 200 },
+  { key: "gold", label: "Gold membership", price: 1500 },
+  { key: "platinum", label: "Platinum membership", price: 2850 },
+  { key: "custom", label: "Family / corporate — get a quote", price: null },
 ];
 
 const SERVICES = [
   { key: "academy", label: "Academy", desc: "Coached training sessions and packages" },
   { key: "rental", label: "Bike Rental", desc: "Rent a bike for our tracks and facilities" },
-  { key: "desert_tour", label: "Desert Tour", desc: "Guided desert rides" },
+  { key: "desert_tour", label: "Desert Tour", desc: "Guided desert rides and multi-day tours" },
+  { key: "membership", label: "Membership", desc: "Monthly riding membership — Silver, Gold or Platinum" },
   { key: "workshop", label: "Workshop", desc: "Service, repairs and maintenance" },
   { key: "motorcycle_storage", label: "Motorcycle Storage", desc: "Secure monthly storage for your bike" },
 ];
@@ -126,12 +139,16 @@ export default function EnquiryForm() {
   const router = useRouter();
   const [step, setStep] = useState(1);
   const [service, setService] = useState("");
+  const turnstileRef = useRef<HTMLDivElement>(null);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
+  // Honeypot — never shown to real users, bots fill it
+  const [hpField, setHpField] = useState("");
 
   // academy
   const [cat, setCat] = useState<"" | "junior" | "adult">("");
   const [ownGear, setOwnGear] = useState<null | boolean>(null);
   const [pkg, setPkg] = useState("");
-  const [riderCount, setRiderCount] = useState(2);
+  const [riderCount, setRiderCount] = useState(3);
 
   // rental
   const [ack, setAck] = useState(false);
@@ -155,6 +172,9 @@ export default function EnquiryForm() {
   const [stMake, setStMake] = useState("");
   const [stModel, setStModel] = useState("");
 
+  // membership
+  const [memberPkg, setMemberPkg] = useState("");
+
   // contact
   const [preferredDate, setPreferredDate] = useState("");
   const [name, setName] = useState("");
@@ -166,12 +186,35 @@ export default function EnquiryForm() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
 
+  // Load Cloudflare Turnstile on step 3
+  useEffect(() => {
+    if (step !== 3) return;
+    const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+    if (!siteKey || !turnstileRef.current) return;
+    const script = document.createElement("script");
+    script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    script.async = true;
+    script.onload = () => {
+      const w = window as typeof window & { turnstile?: { render: (el: HTMLElement, opts: object) => void } };
+      if (!w.turnstile || !turnstileRef.current) return;
+      w.turnstile.render(turnstileRef.current, {
+        sitekey: siteKey,
+        theme: "dark",
+        size: "compact",
+        callback: (token: string) => setTurnstileToken(token),
+        "error-callback": () => setTurnstileToken(null),
+      });
+    };
+    document.head.appendChild(script);
+    return () => { try { document.head.removeChild(script); } catch {} };
+  }, [step]);
+
   const academyList: Pkg[] =
     ownGear === true ? ACADEMY_OWNGEAR : cat === "junior" ? ACADEMY_JUNIOR : cat === "adult" ? ACADEMY_ADULT : [];
 
   function pickService(k: string) {
     setService(k);
-    setCat(""); setOwnGear(null); setPkg("");
+    setCat(""); setOwnGear(null); setPkg(""); setMemberPkg("");
     setAck(false); setBike(""); setDur(""); setRentalCustom(false);
     setDesert("");
   }
@@ -186,8 +229,8 @@ export default function EnquiryForm() {
       const gear = ownGear ? "own gear" : "rental incl.";
       if (p.key === "custom") return { price: null, selection: `Academy / ${cat} / ${gear} / custom`, custom: true };
       if (p.perRider) {
-        const riders = Math.max(2, riderCount);
-        return { price: (p.price || 0) * riders, selection: `Academy / ${cat} / ${gear} / group x${riders} (${p.price}/rider)`, custom: false };
+        const riders = Math.max(3, riderCount);
+        return { price: (p.price || 0) * riders, selection: `Academy / ${cat} / ${gear} / group x${riders} (${aed(p.price || 0)}/rider)`, custom: false };
       }
       return { price: p.price, selection: `Academy / ${cat} / ${gear} / ${p.label}`, custom: false };
     }
@@ -202,6 +245,12 @@ export default function EnquiryForm() {
       const o = DESERT.find(x => x.key === desert);
       if (!o) return { price: null, selection: "", custom: false };
       return { price: o.price, selection: `Desert tour / ${o.label}`, custom: o.price === null };
+    }
+    if (service === "membership") {
+      const m = MEMBERSHIP_PKGS.find(x => x.key === memberPkg);
+      if (!m) return { price: null, selection: "", custom: false };
+      if (m.key === "custom") return { price: null, selection: `Membership / family or corporate enquiry`, custom: true };
+      return { price: m.price, selection: `Membership / ${m.label}`, custom: false, perMonth: true };
     }
     if (service === "workshop") {
       return { price: null, selection: `Workshop / ${wsMake} ${wsModel}`.trim(), custom: true };
@@ -227,7 +276,7 @@ export default function EnquiryForm() {
     if (service === "academy") {
       if (!cat || ownGear === null || !pkg) return false;
       const p = academyList.find(x => x.key === pkg);
-      if (p?.perRider && riderCount < 2) return false;
+      if (p?.perRider && riderCount < 3) return false;
       return true;
     }
     if (service === "rental") {
@@ -236,6 +285,7 @@ export default function EnquiryForm() {
       return !!bike && !!dur;
     }
     if (service === "desert_tour") return !!desert;
+    if (service === "membership") return !!memberPkg;
     if (service === "workshop") return !!wsMake.trim() && !!wsModel.trim() && !!wsWork.trim();
     if (service === "motorcycle_storage") return !!stCategory && !!stTerm;
     return false;
@@ -244,6 +294,8 @@ export default function EnquiryForm() {
   async function submit() {
     const natl = phone.replace(/\D/g, "").replace(/^0+/, "");
     if (!name.trim() || !natl) { setErr("Please add your name and WhatsApp number."); return; }
+    const siteKey = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY;
+    if (siteKey && !turnstileToken) { setErr("Please complete the security check above."); return; }
     setSubmitting(true); setErr("");
     const cc = COUNTRIES.find(c => c.iso === countryIso) || COUNTRIES[0];
     const whatsapp = cc.dial + natl;
@@ -267,7 +319,7 @@ export default function EnquiryForm() {
       rider_category: service === "academy" ? cat : null,
       own_gear: service === "academy" ? ownGear : null,
       selection: q.selection || null,
-      rider_count: isGroup ? Math.max(2, riderCount) : null,
+      rider_count: isGroup ? Math.max(3, riderCount) : null,
       preferred_date: isStorage ? null : (preferredDate || null),
       bike_details: bikeDetails,
       bike_year: service === "workshop" ? wsYear || null : null,
@@ -281,6 +333,8 @@ export default function EnquiryForm() {
         : null,
       estimated_value: q.price ?? 0,
       notes,
+      hp_field: hpField,
+      turnstile_token: turnstileToken || undefined,
     });
     setSubmitting(false);
     if (!res.ok) { setErr(res.error || "Something went wrong. Please try again."); return; }
@@ -296,6 +350,17 @@ export default function EnquiryForm() {
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
         <h1 style={s.h1}>Booking enquiry</h1>
         <p style={s.sub}>Tell us what you are after and we will confirm availability and your quote.</p>
+
+        {/* Honeypot — hidden from real users, bots fill it */}
+        <div style={{ display: "none" }} aria-hidden="true">
+          <input
+            tabIndex={-1}
+            autoComplete="off"
+            value={hpField}
+            onChange={e => setHpField(e.target.value)}
+            name="website"
+          />
+        </div>
 
         <div style={s.steps}>
           {[1, 2, 3].map(n => (
@@ -340,9 +405,9 @@ export default function EnquiryForm() {
                 ))}
                 {academyList.find(x => x.key === pkg)?.perRider && (
                   <label style={s.field}>
-                    <span style={s.label}>How many riders?</span>
-                    <input type="number" min={2} value={riderCount}
-                      onChange={e => setRiderCount(Math.max(2, Number(e.target.value) || 2))} style={s.input} />
+                    <span style={s.label}>How many riders? (min 3)</span>
+                    <input type="number" min={3} value={riderCount}
+                      onChange={e => setRiderCount(Math.max(3, Number(e.target.value) || 3))} style={s.input} />
                   </label>
                 )}
               </>
@@ -394,6 +459,16 @@ export default function EnquiryForm() {
           </section>
         )}
 
+        {step === 2 && service === "membership" && (
+          <section style={s.card}>
+            <div style={s.q}>Choose your membership</div>
+            {MEMBERSHIP_PKGS.map(m => (
+              <Opt key={m.key} active={memberPkg === m.key} onClick={() => setMemberPkg(m.key)} title={m.label}
+                price={m.price} custom={m.price === null} perMonth={m.price !== null && m.key !== "custom"} />
+            ))}
+          </section>
+        )}
+
         {step === 2 && service === "workshop" && (
           <section style={s.card}>
             <div style={s.q}>Tell us about your bike</div>
@@ -428,7 +503,7 @@ export default function EnquiryForm() {
                 {STORAGE_TERMS.map(t => (
                   <Opt key={t.key} active={stTerm === t.key} onClick={() => setStTerm(t.key)}
                     title={t.label}
-                    sub={t.key === "month_to_month" ? undefined : `${aed(storageMonthlyRate(stCategory, t.key))}/month \u2014 paid upfront for ${t.months} months`}
+                    sub={t.key === "month_to_month" ? undefined : `${aed(storageMonthlyRate(stCategory, t.key))}/month — paid upfront for ${t.months} months`}
                     price={storageTotalPrice(stCategory, t.key)}
                     perMonth={t.key === "month_to_month"} />
                 ))}
@@ -468,6 +543,10 @@ export default function EnquiryForm() {
               <input type="email" value={email} onChange={e => setEmail(e.target.value)} style={s.input} /></label>
             <label style={s.field}><span style={s.label}>Anything else?</span>
               <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+            {/* Turnstile bot challenge — renders automatically once NEXT_PUBLIC_TURNSTILE_SITE_KEY is set */}
+            {process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY && (
+              <div ref={turnstileRef} style={{ marginTop: 12 }} />
+            )}
           </section>
         )}
 
@@ -508,43 +587,22 @@ function ServiceIcon({ service }: { service: string }) {
     stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round" as const, strokeLinejoin: "round" as const,
   };
   if (service === "academy") return (
-    <svg {...common}>
-      <path d="M4.5 13C4.5 7.5 7.9 3.5 12 3.5S19.5 7.5 19.5 13" />
-      <path d="M3.5 13.2h17" />
-      <path d="M5.2 13.2v2.3a2.5 2.5 0 0 0 2.5 2.5h8.6a2.5 2.5 0 0 0 2.5-2.5v-2.3" />
-      <path d="M8.3 16.6h7.4" />
-    </svg>
+    <svg {...common}><path d="M4.5 13C4.5 7.5 7.9 3.5 12 3.5S19.5 7.5 19.5 13" /><path d="M3.5 13.2h17" /><path d="M5.2 13.2v2.3a2.5 2.5 0 0 0 2.5 2.5h8.6a2.5 2.5 0 0 0 2.5-2.5v-2.3" /><path d="M8.3 16.6h7.4" /></svg>
   );
   if (service === "rental") return (
-    <svg {...common}>
-      <circle cx="6.5" cy="12" r="3" />
-      <path d="M9.5 12H20" />
-      <path d="M14.5 12v2.3" />
-      <path d="M17.5 12v3.3" />
-    </svg>
+    <svg {...common}><circle cx="6.5" cy="12" r="3" /><path d="M9.5 12H20" /><path d="M14.5 12v2.3" /><path d="M17.5 12v3.3" /></svg>
   );
   if (service === "desert_tour") return (
-    <svg {...common}>
-      <circle cx="17.5" cy="6.3" r="2.1" />
-      <path d="M17.5 2.3v1.1" />
-      <path d="M21.3 6.3h-1.1" />
-      <path d="M20.1 3.1l-0.9 0.9" />
-      <path d="M2.5 18.5c1.8-5.5 5-5.5 6.8 0" />
-      <path d="M8 18.5c2.2-7 6-7 8.2 0" />
-      <path d="M15 18.5c1.6-4.3 3.8-4.3 5.4 0" />
-    </svg>
+    <svg {...common}><circle cx="17.5" cy="6.3" r="2.1" /><path d="M17.5 2.3v1.1" /><path d="M21.3 6.3h-1.1" /><path d="M20.1 3.1l-0.9 0.9" /><path d="M2.5 18.5c1.8-5.5 5-5.5 6.8 0" /><path d="M8 18.5c2.2-7 6-7 8.2 0" /><path d="M15 18.5c1.6-4.3 3.8-4.3 5.4 0" /></svg>
+  );
+  if (service === "membership") return (
+    <svg {...common}><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" /></svg>
   );
   if (service === "workshop") return (
-    <svg {...common}>
-      <path d="M14.7 6.3a4 4 0 1 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2-.7-.7-2 2.1-2.1z" />
-    </svg>
+    <svg {...common}><path d="M14.7 6.3a4 4 0 1 0-5.4 5.4L4 17l3 3 5.3-5.3a4 4 0 0 0 5.4-5.4l-2.1 2.1-2-.7-.7-2 2.1-2.1z" /></svg>
   );
   if (service === "motorcycle_storage") return (
-    <svg {...common}>
-      <path d="M4 11 12 4l8 7" />
-      <path d="M5.5 11v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-8" />
-      <path d="M9 20v-5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v5" />
-    </svg>
+    <svg {...common}><path d="M4 11 12 4l8 7" /><path d="M5.5 11v8a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1v-8" /><path d="M9 20v-5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v5" /></svg>
   );
   return null;
 }
