@@ -119,7 +119,7 @@ const DESERT: Pkg[] = [
   { key: "multiday", label: "Multi-day desert tour (2–5 nights)", price: null },
 ];
 
-// ✅ Memberships — Silver / Gold / Platinum
+// ✅ Memberships — Silver / Gold / Platinum (annual rates)
 const MEMBERSHIP_PKGS: Pkg[] = [
   { key: "silver", label: "Silver membership", price: 200 },
   { key: "gold", label: "Gold membership", price: 1500 },
@@ -200,6 +200,11 @@ export default function EnquiryForm() {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState("");
 
+  // Scroll to top on every step change so user reads from the beginning
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, [step]);
+
   // Load Cloudflare Turnstile on step 3
   useEffect(() => {
     if (step !== 3) return;
@@ -242,15 +247,25 @@ export default function EnquiryForm() {
       .filter(Boolean) as WaiverDef[];
   }
 
+  // Age computed from DOB — drives guardian requirement for all under-18s
+  const participantAge = dob
+    ? Math.floor((Date.now() - new Date(dob).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
+    : null;
+  const isMinor = participantAge !== null && participantAge < 18;
+
   function allWaiverChecksComplete(): boolean {
     const waivers = requiredWaivers();
     if (waivers.length === 0) return true;
+    if (!dob) return false;
     for (const w of waivers) {
       const checks = waiverChecks[w.id] || [];
       if (w.checkboxes.some((_, i) => !checks[i])) return false;
+      // COACH-02 has its own junior acknowledgement checkbox
       if (w.requiresGuardian && !juniorAck) return false;
     }
-    return !!signature.trim() && !!dob;
+    // Guardian required for ANY minor (under 18) regardless of category or waiver type
+    if (isMinor && (!guardianName.trim() || !guardianPhone.trim())) return false;
+    return !!signature.trim();
   }
 
   function toggleWaiverCheck(waiverIdStr: string, idx: number) {
@@ -269,7 +284,7 @@ export default function EnquiryForm() {
     });
   }
 
-  function quote(): { price: number | null; selection: string; custom: boolean; perMonth?: boolean } {
+  function quote(): { price: number | null; selection: string; custom: boolean; perMonth?: boolean; perYear?: boolean } {
     if (service === "academy") {
       const p = academyList.find(x => x.key === pkg);
       if (!p) return { price: null, selection: "", custom: false };
@@ -297,7 +312,7 @@ export default function EnquiryForm() {
       const m = MEMBERSHIP_PKGS.find(x => x.key === memberPkg);
       if (!m) return { price: null, selection: "", custom: false };
       if (m.key === "custom") return { price: null, selection: `Membership / family or corporate enquiry`, custom: true };
-      return { price: m.price, selection: `Membership / ${m.label}`, custom: false, perMonth: true };
+      return { price: m.price, selection: `Membership / ${m.label}`, custom: false, perYear: true };
     }
     if (service === "workshop") {
       return { price: null, selection: `Workshop / ${wsMake} ${wsModel}`.trim(), custom: true };
@@ -529,7 +544,7 @@ export default function EnquiryForm() {
             <div style={s.q}>Choose your membership</div>
             {MEMBERSHIP_PKGS.map(m => (
               <Opt key={m.key} active={memberPkg === m.key} onClick={() => setMemberPkg(m.key)} title={m.label}
-                price={m.price} custom={m.price === null} perMonth={m.price !== null && m.key !== "custom"} />
+                price={m.price} custom={m.price === null} perYear={m.price !== null && m.key !== "custom"} />
             ))}
           </section>
         )}
@@ -627,6 +642,44 @@ export default function EnquiryForm() {
                 Your booking includes a legally binding activity agreement. You must read and accept it before your enquiry can be submitted.
               </p>
 
+              {/* DOB FIRST — determines whether guardian consent is required */}
+              <div style={{ background: "#151311", border: "1px solid #3A332E", borderRadius: 12, padding: "14px 15px", marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#9A938D", marginBottom: 10 }}>PARTICIPANT DETAILS</div>
+                <label style={s.field}>
+                  <span style={s.label}>Date of birth *</span>
+                  <input type="date" value={dob} onChange={e => setDob(e.target.value)} style={s.dateInput} />
+                  {dob && participantAge !== null && (
+                    <span style={{ fontSize: 12, color: isMinor ? "#FFB02E" : "#9A938D", marginTop: 4 }}>
+                      {isMinor
+                        ? `Age ${participantAge} — parental / guardian consent required under UAE law`
+                        : `Age ${participantAge}`}
+                    </span>
+                  )}
+                </label>
+              </div>
+
+              {/* Guardian panel — shown for any participant under 18, not just COACH-02 */}
+              {isMinor && (
+                <div style={{ background: "#1B1412", border: "1px solid #FFB02E55", borderRadius: 12, padding: "13px 15px", marginBottom: 16 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#FFB02E", marginBottom: 10 }}>
+                    ⚠ PARENT / GUARDIAN CONSENT REQUIRED
+                  </div>
+                  <p style={{ fontSize: 12.5, color: "#C9C2BC", margin: "0 0 12px", lineHeight: 1.5 }}>
+                    The participant is under 18. Under UAE law, a parent or legal guardian must provide consent and co-sign this agreement.
+                  </p>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <label style={{ ...s.field, flex: 1 }}>
+                      <span style={s.label}>Guardian full name *</span>
+                      <input value={guardianName} onChange={e => setGuardianName(e.target.value)} style={s.input} />
+                    </label>
+                    <label style={{ ...s.field, flex: 1 }}>
+                      <span style={s.label}>Guardian phone *</span>
+                      <input value={guardianPhone} onChange={e => setGuardianPhone(e.target.value)} inputMode="tel" style={s.input} />
+                    </label>
+                  </div>
+                </div>
+              )}
+
               {waivers.map(w => (
                 <div key={w.id} style={{ background: "#151311", border: "1px solid #3A332E", borderRadius: 12, marginBottom: 14, overflow: "hidden" }}>
                   <div style={{ padding: "13px 15px", borderBottom: "1px solid #2A2623" }}>
@@ -651,23 +704,6 @@ export default function EnquiryForm() {
                         <pre style={{ fontSize: 11.5, color: "#9A938D", whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0, lineHeight: 1.7 }}>
                           {w.fullText}
                         </pre>
-                      </div>
-                    )}
-
-                    {/* Guardian fields (COACH-02) */}
-                    {w.requiresGuardian && (
-                      <div style={{ background: "#1B1412", border: "1px solid #4A332E", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
-                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#FFB02E", marginBottom: 10 }}>PARENT / GUARDIAN DETAILS</div>
-                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                          <label style={{ ...s.field, flex: 1 }}>
-                            <span style={s.label}>Guardian full name *</span>
-                            <input value={guardianName} onChange={e => setGuardianName(e.target.value)} style={s.input} />
-                          </label>
-                          <label style={{ ...s.field, flex: 1 }}>
-                            <span style={s.label}>Guardian phone *</span>
-                            <input value={guardianPhone} onChange={e => setGuardianPhone(e.target.value)} inputMode="tel" style={s.input} />
-                          </label>
-                        </div>
                       </div>
                     )}
 
@@ -697,14 +733,7 @@ export default function EnquiryForm() {
                 </div>
               ))}
 
-              {/* DOB + signature — shared across all waivers */}
-              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
-                <label style={{ ...s.field, flex: 1 }}>
-                  <span style={s.label}>Date of birth *</span>
-                  <input type="date" value={dob} onChange={e => setDob(e.target.value)} style={s.dateInput} />
-                </label>
-              </div>
-
+              {/* Signature — shared across all waivers */}
               <label style={{ ...s.field, marginBottom: 14 }}>
                 <span style={s.label}>Electronic signature — type your full name *</span>
                 <input
@@ -760,7 +789,7 @@ export default function EnquiryForm() {
             <div style={s.summaryPrice}>
               {q.custom || q.price === null
                 ? <span style={s.poa}>We will confirm your quote</span>
-                : <>{aed(q.price)}{q.perMonth && <span style={s.perMonthTag}> /month</span>}</>}
+                : <>{aed(q.price)}{q.perYear && <span style={s.perMonthTag}> /year</span>}{q.perMonth && <span style={s.perMonthTag}> /month</span>}</>}
             </div>
           </div>
         )}
@@ -809,9 +838,9 @@ function ServiceIcon({ service }: { service: string }) {
   return null;
 }
 
-function Opt({ active, onClick, title, sub, price, custom, perRider, perMonth, half, icon }: {
+function Opt({ active, onClick, title, sub, price, custom, perRider, perMonth, perYear, half, icon }: {
   active: boolean; onClick: () => void; title: string; sub?: string;
-  price?: number | null; custom?: boolean; perRider?: boolean; perMonth?: boolean; half?: boolean; icon?: React.ReactNode;
+  price?: number | null; custom?: boolean; perRider?: boolean; perMonth?: boolean; perYear?: boolean; half?: boolean; icon?: React.ReactNode;
 }) {
   return (
     <button type="button" onClick={onClick} style={{ ...s.opt, ...(half ? { flex: 1 } : {}), ...(active ? s.optOn : {}) }}>
@@ -822,7 +851,7 @@ function Opt({ active, onClick, title, sub, price, custom, perRider, perMonth, h
           {sub && <span style={s.optSub}>{sub}</span>}
         </span>
       </span>
-      {price != null && <span style={s.optPrice}>{aed(price)}{perRider ? " /rider" : perMonth ? " /month" : ""}</span>}
+      {price != null && <span style={s.optPrice}>{aed(price)}{perRider ? " /rider" : perYear ? " /year" : perMonth ? " /month" : ""}</span>}
       {custom && <span style={s.optPoa}>POA</span>}
     </button>
   );
