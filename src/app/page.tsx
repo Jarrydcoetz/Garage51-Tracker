@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { submitEnquiry } from "./actions";
+import { WAIVERS, getRequiredWaivers, type WaiverDef } from "../lib/waivers";
 import { STORAGE_TERMS, storageMonthlyRate, storageTotalPrice, storageTermMonths, addMonths } from "../lib/storagePricing";
 
 const RED = "#ED1C24";
@@ -143,6 +144,19 @@ export default function EnquiryForm() {
   const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   // Honeypot — never shown to real users, bots fill it
   const [hpField, setHpField] = useState("");
+  // Step 4 — waiver
+  const [dob, setDob] = useState("");
+  const [guardianName, setGuardianName] = useState("");
+  const [guardianPhone, setGuardianPhone] = useState("");
+  const [juniorAck, setJuniorAck] = useState(false);
+  const [waiverChecks, setWaiverChecks] = useState<Record<string, boolean[]>>({});
+  const [signature, setSignature] = useState("");
+  const [mediaConsent, setMediaConsent] = useState<boolean | null>(null);
+  const [showEmergency, setShowEmergency] = useState(false);
+  const [emergencyName, setEmergencyName] = useState("");
+  const [emergencyPhone, setEmergencyPhone] = useState("");
+  const [emergencyRel, setEmergencyRel] = useState("");
+  const [expandedWaivers, setExpandedWaivers] = useState<Set<string>>(new Set());
 
   // academy
   const [cat, setCat] = useState<"" | "junior" | "adult">("");
@@ -222,6 +236,39 @@ export default function EnquiryForm() {
   function pickGear(g: boolean) { setOwnGear(g); setPkg(""); }
   function pickBike(b: string) { setBike(b); setDur(""); setRentalCustom(false); }
 
+  function requiredWaivers(): WaiverDef[] {
+    return getRequiredWaivers(service, cat, desert)
+      .map(id => WAIVERS[id])
+      .filter(Boolean) as WaiverDef[];
+  }
+
+  function allWaiverChecksComplete(): boolean {
+    const waivers = requiredWaivers();
+    if (waivers.length === 0) return true;
+    for (const w of waivers) {
+      const checks = waiverChecks[w.id] || [];
+      if (w.checkboxes.some((_, i) => !checks[i])) return false;
+      if (w.requiresGuardian && !juniorAck) return false;
+    }
+    return !!signature.trim() && !!dob;
+  }
+
+  function toggleWaiverCheck(waiverIdStr: string, idx: number) {
+    setWaiverChecks(prev => {
+      const cur = [...(prev[waiverIdStr] || [])];
+      cur[idx] = !cur[idx];
+      return { ...prev, [waiverIdStr]: cur };
+    });
+  }
+
+  function toggleWaiverExpand(waiverIdStr: string) {
+    setExpandedWaivers(prev => {
+      const next = new Set(prev);
+      next.has(waiverIdStr) ? next.delete(waiverIdStr) : next.add(waiverIdStr);
+      return next;
+    });
+  }
+
   function quote(): { price: number | null; selection: string; custom: boolean; perMonth?: boolean } {
     if (service === "academy") {
       const p = academyList.find(x => x.key === pkg);
@@ -291,6 +338,8 @@ export default function EnquiryForm() {
     return false;
   }
 
+  function needsWaiver(): boolean { return requiredWaivers().length > 0; }
+
   async function submit() {
     const natl = phone.replace(/\D/g, "").replace(/^0+/, "");
     if (!name.trim() || !natl) { setErr("Please add your name and WhatsApp number."); return; }
@@ -309,6 +358,7 @@ export default function EnquiryForm() {
       service === "workshop" ? `${wsMake} ${wsModel}`.trim() :
       isStorage ? (`${stMake} ${stModel}`.trim() || null) :
       null;
+    const waiverDefs = requiredWaivers();
     const res = await submitEnquiry({
       customer_name: name,
       whatsapp,
@@ -335,6 +385,21 @@ export default function EnquiryForm() {
       notes,
       hp_field: hpField,
       turnstile_token: turnstileToken || undefined,
+      ...(waiverDefs.length > 0 ? {
+        waiver: {
+          waiverIds: waiverDefs.map(w => w.id),
+          participantDob: dob,
+          guardianName: guardianName || undefined,
+          guardianPhone: guardianPhone || undefined,
+          juniorAcknowledged: juniorAck,
+          signature,
+          checkboxesAccepted: waiverChecks,
+          mediaConsent,
+          emergencyContactName: emergencyName || undefined,
+          emergencyContactPhone: emergencyPhone || undefined,
+          emergencyContactRelationship: emergencyRel || undefined,
+        }
+      } : {}),
     });
     setSubmitting(false);
     if (!res.ok) { setErr(res.error || "Something went wrong. Please try again."); return; }
@@ -363,7 +428,7 @@ export default function EnquiryForm() {
         </div>
 
         <div style={s.steps}>
-          {[1, 2, 3].map(n => (
+          {[1, 2, 3, 4].map(n => (
             <div key={n} style={{ ...s.stepDot, ...(step >= n ? s.stepDotOn : {}) }} />
           ))}
         </div>
@@ -550,7 +615,142 @@ export default function EnquiryForm() {
           </section>
         )}
 
-        {/* Summary */}
+        {/* STEP 4 — Activity agreement */}
+        {step === 4 && (() => {
+          const waivers = requiredWaivers();
+          return (
+            <section style={s.card}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#FFB02E", marginBottom: 4, letterSpacing: "0.04em" }}>
+                IMPORTANT — SAFETY & PARTICIPATION AGREEMENT
+              </div>
+              <p style={{ fontSize: 13, color: "#C9C2BC", margin: "0 0 16px", lineHeight: 1.5 }}>
+                Your booking includes a legally binding activity agreement. You must read and accept it before your enquiry can be submitted.
+              </p>
+
+              {waivers.map(w => (
+                <div key={w.id} style={{ background: "#151311", border: "1px solid #3A332E", borderRadius: 12, marginBottom: 14, overflow: "hidden" }}>
+                  <div style={{ padding: "13px 15px", borderBottom: "1px solid #2A2623" }}>
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{w.title}</div>
+                    <div style={{ fontSize: 12, color: "#9A938D", marginTop: 2 }}>{w.subtitle} — v{w.version}</div>
+                  </div>
+
+                  {/* Summary always visible */}
+                  <div style={{ padding: "12px 15px" }}>
+                    <p style={{ fontSize: 13, color: "#C9C2BC", margin: "0 0 10px", lineHeight: 1.5 }}>{w.summary}</p>
+
+                    {/* Expandable full text */}
+                    <button
+                      type="button"
+                      onClick={() => toggleWaiverExpand(w.id)}
+                      style={{ background: "transparent", border: "1px solid #3A332E", borderRadius: 8, color: "#9A938D", fontSize: 12.5, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", marginBottom: 12 }}>
+                      {expandedWaivers.has(w.id) ? "▲ Hide full agreement" : "▼ Read full agreement"}
+                    </button>
+
+                    {expandedWaivers.has(w.id) && (
+                      <div style={{ background: "#0E0C0B", border: "1px solid #2A2623", borderRadius: 8, padding: "12px 14px", marginBottom: 12, maxHeight: 320, overflowY: "auto" }}>
+                        <pre style={{ fontSize: 11.5, color: "#9A938D", whiteSpace: "pre-wrap", fontFamily: "inherit", margin: 0, lineHeight: 1.7 }}>
+                          {w.fullText}
+                        </pre>
+                      </div>
+                    )}
+
+                    {/* Guardian fields (COACH-02) */}
+                    {w.requiresGuardian && (
+                      <div style={{ background: "#1B1412", border: "1px solid #4A332E", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#FFB02E", marginBottom: 10 }}>PARENT / GUARDIAN DETAILS</div>
+                        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                          <label style={{ ...s.field, flex: 1 }}>
+                            <span style={s.label}>Guardian full name *</span>
+                            <input value={guardianName} onChange={e => setGuardianName(e.target.value)} style={s.input} />
+                          </label>
+                          <label style={{ ...s.field, flex: 1 }}>
+                            <span style={s.label}>Guardian phone *</span>
+                            <input value={guardianPhone} onChange={e => setGuardianPhone(e.target.value)} inputMode="tel" style={s.input} />
+                          </label>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Required checkboxes */}
+                    <div style={{ marginBottom: 8 }}>
+                      {w.checkboxes.map((text, i) => {
+                        const checked = (waiverChecks[w.id] || [])[i] || false;
+                        return (
+                          <label key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10, cursor: "pointer" }} onClick={() => toggleWaiverCheck(w.id, i)}>
+                            <span style={{ ...s.checkbox, ...(checked ? s.checkboxOn : {}), marginTop: 1, flexShrink: 0 }}>{checked ? "✓" : ""}</span>
+                            <span style={{ fontSize: 13, lineHeight: 1.5, color: "#D8D2CC" }}>{text}</span>
+                          </label>
+                        );
+                      })}
+                      {/* Junior rider acknowledgement */}
+                      {w.juniorAcknowledgement && (
+                        <div style={{ background: "#1B1412", border: "1px solid #3A332E", borderRadius: 8, padding: "10px 12px", marginTop: 8 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.07em", color: "#9A938D", marginBottom: 8 }}>JUNIOR RIDER ACKNOWLEDGEMENT</div>
+                          <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }} onClick={() => setJuniorAck(!juniorAck)}>
+                            <span style={{ ...s.checkbox, ...(juniorAck ? s.checkboxOn : {}), flexShrink: 0 }}>{juniorAck ? "✓" : ""}</span>
+                            <span style={{ fontSize: 13, lineHeight: 1.5, color: "#D8D2CC" }}>{w.juniorAcknowledgement}</span>
+                          </label>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {/* DOB + signature — shared across all waivers */}
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                <label style={{ ...s.field, flex: 1 }}>
+                  <span style={s.label}>Date of birth *</span>
+                  <input type="date" value={dob} onChange={e => setDob(e.target.value)} style={s.dateInput} />
+                </label>
+              </div>
+
+              <label style={{ ...s.field, marginBottom: 14 }}>
+                <span style={s.label}>Electronic signature — type your full name *</span>
+                <input
+                  value={signature}
+                  onChange={e => setSignature(e.target.value)}
+                  placeholder="Type your full legal name to sign"
+                  style={{ ...s.input, fontStyle: "italic", fontSize: 16 }} />
+                <span style={{ fontSize: 11, color: "#6F6862", marginTop: 4, lineHeight: 1.4 }}>
+                  By typing your name above you confirm that you have read, understood and accept all applicable agreements.
+                </span>
+              </label>
+
+              {/* Emergency contact (optional, expandable) */}
+              <button type="button" onClick={() => setShowEmergency(!showEmergency)}
+                style={{ background: "transparent", border: "none", color: "#9A938D", fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0, marginBottom: showEmergency ? 10 : 4, textDecoration: "underline" }}>
+                {showEmergency ? "− Hide emergency contact" : "+ Add emergency contact (recommended)"}
+              </button>
+              {showEmergency && (
+                <div style={{ background: "#151311", border: "1px solid #3A332E", borderRadius: 10, padding: "12px 14px", marginBottom: 12 }}>
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Name</span><input value={emergencyName} onChange={e => setEmergencyName(e.target.value)} style={s.input} /></label>
+                    <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Phone</span><input value={emergencyPhone} onChange={e => setEmergencyPhone(e.target.value)} inputMode="tel" style={s.input} /></label>
+                    <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Relationship</span><input value={emergencyRel} onChange={e => setEmergencyRel(e.target.value)} placeholder="e.g. Spouse" style={s.input} /></label>
+                  </div>
+                </div>
+              )}
+
+              {/* Media consent — optional, separate from waiver */}
+              <div style={{ background: "#151311", border: "1px solid #3A332E", borderRadius: 10, padding: "12px 14px" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.07em", color: "#9A938D", marginBottom: 10 }}>MEDIA CONSENT (OPTIONAL)</div>
+                <p style={{ fontSize: 12.5, color: "#9A938D", margin: "0 0 10px", lineHeight: 1.5 }}>
+                  Do you consent to Garage51 using photographs, video and images in which you appear for promotional purposes?
+                </p>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {[{ v: true, l: "Yes, I consent" }, { v: false, l: "No, I do not consent" }].map(({ v, l }) => (
+                    <label key={String(v)} style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer", fontSize: 13 }} onClick={() => setMediaConsent(v)}>
+                      <span style={{ ...s.checkbox, ...(mediaConsent === v ? s.checkboxOn : {}), width: 18, height: 18, borderRadius: "50%" }}>{mediaConsent === v ? "•" : ""}</span>
+                      {l}
+                    </label>
+                  ))}
+                </div>
+                <p style={{ fontSize: 11, color: "#6F6862", margin: "8px 0 0" }}>Declining does not affect your booking.</p>
+              </div>
+            </section>
+          );
+        })()}
         {step >= 2 && q.selection && (
           <div style={s.summary}>
             <div>
@@ -572,7 +772,9 @@ export default function EnquiryForm() {
           {step > 1 && <button onClick={() => setStep(step - 1)} style={s.back}>Back</button>}
           {step === 1 && <button onClick={() => service && setStep(2)} disabled={!service} style={s.next}>Continue</button>}
           {step === 2 && <button onClick={() => step2Valid() && setStep(3)} disabled={!step2Valid()} style={s.next}>Continue</button>}
-          {step === 3 && <button onClick={submit} disabled={submitting} style={s.next}>{submitting ? "Sending..." : "Send enquiry"}</button>}
+          {step === 3 && needsWaiver() && <button onClick={() => setStep(4)} style={s.next}>Review agreement</button>}
+          {step === 3 && !needsWaiver() && <button onClick={submit} disabled={submitting} style={s.next}>{submitting ? "Sending..." : "Send enquiry"}</button>}
+          {step === 4 && <button onClick={submit} disabled={submitting || !allWaiverChecksComplete()} style={{ ...s.next, opacity: (!submitting && allWaiverChecksComplete()) ? 1 : 0.45 }}>{submitting ? "Sending..." : "Sign & send enquiry"}</button>}
         </div>
 
         <p style={s.foot}>This is an enquiry, not a confirmed booking. We will be in touch to confirm availability and payment.</p>
