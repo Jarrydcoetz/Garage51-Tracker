@@ -705,6 +705,32 @@ export default function Admin() {
     }
   }
 
+  // Recomputes parts + products + labour for a workshop job and writes the
+  // total straight to estimated_value — the field Create invoice reads —
+  // so the parts/product pickers and the labour hours adjuster always keep
+  // the estimate current instead of relying on a separate manual roll-up.
+  async function syncWorkshopEstimate(
+    row: Enquiry,
+    opts?: { movements?: StockMovement[]; applications?: ServiceProductApplication[]; labourHours?: number | null }
+  ) {
+    const mv = opts?.movements ?? movements;
+    const apps = opts?.applications ?? applications;
+    const hasHours = !!opts && "labourHours" in opts;
+    const hours = hasHours ? opts!.labourHours ?? null : row.labour_hours;
+    const partsSubtotal = partsUsedTotal(partsUsedFor(row.id, mv));
+    const productsSubtotal = applicationsTotal(applicationsFor(row.id, apps));
+    const labour = labourCharge(hours);
+    const total = Math.round((partsSubtotal + productsSubtotal + labour) * 100) / 100;
+    const patch: Record<string, unknown> = { estimated_value: total };
+    if (hasHours) patch.labour_hours = hours;
+    await supabase.from("enquiries").update(patch).eq("id", row.id);
+    edit(row.id, hasHours ? { estimated_value: total, labour_hours: hours } : { estimated_value: total });
+  }
+
+  function setWorkshopLabourHours(row: Enquiry, hours: number | null) {
+    syncWorkshopEstimate(row, { labourHours: hours });
+  }
+
   // Records a part as used on this booking — a negative "used" movement in
   // the same stock ledger the Parts page writes to, with cost and sell price
   // snapshotted at this exact moment. Later price changes on the catalog
@@ -723,7 +749,9 @@ export default function Admin() {
       sell_price_snapshot: partSellPrice(part),
     }).select().single();
     if (error || !data) { showToast(error?.message || "Could not add the part.", "err"); return; }
-    setMovements(prev => [...prev, data as StockMovement]);
+    const newMovements = [...movements, data as StockMovement];
+    setMovements(newMovements);
+    await syncWorkshopEstimate(row, { movements: newMovements });
     setAddPartRowId(null);
     setAddPartSelection("");
     setAddPartQty("1");
@@ -746,9 +774,11 @@ export default function Admin() {
     }).select().single();
     if (appError || !appRow) { showToast(appError?.message || "Could not apply the product.", "err"); return; }
     const application = appRow as ServiceProductApplication;
-    setApplications(prev => [...prev, application]);
+    const newApplications = [...applications, application];
+    setApplications(newApplications);
 
     const recipe = productItems.filter(i => i.service_product_id === product.id);
+    let newMovements = movements;
     for (const item of recipe) {
       const part = parts.find(p => p.id === item.part_id);
       if (!part) continue;
@@ -761,8 +791,10 @@ export default function Admin() {
         cost_price_snapshot: part.cost_price,
         sell_price_snapshot: partSellPrice(part),
       }).select().single();
-      if (movRow) setMovements(prev => [...prev, movRow as StockMovement]);
+      if (movRow) newMovements = [...newMovements, movRow as StockMovement];
     }
+    if (newMovements !== movements) setMovements(newMovements);
+    await syncWorkshopEstimate(row, { movements: newMovements, applications: newApplications });
 
     setApplyProductRowId(null);
     setApplyProductSelection("");
@@ -771,27 +803,17 @@ export default function Admin() {
 
   async function removeServiceProduct(app: ServiceProductApplication) {
     if (!window.confirm(`Remove "${app.name_snapshot}" from this job? This will also restore any stock decremented by the product recipe.`)) return;
+    const row = rows.find(r => r.id === app.enquiry_id);
     // Delete the stock movements that belong to this application (restores inventory)
     await supabase.from("stock_movements").delete().eq("service_product_application_id", app.id);
-    setMovements(prev => prev.filter(m => m.service_product_application_id !== app.id));
+    const newMovements = movements.filter(m => m.service_product_application_id !== app.id);
+    setMovements(newMovements);
     // Delete the application itself
     await supabase.from("service_product_applications").delete().eq("id", app.id);
-    setApplications(prev => prev.filter(a => a.id !== app.id));
+    const newApplications = applications.filter(a => a.id !== app.id);
+    setApplications(newApplications);
+    if (row) await syncWorkshopEstimate(row, { movements: newMovements, applications: newApplications });
     showToast(`"${app.name_snapshot}" removed.`);
-  }
-
-  // One-time, staff-triggered roll-up — adding parts, products, or hours
-  // never silently changes the price on its own. Same "stay in the loop"
-  // pattern as the rest of this app's money-touching actions.
-  function addPartsAndLabourToEstimate(row: Enquiry) {
-    const lines = partsUsedFor(row.id, movements);
-    const partsSubtotal = partsUsedTotal(lines);
-    const productsSubtotal = applicationsTotal(applicationsFor(row.id, applications));
-    const labour = labourCharge(row.labour_hours);
-    const total = Math.round((partsSubtotal + productsSubtotal + labour) * 100) / 100;
-    if (total <= 0) return;
-    editStaged(row.id, { estimated_value: (Number(row.estimated_value) || 0) + total });
-    showToast(`Added ${aed(total)} (parts, products & labour) to the estimate — hit Save to keep it.`);
   }
 
   // Marks a workshop job ready for the mechanic's dedicated queue. Requires
@@ -1760,7 +1782,7 @@ export default function Admin() {
                                 </select></label>
                               <label style={s.ctrl}><span style={s.ctrlLabel}>Labour hours</span>
                                 <input className="g51-input" type="number" step="0.25" min={0} value={r.labour_hours ?? ""}
-                                  onChange={e => editStaged(r.id, { labour_hours: e.target.value === "" ? null : Number(e.target.value) })} style={s.input} /></label>
+                                  onChange={e => setWorkshopLabourHours(r, e.target.value === "" ? null : Number(e.target.value))} style={s.input} /></label>
                             </div>
                           )}
 
@@ -1777,11 +1799,6 @@ export default function Admin() {
                                   <span style={s.sesTitle}>
                                     Parts, products &amp; labour{combinedTotal > 0 ? ` · ${aed(combinedTotal)}` : ""}
                                   </span>
-                                  {combinedTotal > 0 && (
-                                    <button onClick={() => addPartsAndLabourToEstimate(r)} className="g51-btn g51-ghost" style={s.addSes}>
-                                      Add to estimate
-                                    </button>
-                                  )}
                                 </div>
                                 {labour > 0 && (
                                   <div style={s.sesRow}>

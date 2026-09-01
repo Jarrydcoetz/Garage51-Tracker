@@ -158,9 +158,25 @@ export default function WorkshopScreen() {
       saveJob(job.id, { job_status: status });
     }
   }
+  // Recomputes parts + products + labour and writes the total straight to
+  // estimated_value — the field the office uses to create the invoice — so
+  // the picker and hours adjuster keep the estimate current on their own.
+  async function syncEstimate(job: Job, opts?: { movements?: StockMovement[]; applications?: ServiceProductApplication[]; labourHours?: number | null }) {
+    const mv = opts?.movements ?? movements;
+    const apps = opts?.applications ?? applications;
+    const hasHours = !!opts && "labourHours" in opts;
+    const hours = hasHours ? opts!.labourHours ?? null : job.labour_hours;
+    const partsSubtotal = partsUsedTotal(partsUsedFor(job.id, mv));
+    const productsSubtotal = applicationsTotal(applicationsFor(job.id, apps));
+    const labour = labourCharge(hours);
+    const total = Math.round((partsSubtotal + productsSubtotal + labour) * 100) / 100;
+    const patch: Partial<Job> = { estimated_value: total };
+    if (hasHours) patch.labour_hours = hours;
+    editJobLocal(job.id, patch);
+    await saveJob(job.id, patch);
+  }
   function setHours(job: Job, hours: number | null) {
-    editJobLocal(job.id, { labour_hours: hours });
-    saveJob(job.id, { labour_hours: hours });
+    syncEstimate(job, { labourHours: hours });
   }
   async function addPart(job: Job) {
     const part = parts.find(p => p.id === addPartSelection);
@@ -172,7 +188,9 @@ export default function WorkshopScreen() {
       cost_price_snapshot: part.cost_price, sell_price_snapshot: partSellPrice(part),
     }).select().single();
     if (error || !data) { showToast(error?.message || "Could not add the part.", "err"); return; }
-    setMovements(prev => [...prev, data as StockMovement]);
+    const newMovements = [...movements, data as StockMovement];
+    setMovements(newMovements);
+    await syncEstimate(job, { movements: newMovements });
     setAddPartRowId(null);
     setAddPartSelection("");
     setAddPartQty("1");
@@ -187,8 +205,10 @@ export default function WorkshopScreen() {
     }).select().single();
     if (appError || !appRow) { showToast(appError?.message || "Could not apply the product.", "err"); return; }
     const application = appRow as ServiceProductApplication;
-    setApplications(prev => [...prev, application]);
+    const newApplications = [...applications, application];
+    setApplications(newApplications);
     const recipe = productItems.filter(i => i.service_product_id === product.id);
+    let newMovements = movements;
     for (const item of recipe) {
       const part = parts.find(p => p.id === item.part_id);
       if (!part) continue;
@@ -197,8 +217,10 @@ export default function WorkshopScreen() {
         service_product_application_id: application.id,
         cost_price_snapshot: part.cost_price, sell_price_snapshot: partSellPrice(part),
       }).select().single();
-      if (movRow) setMovements(prev => [...prev, movRow as StockMovement]);
+      if (movRow) newMovements = [...newMovements, movRow as StockMovement];
     }
+    if (newMovements !== movements) setMovements(newMovements);
+    await syncEstimate(job, { movements: newMovements, applications: newApplications });
     setApplyProductRowId(null);
     setApplyProductSelection("");
     showToast(`Applied "${product.name}" — ${aed(product.price)}.`);
@@ -225,7 +247,7 @@ export default function WorkshopScreen() {
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Your jobs</h1>
-        <p style={s.sub}>Status, parts, and hours. Nothing here touches pricing or the customer — that's handled elsewhere.</p>
+        <p style={s.sub}>Status, parts, and hours. The estimate updates as you go, but nothing here messages the customer — that's handled elsewhere.</p>
 
         <button onClick={() => setShowCompleted(v => !v)} className="g51-btn g51-ghost" style={s.toggleBtn}>
           {showCompleted ? "Hide completed" : "Show completed"}
