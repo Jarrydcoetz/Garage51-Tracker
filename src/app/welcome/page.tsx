@@ -7,11 +7,13 @@ import { supabase } from "../../lib/supabase-browser";
 
 const RED = "#ED1C24";
 
-// Modern Supabase invite/recovery links don't hand the browser a ready-made
-// session — they arrive as ?token_hash=...&type=invite (checked here in both
-// the query string and the hash fragment, since behaviour has shifted across
-// Supabase versions) and have to be explicitly exchanged via verifyOtp/
-// exchangeCodeForSession before any session exists to detect.
+// Modern Supabase invite links arrive as ?token_hash=...&type=invite (or a
+// PKCE ?code=), not a ready-made session — they must be explicitly exchanged
+// via verifyOtp/exchangeCodeForSession. That exchange is gated behind a
+// manual "Continue" tap rather than firing on page load: some email
+// security scanners (Microsoft Defender Safe Links, Mimecast, etc.)
+// prefetch links in transit and would otherwise burn the one-time token
+// before the actual person ever sees this page.
 const EMAIL_OTP_TYPES = ["signup", "invite", "magiclink", "recovery", "email_change", "email"] as const;
 type EmailOtpType = (typeof EMAIL_OTP_TYPES)[number];
 function isEmailOtpType(v: string | null): v is EmailOtpType {
@@ -24,46 +26,58 @@ function readParam(name: string): string | null {
   const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
   return new URLSearchParams(hash).get(name);
 }
+function hasInviteToken(): boolean {
+  return (!!readParam("token_hash") && isEmailOtpType(readParam("type"))) || !!readParam("code");
+}
+
+type Stage = "checking" | "confirm" | "verifying" | "ready" | "expired" | "done";
 
 export default function Welcome() {
   const router = useRouter();
-  const [ready, setReady] = useState(false);
-  const [checked, setChecked] = useState(false);
+  const [stage, setStage] = useState<Stage>("checking");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
-  const [done, setDone] = useState(false);
 
   useEffect(() => {
     let settled = false;
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (session) { settled = true; setReady(true); setChecked(true); }
+      if (session) { settled = true; setStage("ready"); }
     });
 
-    async function resolveInviteLink() {
-      const tokenHash = readParam("token_hash");
-      const type = readParam("type");
-      const code = readParam("code");
+    supabase.auth.getSession().then(({ data }) => {
+      if (settled) return;
+      if (data.session) { settled = true; setStage("ready"); return; }
+      // No session yet — if there's an invite token in the URL, wait for the
+      // person to tap Continue; otherwise there's genuinely nothing to try.
+      setStage(hasInviteToken() ? "confirm" : "expired");
+    });
 
-      if (tokenHash && isEmailOtpType(type)) {
-        const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
-        if (error) console.error("verifyOtp failed:", error.message);
-      } else if (code) {
-        const { error } = await supabase.auth.exchangeCodeForSession(code);
-        if (error) console.error("exchangeCodeForSession failed:", error.message);
-      }
-      // Either branch above triggers onAuthStateChange on success. Fall back
-      // to a direct check in case the session was already there (e.g. a
-      // refresh of this page after the exchange already happened).
-      const { data } = await supabase.auth.getSession();
-      if (data.session) { settled = true; setReady(true); setChecked(true); }
-    }
-    resolveInviteLink();
-
-    const t = setTimeout(() => { if (!settled) setChecked(true); }, 2500);
+    const t = setTimeout(() => {
+      if (!settled) setStage(prev => (prev === "checking" ? "expired" : prev));
+    }, 4000);
     return () => { sub.subscription.unsubscribe(); clearTimeout(t); };
   }, []);
+
+  async function confirmInvite() {
+    setStage("verifying");
+    const tokenHash = readParam("token_hash");
+    const type = readParam("type");
+    const code = readParam("code");
+
+    if (tokenHash && isEmailOtpType(type)) {
+      const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
+      if (error) { console.error("verifyOtp failed:", error.message); setStage("expired"); return; }
+    } else if (code) {
+      const { error } = await supabase.auth.exchangeCodeForSession(code);
+      if (error) { console.error("exchangeCodeForSession failed:", error.message); setStage("expired"); return; }
+    } else {
+      setStage("expired");
+      return;
+    }
+    setStage("ready");
+  }
 
   async function save() {
     if (password.length < 8) { setErr("Use at least 8 characters."); return; }
@@ -72,7 +86,7 @@ export default function Welcome() {
     const { error } = await supabase.auth.updateUser({ password });
     setBusy(false);
     if (error) { setErr(error.message); return; }
-    setDone(true);
+    setStage("done");
     setTimeout(() => router.replace("/admin"), 1200);
   }
 
@@ -82,9 +96,19 @@ export default function Welcome() {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
 
-        {!checked && !ready && <p style={s.muted}>Checking your invite…</p>}
+        {stage === "checking" && <p style={s.muted}>Checking your invite…</p>}
 
-        {checked && !ready && (
+        {stage === "confirm" && (
+          <>
+            <h1 style={s.h1}>You&apos;re invited</h1>
+            <p style={s.muted}>Tap below to confirm it&apos;s you and set up your Garage51 account.</p>
+            <button onClick={confirmInvite} style={s.btn}>Continue</button>
+          </>
+        )}
+
+        {stage === "verifying" && <p style={s.muted}>Confirming your invite…</p>}
+
+        {stage === "expired" && (
           <>
             <h1 style={s.h1}>Link expired</h1>
             <p style={s.muted}>This invite link is invalid or has already been used. Ask your admin to send a new one.</p>
@@ -92,7 +116,7 @@ export default function Welcome() {
           </>
         )}
 
-        {ready && !done && (
+        {stage === "ready" && (
           <>
             <h1 style={s.h1}>Set your password</h1>
             <p style={s.muted}>Choose a password to finish setting up your Garage51 account.</p>
@@ -105,9 +129,9 @@ export default function Welcome() {
           </>
         )}
 
-        {done && (
+        {stage === "done" && (
           <>
-            <h1 style={s.h1}>You're all set</h1>
+            <h1 style={s.h1}>You&apos;re all set</h1>
             <p style={s.muted}>Taking you to your dashboard…</p>
           </>
         )}
