@@ -7,6 +7,24 @@ import { supabase } from "../../lib/supabase-browser";
 
 const RED = "#ED1C24";
 
+// Modern Supabase invite/recovery links don't hand the browser a ready-made
+// session — they arrive as ?token_hash=...&type=invite (checked here in both
+// the query string and the hash fragment, since behaviour has shifted across
+// Supabase versions) and have to be explicitly exchanged via verifyOtp/
+// exchangeCodeForSession before any session exists to detect.
+const EMAIL_OTP_TYPES = ["signup", "invite", "magiclink", "recovery", "email_change", "email"] as const;
+type EmailOtpType = (typeof EMAIL_OTP_TYPES)[number];
+function isEmailOtpType(v: string | null): v is EmailOtpType {
+  return !!v && (EMAIL_OTP_TYPES as readonly string[]).includes(v);
+}
+function readParam(name: string): string | null {
+  const url = new URL(window.location.href);
+  const fromQuery = url.searchParams.get(name);
+  if (fromQuery) return fromQuery;
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  return new URLSearchParams(hash).get(name);
+}
+
 export default function Welcome() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
@@ -22,9 +40,27 @@ export default function Welcome() {
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       if (session) { settled = true; setReady(true); setChecked(true); }
     });
-    supabase.auth.getSession().then(({ data }) => {
+
+    async function resolveInviteLink() {
+      const tokenHash = readParam("token_hash");
+      const type = readParam("type");
+      const code = readParam("code");
+
+      if (tokenHash && isEmailOtpType(type)) {
+        const { error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type });
+        if (error) console.error("verifyOtp failed:", error.message);
+      } else if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) console.error("exchangeCodeForSession failed:", error.message);
+      }
+      // Either branch above triggers onAuthStateChange on success. Fall back
+      // to a direct check in case the session was already there (e.g. a
+      // refresh of this page after the exchange already happened).
+      const { data } = await supabase.auth.getSession();
       if (data.session) { settled = true; setReady(true); setChecked(true); }
-    });
+    }
+    resolveInviteLink();
+
     const t = setTimeout(() => { if (!settled) setChecked(true); }, 2500);
     return () => { sub.subscription.unsubscribe(); clearTimeout(t); };
   }, []);

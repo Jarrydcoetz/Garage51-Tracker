@@ -56,6 +56,51 @@ export async function inviteStaff(
   return { ok: true };
 }
 
+// Supabase's invite endpoint refuses to resend to an email that's already
+// registered — even if that account never confirmed and its invite link
+// expired (a known Supabase Auth limitation, see supabase/auth#2180). The
+// only reliable way to get a fresh, working link out is to remove the
+// stale, never-confirmed invite and recreate it from scratch.
+export async function resendInvite(
+  accessToken: string,
+  id: string
+): Promise<{ ok: boolean; error?: string }> {
+  const adminId = await requireAdmin(accessToken);
+  if (!adminId) return { ok: false, error: "Not authorised." };
+
+  const { data: userRes, error: getErr } = await admin.auth.admin.getUserById(id);
+  if (getErr || !userRes.user) return { ok: false, error: getErr?.message || "Could not find that account." };
+  const user = userRes.user;
+  if (user.last_sign_in_at) {
+    return { ok: false, error: "This staff member has already signed in — they don't need a new invite." };
+  }
+  const email = user.email;
+  if (!email) return { ok: false, error: "That account has no email on file." };
+
+  const meta = (user.user_metadata || {}) as { name?: string; role?: string; whatsapp?: string };
+  const name = meta.name || "";
+  const role = ROLES.includes(meta.role || "") ? (meta.role as string) : "coach";
+  const whatsapp = meta.whatsapp || null;
+
+  const { error: delErr } = await admin.auth.admin.deleteUser(id);
+  if (delErr) return { ok: false, error: delErr.message };
+  // Clear out the orphaned profile row in case there's no cascading delete
+  // set up on the profiles table — the fresh invite below creates a new one.
+  await admin.from("profiles").delete().eq("id", id);
+
+  const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
+    data: { name, role, whatsapp },
+    redirectTo: `${SITE_URL}/welcome`,
+  });
+  if (error) return { ok: false, error: error.message };
+
+  if (whatsapp && data.user) {
+    await admin.from("profiles").update({ whatsapp }).eq("id", data.user.id);
+  }
+
+  return { ok: true };
+}
+
 export async function setStaffActive(
   accessToken: string,
   id: string,

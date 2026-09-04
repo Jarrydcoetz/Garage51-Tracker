@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
-import { inviteStaff, setStaffActive, setStaffRole, setStaffWhatsapp } from "./actions";
+import { inviteStaff, resendInvite, setStaffActive, setStaffRole, setStaffWhatsapp } from "./actions";
 import { AdminNav } from "../../../components/AdminNav";
 
 const RED = "#ED1C24";
@@ -56,6 +56,7 @@ export default function StaffScreen() {
   const [pwBusy, setPwBusy] = useState(false);
   const [pwMsg, setPwMsg] = useState("");
   const [pwErr, setPwErr] = useState("");
+  const [resendBusyId, setResendBusyId] = useState<string | null>(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -110,6 +111,17 @@ export default function StaffScreen() {
     const cleaned = value.trim() || null;
     const res = await setStaffWhatsapp(token, p.id, cleaned);
     if (!res.ok) { setErr(res.error || "Could not save the WhatsApp number."); await load(); }
+  }
+
+  async function handleResendInvite(p: Profile) {
+    if (!window.confirm(`Resend the invite to ${p.email}? This deletes their current (unconfirmed) account and creates a new one — only do this if they haven't signed in yet.`)) return;
+    setErr(""); setMsg("");
+    setResendBusyId(p.id);
+    const res = await resendInvite(token, p.id);
+    setResendBusyId(null);
+    if (!res.ok) { setErr(res.error || "Could not resend the invite."); return; }
+    setMsg(`Invite resent to ${p.email}.`);
+    await load();
   }
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
@@ -234,6 +246,12 @@ export default function StaffScreen() {
                     className="g51-input" style={{ ...s.roleSelect, color: ROLE_COLOR[p.role] || "#F4F2EF" }}>
                     {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                   </select>
+                  {!isMe && (
+                    <button onClick={() => handleResendInvite(p)} disabled={resendBusyId === p.id}
+                      className="g51-btn g51-ghost" style={s.ghostSmall} title="Delete the stale invite and send a fresh one">
+                      {resendBusyId === p.id ? "Resending…" : "Resend invite"}
+                    </button>
+                  )}
                   <button onClick={() => toggleActive(p)} disabled={isMe}
                     className="g51-btn g51-ghost" style={s.ghostSmall}>
                     {p.active ? "Deactivate" : "Reactivate"}
