@@ -29,6 +29,10 @@ function readParam(name: string): string | null {
 function hasInviteToken(): boolean {
   return (!!readParam("token_hash") && isEmailOtpType(readParam("type"))) || !!readParam("code");
 }
+function readHashParams(): URLSearchParams {
+  const hash = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+  return new URLSearchParams(hash);
+}
 
 type Stage = "checking" | "confirm" | "verifying" | "ready" | "expired" | "done";
 
@@ -46,13 +50,29 @@ export default function Welcome() {
       if (session) { settled = true; setStage("ready"); }
     });
 
-    supabase.auth.getSession().then(({ data }) => {
+    async function init() {
+      // Supabase's own hosted /verify redirect (still what {{ .ConfirmationURL }}
+      // sends) hands the browser real, already-issued session tokens directly
+      // in the hash fragment — there's no token left to gate behind a tap,
+      // just a session to pick up before it's lost. Handled explicitly here
+      // rather than relying on the SDK's automatic detection, since that
+      // races against this same check and can lose.
+      const hashParams = readHashParams();
+      const accessToken = hashParams.get("access_token");
+      const refreshToken = hashParams.get("refresh_token");
+      if (accessToken && refreshToken) {
+        const { error } = await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken });
+        if (!error) { settled = true; setStage("ready"); return; }
+      }
+
+      const { data } = await supabase.auth.getSession();
       if (settled) return;
       if (data.session) { settled = true; setStage("ready"); return; }
       // No session yet — if there's an invite token in the URL, wait for the
       // person to tap Continue; otherwise there's genuinely nothing to try.
       setStage(hasInviteToken() ? "confirm" : "expired");
-    });
+    }
+    init();
 
     const t = setTimeout(() => {
       if (!settled) setStage(prev => (prev === "checking" ? "expired" : prev));
