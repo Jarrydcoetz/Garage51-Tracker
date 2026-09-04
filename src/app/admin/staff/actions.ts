@@ -71,9 +71,11 @@ export async function resendInvite(
   const { data: userRes, error: getErr } = await admin.auth.admin.getUserById(id);
   if (getErr || !userRes.user) return { ok: false, error: getErr?.message || "Could not find that account." };
   const user = userRes.user;
-  if (user.last_sign_in_at) {
-    return { ok: false, error: "This staff member has already signed in — they don't need a new invite." };
-  }
+  // No safety check on prior sign-ins here: opening an invite link now
+  // establishes a session via verifyOtp (see /welcome) before the staff
+  // member ever sets a password, so last_sign_in_at is set well before
+  // their account actually works — it can't be used to detect "already has
+  // a working account." The confirm() prompt in the staff UI is the guard.
   const email = user.email;
   if (!email) return { ok: false, error: "That account has no email on file." };
 

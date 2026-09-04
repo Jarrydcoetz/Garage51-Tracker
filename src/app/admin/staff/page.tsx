@@ -114,7 +114,7 @@ export default function StaffScreen() {
   }
 
   async function handleResendInvite(p: Profile) {
-    if (!window.confirm(`Resend the invite to ${p.email}? This deletes their current (unconfirmed) account and creates a new one — only do this if they haven't signed in yet.`)) return;
+    if (!window.confirm(`Resend the invite to ${p.email}? This deletes their current account and creates a new one — only do this if they haven't set a password / started using the dashboard yet.`)) return;
     setErr(""); setMsg("");
     setResendBusyId(p.id);
     const res = await resendInvite(token, p.id);
