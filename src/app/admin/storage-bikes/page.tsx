@@ -360,6 +360,7 @@ export default function StorageBikesScreen() {
     if (error) showToast(error.message || "Could not save.", "err");
   }
   async function removeBike(bike: StorageBike) {
+    if (!window.confirm(`Remove "${bikePrimaryLabel(bike)}" from storage? This won't delete its service history, but it drops off this list.`)) return;
     await supabase.from("storage_bikes").update({ active: false }).eq("id", bike.id);
     setBikes(prev => prev.filter(b => b.id !== bike.id));
     showToast(`Removed ${bikePrimaryLabel(bike)}.`);
@@ -1135,56 +1136,41 @@ export default function StorageBikesScreen() {
                                   })}
                                 </div>
 
-                                {/* PRE-PAYMENT: WhatsApp (auto-creates and includes payment link) */}
-                                {!bike.renewal_paid_at && (
+                                {/* Actions — Create invoice is always available once a period is
+                                    picked, independent of WhatsApp/payment-link status. WhatsApp
+                                    and the manual paid marker are optional extras, not gates. */}
+                                {selectedPkg[bike.id] ? (
                                   <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+                                    <button onClick={() => createRenewalInvoice(bike)}
+                                      style={{ background: GOLD + "33", border: `1px solid ${GOLD}88`, borderRadius: 8, color: GOLD, fontSize: 13, fontWeight: 700, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit" }}>
+                                      🧾 Create invoice · AED {bike.monthly_rate ? (bike.monthly_rate * selectedPkg[bike.id]).toLocaleString() : ""}
+                                    </button>
                                     <button onClick={() => sendRenewalWhatsApp(group, [bike])} className="g51-btn g51-ghost"
                                       style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", background: waSent.has(bike.id) ? GREEN + "22" : "transparent" }}>
-                                      {waSent.has(bike.id)
-                                        ? `✓ Sent${selectedPkg[bike.id] ? ` — ${selectedPkg[bike.id]}m` : ""}`
-                                        : selectedPkg[bike.id] ? `WhatsApp + payment link — ${selectedPkg[bike.id]}m` : "WhatsApp"}
+                                      {waSent.has(bike.id) ? `✓ Sent — ${selectedPkg[bike.id]}m` : `WhatsApp + payment link — ${selectedPkg[bike.id]}m`}
                                     </button>
-                                    {selectedPkg[bike.id] && (
+                                    {!bike.renewal_paid_at ? (
                                       <button onClick={() => markPaidManually(bike, group)}
                                         style={{ ...s.actionBtn, color: GOLD, borderColor: GOLD + "66", background: GOLD + "11", fontSize: 12 }}>
-                                        ✓ Manual payment received
-                                      </button>
-                                    )}
-                                    {(selectedPkg[bike.id] || waSent.has(bike.id)) && (
-                                      <button onClick={() => resetBikePackage(bike.id)}
-                                        style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
-                                        ↺ Reset
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
-
-                                {/* POST-PAYMENT: create invoice only */}
-                                {bike.renewal_paid_at && (
-                                  <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-                                    {selectedPkg[bike.id] ? (
-                                      <button onClick={() => createRenewalInvoice(bike)}
-                                        style={{ background: GOLD + "33", border: `1px solid ${GOLD}88`, borderRadius: 8, color: GOLD, fontSize: 13, fontWeight: 700, padding: "8px 16px", cursor: "pointer", fontFamily: "inherit" }}>
-                                        🧾 Create invoice · AED {bike.monthly_rate ? (bike.monthly_rate * selectedPkg[bike.id]).toLocaleString() : ""}
+                                        ✓ Mark payment received
                                       </button>
                                     ) : (
-                                      <span style={{ fontSize: 12.5, color: GOLD + "AA" }}>← Select a renewal period above</span>
-                                    )}
-                                    {selectedPkg[bike.id] && (
-                                      <button onClick={() => resetBikePackage(bike.id)}
-                                        style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
-                                        ↺ Reset
+                                      <button onClick={async () => {
+                                        if (!window.confirm("Clear payment status? This will un-mark this renewal as paid.")) return;
+                                        await supabase.from("storage_bikes").update({ renewal_paid_at: null, renewal_payment_intent_id: null }).eq("id", bike.id);
+                                        editBikeLocal(bike.id, { renewal_paid_at: null, renewal_payment_intent_id: null });
+                                        showToast("Payment status cleared.");
+                                      }} style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
+                                        Undo paid
                                       </button>
                                     )}
-                                    <button onClick={async () => {
-                                      if (!window.confirm("Clear payment status? This will un-mark this renewal as paid.")) return;
-                                      await supabase.from("storage_bikes").update({ renewal_paid_at: null, renewal_payment_intent_id: null }).eq("id", bike.id);
-                                      editBikeLocal(bike.id, { renewal_paid_at: null, renewal_payment_intent_id: null });
-                                      showToast("Payment status cleared.");
-                                    }} style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 11.5, cursor: "pointer", fontFamily: "inherit", marginLeft: 4 }}>
-                                      Undo paid
+                                    <button onClick={() => resetBikePackage(bike.id)}
+                                      style={{ background: "transparent", border: "none", color: "#6F6862", fontSize: 12, cursor: "pointer", padding: "4px 6px", fontFamily: "inherit" }}>
+                                      ↺ Reset
                                     </button>
                                   </div>
+                                ) : (
+                                  <span style={{ fontSize: 12.5, color: "#6F6862" }}>← Select a renewal period above to invoice, WhatsApp, or mark paid</span>
                                 )}
                               </div>
                             )}
@@ -1192,8 +1178,30 @@ export default function StorageBikesScreen() {
                             {/* Expanded bike details */}
                             {isBikeOpen && (
                               <div style={{ padding: "0 14px 14px" }}>
-                                {/* Storage details */}
+                                {/* Bike identity — editable any time, independent of storage/payment state */}
                                 <div style={s.section}>
+                                  <div style={s.sectionLabel}>BIKE DETAILS</div>
+                                  <div style={s.fieldRow}>
+                                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Make</span>
+                                      <input className="g51-input" value={bike.make || ""}
+                                        onChange={e => editBikeLocal(bike.id, { make: e.target.value })}
+                                        onBlur={e => saveBikeField(bike.id, "make", e.target.value.trim() || null)}
+                                        style={s.input} /></label>
+                                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Model</span>
+                                      <input className="g51-input" value={bike.model || ""}
+                                        onChange={e => editBikeLocal(bike.id, { model: e.target.value })}
+                                        onBlur={e => saveBikeField(bike.id, "model", e.target.value.trim() || null)}
+                                        style={s.input} /></label>
+                                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Year</span>
+                                      <input className="g51-input" value={bike.year || ""}
+                                        onChange={e => editBikeLocal(bike.id, { year: e.target.value })}
+                                        onBlur={e => saveBikeField(bike.id, "year", e.target.value.trim() || null)}
+                                        style={s.input} /></label>
+                                  </div>
+                                </div>
+
+                                {/* Storage details */}
+                                <div style={{ ...s.section, borderTop: "1px solid #2A2623", marginTop: 8 }}>
                                   <div style={s.sectionLabel}>STORAGE DETAILS</div>
                                   <div style={s.fieldRow}>
                                     <label style={s.fieldCtrl}><span style={s.fieldLabel}>Storage start</span>
