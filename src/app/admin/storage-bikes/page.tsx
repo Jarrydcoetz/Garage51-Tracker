@@ -133,6 +133,7 @@ export default function StorageBikesScreen() {
   const [filterMode, setFilterMode] = useState<"all" | "renewal_overdue" | "renewal_due" | "service_due" | "attention">("all");
   const [search, setSearch] = useState("");
   const [myName, setMyName] = useState<string | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [bikes, setBikes] = useState<StorageBike[]>([]);
   const [svcItems, setSvcItems] = useState<SbServiceItem[]>([]);
   const [svcLogs, setSvcLogs] = useState<SbServiceLog[]>([]);
@@ -170,8 +171,9 @@ export default function StorageBikesScreen() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
-      const { data: prof } = await supabase.from("profiles").select("id, name").eq("id", data.session.user.id).single();
-      if (prof) setMyName((prof as { name: string | null }).name);
+      const { data: prof } = await supabase.from("profiles").select("id, name, roles").eq("id", data.session.user.id).single();
+      const me = prof as { name: string | null; roles: string[] } | null;
+      if (me) { setMyName(me.name); setIsAdmin(!!me.roles?.includes("admin")); }
       const [{ data: b }, { data: sd }, { data: sl }, { data: enq }, { data: profData }] = await Promise.all([
         supabase.from("storage_bikes").select("*").eq("active", true).order("reference_number"),
         supabase.from("sb_service_items").select("*").eq("active", true).order("created_at"),
@@ -933,17 +935,19 @@ export default function StorageBikesScreen() {
       <style dangerouslySetInnerHTML={{ __html: CSS }} />
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <AdminNav page="storage" isAdmin={true} />
+        <AdminNav page="storage" isAdmin={isAdmin} />
       </header>
       
 
       <div style={s.wrap}>
         <h1 style={s.h1}>Storage bikes</h1>
-        <p style={s.sub}>Grouped by client. Bikes sorted by renewal urgency.</p>
+        <p style={s.sub}>{isAdmin ? "Grouped by client. Bikes sorted by renewal urgency." : "Grouped by client. Update engine hours and log service work here."}</p>
 
-        <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-          <button onClick={() => setAdding(a => !a)} className="g51-btn g51-ghost" style={s.ghostBtn}>{adding ? "Cancel" : "+ Add bike"}</button>
-        </div>
+        {isAdmin && (
+          <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
+            <button onClick={() => setAdding(a => !a)} className="g51-btn g51-ghost" style={s.ghostBtn}>{adding ? "Cancel" : "+ Add bike"}</button>
+          </div>
+        )}
 
         {/* Search */}
         <div style={{ position: "relative", marginBottom: 12 }}>
@@ -965,13 +969,16 @@ export default function StorageBikesScreen() {
           )}
         </div>
 
-        {/* Filter bar */}
+        {/* Filter bar — renewal-status filters are an admin/billing concern, so
+            coaches and mechanics just get "all" and "service due". */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
           {([
             { key: "all",             label: "All bikes",        color: "#9A938D" },
-            { key: "attention",       label: "Needs attention",  color: AMBER },
-            { key: "renewal_overdue", label: "Renewal overdue",  color: RED },
-            { key: "renewal_due",     label: "Renewal due soon", color: AMBER },
+            ...(isAdmin ? [
+              { key: "attention",       label: "Needs attention",  color: AMBER },
+              { key: "renewal_overdue", label: "Renewal overdue",  color: RED },
+              { key: "renewal_due",     label: "Renewal due soon", color: AMBER },
+            ] as const : []),
             { key: "service_due",     label: "Service due",      color: "#3B9EFF" },
           ] as const).map(({ key, label, color }) => {
             const count = filterCounts[key];
@@ -996,14 +1003,14 @@ export default function StorageBikesScreen() {
           })}
         </div>
 
-        {totalAttention > 0 && filterMode === "all" && (
+        {isAdmin && totalAttention > 0 && filterMode === "all" && (
           <div style={{ background: "#FFB02E18", border: "1px solid #FFB02E55", color: AMBER, borderRadius: 10, padding: "10px 14px", fontSize: 13.5, fontWeight: 600, marginBottom: 18 }}>
             ⚠ {totalAttention} bike{totalAttention > 1 ? "s" : ""} need renewal attention
           </div>
         )}
 
         {/* Add bike form */}
-        {adding && (
+        {isAdmin && adding && (
           <div style={{ ...s.groupCard, marginBottom: 18 }}>
             <div style={s.sectionHead}>New storage bike</div>
             <div style={s.section}>
@@ -1090,7 +1097,7 @@ export default function StorageBikesScreen() {
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                         <span style={s.groupName}>{displayName}</span>
                         <span style={s.groupCount}>{group.bikes.length} bike{group.bikes.length !== 1 ? "s" : ""}</span>
-                        {groupDueCount > 0 && (
+                        {isAdmin && groupDueCount > 0 && (
                           <span style={{ ...s.badge, color: group.worstStatus === "overdue" ? RED : AMBER, borderColor: (group.worstStatus === "overdue" ? RED : AMBER) + "55", background: (group.worstStatus === "overdue" ? RED : AMBER) + "18" }}>
                             {group.worstStatus === "overdue" ? "⚠" : "⏰"} {groupDueCount} renewal{groupDueCount > 1 ? "s" : ""} {group.worstStatus === "overdue" ? "overdue" : "due soon"}
                           </span>
@@ -1099,7 +1106,7 @@ export default function StorageBikesScreen() {
                       {displayPhone && <div style={{ fontSize: 12, color: "#6F6862", marginTop: 2 }}>{displayPhone}{displayEmail ? ` · ${displayEmail}` : ""}</div>}
                     </div>
                     {/* Renew all button for clients with multiple due bikes */}
-                    {groupDueCount > 0 && displayPhone && (
+                    {isAdmin && groupDueCount > 0 && displayPhone && (
                       <button onClick={e => { e.stopPropagation(); sendRenewalWhatsApp(group, group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date, b.renewal_paid_at)))); }}
                         className="g51-btn g51-ghost"
                         style={{ ...s.actionBtn, color: GREEN, borderColor: GREEN + "55", flexShrink: 0 }}>
@@ -1109,7 +1116,7 @@ export default function StorageBikesScreen() {
                       </button>
                     )}
                     {/* Combined invoice — appears once a renewal period is picked for 2+ of this client's bikes */}
-                    {group.bikes.filter(b => selectedPkg[b.id]).length >= 2 && (
+                    {isAdmin && group.bikes.filter(b => selectedPkg[b.id]).length >= 2 && (
                       <button onClick={e => { e.stopPropagation(); createCombinedRenewalInvoice(group, group.bikes.filter(b => selectedPkg[b.id])); }}
                         className="g51-btn g51-ghost"
                         style={{ ...s.actionBtn, color: GOLD, borderColor: GOLD + "66", background: GOLD + "11", flexShrink: 0 }}>
@@ -1121,24 +1128,26 @@ export default function StorageBikesScreen() {
 
                   {isGroupOpen && (
                     <div style={{ borderTop: "1px solid #2A2623" }}>
-                      {/* Client info section (group-level) */}
-                      <div style={{ ...s.section, borderBottom: "1px solid #2A2623" }}>
-                        <div style={s.sectionLabel}>CLIENT INFO</div>
-                        <div style={s.fieldRow}>
-                          <label style={s.fieldCtrl}><span style={s.fieldLabel}>Name</span>
-                            <input className="g51-input" value={displayName} onChange={e => setPending(group.key, "name", e.target.value, group)} style={s.input} /></label>
-                          <label style={s.fieldCtrl}><span style={s.fieldLabel}>Phone</span>
-                            <input className="g51-input" value={displayPhone} onChange={e => setPending(group.key, "phone", e.target.value, group)} placeholder="+971…" style={s.input} /></label>
-                          <label style={s.fieldCtrl}><span style={s.fieldLabel}>Email</span>
-                            <input className="g51-input" value={displayEmail} onChange={e => setPending(group.key, "email", e.target.value, group)} style={s.input} /></label>
+                      {/* Client info section (group-level) — editing contact details is an admin/CRM concern */}
+                      {isAdmin && (
+                        <div style={{ ...s.section, borderBottom: "1px solid #2A2623" }}>
+                          <div style={s.sectionLabel}>CLIENT INFO</div>
+                          <div style={s.fieldRow}>
+                            <label style={s.fieldCtrl}><span style={s.fieldLabel}>Name</span>
+                              <input className="g51-input" value={displayName} onChange={e => setPending(group.key, "name", e.target.value, group)} style={s.input} /></label>
+                            <label style={s.fieldCtrl}><span style={s.fieldLabel}>Phone</span>
+                              <input className="g51-input" value={displayPhone} onChange={e => setPending(group.key, "phone", e.target.value, group)} placeholder="+971…" style={s.input} /></label>
+                            <label style={s.fieldCtrl}><span style={s.fieldLabel}>Email</span>
+                              <input className="g51-input" value={displayEmail} onChange={e => setPending(group.key, "email", e.target.value, group)} style={s.input} /></label>
+                          </div>
+                          {pendingG && (
+                            <button onClick={() => saveClientInfo(group)} disabled={savingClient[group.key]}
+                              style={{ ...s.primaryBtn, background: GREEN, marginTop: 8 }}>
+                              {savingClient[group.key] ? "Saving…" : "Save client info"}
+                            </button>
+                          )}
                         </div>
-                        {pendingG && (
-                          <button onClick={() => saveClientInfo(group)} disabled={savingClient[group.key]}
-                            style={{ ...s.primaryBtn, background: GREEN, marginTop: 8 }}>
-                            {savingClient[group.key] ? "Saving…" : "Save client info"}
-                          </button>
-                        )}
-                      </div>
+                      )}
 
                       {/* Bike cards within the group */}
                       {group.bikes.map((bike, bikeIdx) => {
@@ -1164,12 +1173,14 @@ export default function StorageBikesScreen() {
                                   )}
                                   <span style={s.bikePrimary}>{bikePrimaryLabel(bike)}</span>
                                   {bike.bike_number && <span style={s.bikeNumTag}>{bike.bike_number}</span>}
-                                  {rs === "paid" && <span style={{ ...s.badge, color: GOLD, borderColor: GOLD + "66", background: GOLD + "22" }}>💳 Payment received</span>}
-                                  {rs === "overdue" && <span style={{ ...s.badge, color: RED, borderColor: RED + "55", background: RED + "18" }}>🔴 Overdue</span>}
-                                  {rs === "due_soon" && <span style={{ ...s.badge, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>⏰ {daysLeft}d</span>}
+                                  {isAdmin && rs === "paid" && <span style={{ ...s.badge, color: GOLD, borderColor: GOLD + "66", background: GOLD + "22" }}>💳 Payment received</span>}
+                                  {isAdmin && rs === "overdue" && <span style={{ ...s.badge, color: RED, borderColor: RED + "55", background: RED + "18" }}>🔴 Overdue</span>}
+                                  {isAdmin && rs === "due_soon" && <span style={{ ...s.badge, color: AMBER, borderColor: AMBER + "55", background: AMBER + "18" }}>⏰ {daysLeft}d</span>}
                                 </div>
                                 {bike.vin && <div style={{ fontSize: 11, color: "#6F6862", marginTop: 2 }}>VIN: {bike.vin}</div>}
-                                {(bike.storage_start_date || bike.storage_end_date) && (
+                                {/* Renewal dates + rate — admin/billing info, not relevant to a
+                                    coach/mechanic updating hours or logging service work */}
+                                {isAdmin && (bike.storage_start_date || bike.storage_end_date) && (
                                   <div style={{ fontSize: 11.5, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : rs === "due_soon" ? AMBER : "#6F6862", marginTop: 3 }}>
                                     📅 {fmtDate(bike.storage_start_date)} → {fmtDate(bike.storage_end_date)}
                                     {bike.monthly_rate ? ` · AED ${bike.monthly_rate}/mo` : ""}
@@ -1195,8 +1206,9 @@ export default function StorageBikesScreen() {
                             </div>
 
                                                         {/* Renewal package strip */}
-                            {/* RENEWAL SECTION — always visible in expanded card so admin can process payment regardless of status */}
-                            {(rs === "overdue" || rs === "due_soon" || rs === "paid" || isBikeOpen) && (
+                            {/* RENEWAL SECTION — admin/billing only; visible in the expanded card
+                                so admin can process payment regardless of status */}
+                            {isAdmin && (rs === "overdue" || rs === "due_soon" || rs === "paid" || isBikeOpen) && (
                               <div style={{ margin: "0 14px 10px", background: rs === "paid" ? GOLD + "15" : rs === "overdue" ? RED + "0e" : rs === "due_soon" ? AMBER + "0e" : "#1B1816", border: `1px solid ${rs === "paid" ? GOLD : rs === "overdue" ? RED : rs === "due_soon" ? AMBER : "#2A2623"}33`, borderRadius: 10, padding: "10px 14px" }}>
                                 <div style={{ fontSize: 12.5, fontWeight: 700, color: rs === "paid" ? GOLD : rs === "overdue" ? RED : rs === "due_soon" ? AMBER : "#9A938D", marginBottom: 8 }}>
                                   {rs === "paid"
@@ -1288,26 +1300,34 @@ export default function StorageBikesScreen() {
                                   </div>
                                 </div>
 
-                                {/* Storage details */}
-                                <div style={{ ...s.section, borderTop: "1px solid #2A2623", marginTop: 8 }}>
-                                  <div style={s.sectionLabel}>STORAGE DETAILS</div>
-                                  <div style={s.fieldRow}>
-                                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Storage start</span>
-                                      <input className="g51-input" type="date" value={bike.storage_start_date || ""}
-                                        onChange={e => editBikeLocal(bike.id, { storage_start_date: e.target.value || null })}
-                                        onBlur={e => saveBikeField(bike.id, "storage_start_date", e.target.value || null)}
-                                        style={s.input} /></label>
-                                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Renewal date</span>
-                                      <input className="g51-input" type="date" value={bike.storage_end_date || ""}
-                                        onChange={e => editBikeLocal(bike.id, { storage_end_date: e.target.value || null })}
-                                        onBlur={e => saveBikeField(bike.id, "storage_end_date", e.target.value || null)}
-                                        style={s.input} /></label>
-                                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Monthly rate (AED)</span>
-                                      <input className="g51-input" type="number" value={bike.monthly_rate || ""}
-                                        onChange={e => editBikeLocal(bike.id, { monthly_rate: Number(e.target.value) || null })}
-                                        onBlur={e => saveBikeField(bike.id, "monthly_rate", Number(e.target.value) || null)}
-                                        style={s.input} /></label>
+                                {/* Storage term — dates and rate are billing info, admin only */}
+                                {isAdmin && (
+                                  <div style={{ ...s.section, borderTop: "1px solid #2A2623", marginTop: 8 }}>
+                                    <div style={s.sectionLabel}>STORAGE DETAILS</div>
+                                    <div style={s.fieldRow}>
+                                      <label style={s.fieldCtrl}><span style={s.fieldLabel}>Storage start</span>
+                                        <input className="g51-input" type="date" value={bike.storage_start_date || ""}
+                                          onChange={e => editBikeLocal(bike.id, { storage_start_date: e.target.value || null })}
+                                          onBlur={e => saveBikeField(bike.id, "storage_start_date", e.target.value || null)}
+                                          style={s.input} /></label>
+                                      <label style={s.fieldCtrl}><span style={s.fieldLabel}>Renewal date</span>
+                                        <input className="g51-input" type="date" value={bike.storage_end_date || ""}
+                                          onChange={e => editBikeLocal(bike.id, { storage_end_date: e.target.value || null })}
+                                          onBlur={e => saveBikeField(bike.id, "storage_end_date", e.target.value || null)}
+                                          style={s.input} /></label>
+                                      <label style={s.fieldCtrl}><span style={s.fieldLabel}>Monthly rate (AED)</span>
+                                        <input className="g51-input" type="number" value={bike.monthly_rate || ""}
+                                          onChange={e => editBikeLocal(bike.id, { monthly_rate: Number(e.target.value) || null })}
+                                          onBlur={e => saveBikeField(bike.id, "monthly_rate", Number(e.target.value) || null)}
+                                          style={s.input} /></label>
+                                    </div>
                                   </div>
+                                )}
+
+                                {/* Identification — useful for everyone matching a bike to a job,
+                                    not just admins */}
+                                <div style={{ ...s.section, borderTop: "1px solid #2A2623", marginTop: 8 }}>
+                                  <div style={s.sectionLabel}>IDENTIFICATION</div>
                                   <div style={s.fieldRow}>
                                     <label style={s.fieldCtrl}><span style={s.fieldLabel}>Bike number</span>
                                       <input className="g51-input" value={bike.bike_number || ""}
@@ -1326,8 +1346,9 @@ export default function StorageBikesScreen() {
                                   </div>
                                 </div>
 
-                                {/* ---- SERVICE REQUEST ---- */}
+                                {/* ---- SERVICE REQUEST (admin/billing: client quote, job card, invoice) ---- */}
                                 {(() => {
+                                  if (!isAdmin) return null;
                                   const svcEnq = bike.service_enquiry_id ? serviceEnquiries[bike.service_enquiry_id] : null;
                                   const isComplete = !!bike.service_completed_at;
                                   return (
@@ -1697,13 +1718,15 @@ export default function StorageBikesScreen() {
                                         </button>
                                       </div>
 
-                                      <details style={{ marginTop: 4 }}>
-                                        <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Remove bike from storage</summary>
-                                        <button onClick={() => removeBike(bike)} className="g51-btn g51-ghost"
-                                          style={{ ...s.actionBtn, color: "#FF7A7A", marginTop: 8 }}>
-                                          Remove "{bikePrimaryLabel(bike)}"
-                                        </button>
-                                      </details>
+                                      {isAdmin && (
+                                        <details style={{ marginTop: 4 }}>
+                                          <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Remove bike from storage</summary>
+                                          <button onClick={() => removeBike(bike)} className="g51-btn g51-ghost"
+                                            style={{ ...s.actionBtn, color: "#FF7A7A", marginTop: 8 }}>
+                                            Remove "{bikePrimaryLabel(bike)}"
+                                          </button>
+                                        </details>
+                                      )}
                                     </div>
                                   );
                                 })()}
