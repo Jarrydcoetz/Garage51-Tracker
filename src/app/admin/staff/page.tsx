@@ -48,7 +48,6 @@ function Chevron({ open }: { open: boolean }) {
 export default function StaffScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [token, setToken] = useState("");
   const [meId, setMeId] = useState("");
   const [staff, setStaff] = useState<Profile[]>([]);
   const [form, setForm] = useState<{ name: string; email: string; roles: string[]; whatsapp: string }>({ name: "", email: "", roles: ["coach"], whatsapp: "" });
@@ -71,13 +70,24 @@ export default function StaffScreen() {
       const me = await supabase
         .from("profiles").select("roles").eq("id", data.session.user.id).single();
       if (!me.data || !(me.data.roles || []).includes("admin")) { router.replace("/admin"); return; }
-      setToken(data.session.access_token);
       setMeId(data.session.user.id);
       setMyEmail(data.session.user.email || "");
       await load();
       setReady(true);
     });
   }, [router]);
+
+  // Fetches a live access token right before each action instead of reusing
+  // one captured at page load — the client auto-refreshes the underlying
+  // session in the background, but a token grabbed once into state goes
+  // stale after it rotates, and every one of these actions is a server
+  // action that re-validates it from scratch. Without this, "Not
+  // authorised" starts appearing after the page has been open a while,
+  // with no visible cause — the token, not the caller, went bad.
+  async function getToken(): Promise<string> {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token || "";
+  }
 
   async function load() {
     const { data } = await supabase
@@ -90,7 +100,7 @@ export default function StaffScreen() {
     if (!form.name.trim() || !form.email.trim()) { setErr("Name and email are required."); return; }
     if (form.roles.length === 0) { setErr("Select at least one role."); return; }
     setBusy(true);
-    const res = await inviteStaff(token, form);
+    const res = await inviteStaff(await getToken(), form);
     setBusy(false);
     if (!res.ok) { setErr(res.error || "Could not send the invite."); return; }
     setMsg(`Invite sent to ${form.email.trim()}.`);
@@ -109,14 +119,14 @@ export default function StaffScreen() {
     const nextRoles = p.roles.includes(role) ? p.roles.filter(r => r !== role) : [...p.roles, role];
     if (nextRoles.length === 0) { setErr("A staff member needs at least one role."); return; }
     setStaff(prev => prev.map(x => (x.id === p.id ? { ...x, roles: nextRoles } : x)));
-    const res = await setStaffRoles(token, p.id, nextRoles);
+    const res = await setStaffRoles(await getToken(), p.id, nextRoles);
     if (!res.ok) { setErr(res.error || "Could not change roles."); await load(); }
   }
 
   async function toggleActive(p: Profile) {
     const next = !p.active;
     setStaff(prev => prev.map(x => (x.id === p.id ? { ...x, active: next } : x)));
-    const res = await setStaffActive(token, p.id, next);
+    const res = await setStaffActive(await getToken(), p.id, next);
     if (!res.ok) { setErr(res.error || "Could not update."); await load(); }
   }
 
@@ -126,7 +136,7 @@ export default function StaffScreen() {
 
   async function saveWhatsapp(p: Profile, value: string) {
     const cleaned = value.trim() || null;
-    const res = await setStaffWhatsapp(token, p.id, cleaned);
+    const res = await setStaffWhatsapp(await getToken(), p.id, cleaned);
     if (!res.ok) { setErr(res.error || "Could not save the WhatsApp number."); await load(); }
   }
 
@@ -134,7 +144,7 @@ export default function StaffScreen() {
     if (!window.confirm(`Resend the invite to ${p.email}? This deletes their current account and creates a new one — only do this if they haven't set a password / started using the dashboard yet.`)) return;
     setErr(""); setMsg("");
     setResendBusyId(p.id);
-    const res = await resendInvite(token, p.id);
+    const res = await resendInvite(await getToken(), p.id);
     setResendBusyId(null);
     if (!res.ok) { setErr(res.error || "Could not resend the invite."); return; }
     setMsg(`Invite resent to ${p.email}.`);
