@@ -1,16 +1,22 @@
 "use server";
 
 import { createClient } from "@supabase/supabase-js";
+import { ROLES, hasRole } from "../../../lib/roles";
 
 const URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SECRET = process.env.SUPABASE_SECRET_KEY!;
 const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://garage51-tracker.vercel.app";
 
-const ROLES = ["admin", "coach", "mechanic", "facilities"];
-
 // Service-role client: full access, used for the privileged operations.
 const admin = createClient(URL, SECRET);
+
+// Keeps only recognised, deduplicated roles — falls back to ["coach"] if
+// nothing valid was passed, so a staff member is never left with zero roles.
+function cleanRoles(input: string[] | undefined | null): string[] {
+  const clean = Array.from(new Set((input || []).filter(r => (ROLES as readonly string[]).includes(r))));
+  return clean.length > 0 ? clean : ["coach"];
+}
 
 // Verify the caller is a signed-in admin by validating their access token
 // and checking their profile role. Returns the admin's id, or null.
@@ -22,35 +28,40 @@ async function requireAdmin(accessToken: string): Promise<string | null> {
   const { data: u } = await asUser.auth.getUser();
   if (!u.user) return null;
   const { data: prof } = await asUser
-    .from("profiles").select("role").eq("id", u.user.id).single();
-  if (!prof || prof.role !== "admin") return null;
+    .from("profiles").select("roles").eq("id", u.user.id).single();
+  if (!prof || !hasRole(prof.roles, "admin")) return null;
   return u.user.id;
 }
 
 export async function inviteStaff(
   accessToken: string,
-  input: { name: string; email: string; role: string; whatsapp?: string }
+  input: { name: string; email: string; roles: string[]; whatsapp?: string }
 ): Promise<{ ok: boolean; error?: string }> {
   const adminId = await requireAdmin(accessToken);
   if (!adminId) return { ok: false, error: "Not authorised." };
 
   const name = input.name?.trim();
   const email = input.email?.trim().toLowerCase();
-  const role = ROLES.includes(input.role) ? input.role : "coach";
+  const roles = cleanRoles(input.roles);
   const whatsapp = input.whatsapp?.trim() || null;
   if (!name || !email) return { ok: false, error: "Name and email are required." };
 
   const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
-    data: { name, role, whatsapp },
+    // role (singular) is kept alongside roles for the DB trigger that
+    // creates the profile row — it only knows about a single `role` field
+    // today, and if that column turns out to be NOT NULL without a
+    // default, an insert missing it would fail the whole invite. Cheap
+    // insurance either way; the app itself only ever reads `roles`.
+    data: { name, role: roles[0], roles, whatsapp },
     redirectTo: `${SITE_URL}/welcome`,
   });
   if (error) return { ok: false, error: error.message };
 
-  // The trigger that creates the profile row only copies name/role today, so
-  // set the number directly here too rather than relying on it picking up
-  // an extra metadata field it doesn't yet know about.
-  if (whatsapp && data.user) {
-    await admin.from("profiles").update({ whatsapp }).eq("id", data.user.id);
+  // The trigger only copies name/role from metadata today, so set roles
+  // (and the number) directly here too rather than relying on it picking up
+  // fields it doesn't yet know about.
+  if (data.user) {
+    await admin.from("profiles").update({ roles, ...(whatsapp ? { whatsapp } : {}) }).eq("id", data.user.id);
   }
 
   return { ok: true };
@@ -79,9 +90,11 @@ export async function resendInvite(
   const email = user.email;
   if (!email) return { ok: false, error: "That account has no email on file." };
 
-  const meta = (user.user_metadata || {}) as { name?: string; role?: string; whatsapp?: string };
+  // Metadata may still carry the old single `role` string for an invite
+  // created before the move to multi-role — fold it into the array form.
+  const meta = (user.user_metadata || {}) as { name?: string; roles?: string[]; role?: string; whatsapp?: string };
   const name = meta.name || "";
-  const role = ROLES.includes(meta.role || "") ? (meta.role as string) : "coach";
+  const roles = cleanRoles(meta.roles && meta.roles.length > 0 ? meta.roles : meta.role ? [meta.role] : []);
   const whatsapp = meta.whatsapp || null;
 
   const { error: delErr } = await admin.auth.admin.deleteUser(id);
@@ -91,13 +104,13 @@ export async function resendInvite(
   await admin.from("profiles").delete().eq("id", id);
 
   const { data, error } = await admin.auth.admin.inviteUserByEmail(email, {
-    data: { name, role, whatsapp },
+    data: { name, role: roles[0], roles, whatsapp },
     redirectTo: `${SITE_URL}/welcome`,
   });
   if (error) return { ok: false, error: error.message };
 
-  if (whatsapp && data.user) {
-    await admin.from("profiles").update({ whatsapp }).eq("id", data.user.id);
+  if (data.user) {
+    await admin.from("profiles").update({ roles, ...(whatsapp ? { whatsapp } : {}) }).eq("id", data.user.id);
   }
 
   return { ok: true };
@@ -117,17 +130,18 @@ export async function setStaffActive(
   return { ok: true };
 }
 
-export async function setStaffRole(
+export async function setStaffRoles(
   accessToken: string,
   id: string,
-  role: string
+  roles: string[]
 ): Promise<{ ok: boolean; error?: string }> {
   const adminId = await requireAdmin(accessToken);
   if (!adminId) return { ok: false, error: "Not authorised." };
-  if (id === adminId) return { ok: false, error: "You can't change your own role." };
-  if (!ROLES.includes(role)) return { ok: false, error: "Invalid role." };
+  if (id === adminId) return { ok: false, error: "You can't change your own roles." };
+  const valid = roles.filter(r => (ROLES as readonly string[]).includes(r));
+  if (valid.length === 0) return { ok: false, error: "Select at least one role." };
 
-  const { error } = await admin.from("profiles").update({ role }).eq("id", id);
+  const { error } = await admin.from("profiles").update({ roles: valid }).eq("id", id);
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }

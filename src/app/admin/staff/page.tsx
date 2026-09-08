@@ -4,18 +4,25 @@ import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
-import { inviteStaff, resendInvite, setStaffActive, setStaffRole, setStaffWhatsapp } from "./actions";
+import { inviteStaff, resendInvite, setStaffActive, setStaffRoles, setStaffWhatsapp } from "./actions";
 import { AdminNav } from "../../../components/AdminNav";
+import { ROLES } from "../../../lib/roles";
 
 const RED = "#ED1C24";
-const ROLES = ["admin", "coach", "mechanic", "facilities"];
 const ROLE_COLOR: Record<string, string> = { admin: "#ED1C24", coach: "#3B9EFF", mechanic: "#FFB02E", facilities: "#2FBF71" };
+// Display-only priority for picking one color when someone holds several
+// roles — has no bearing on access control, which always checks the full array.
+const ROLE_COLOR_PRIORITY = ["admin", "mechanic", "coach", "facilities"];
+function primaryRoleColor(roles: string[] | undefined | null): string {
+  const r = ROLE_COLOR_PRIORITY.find(x => (roles || []).includes(x));
+  return ROLE_COLOR[r || ""] || "#3B9EFF";
+}
 
 type Profile = {
   id: string;
   name: string | null;
   email: string | null;
-  role: string;
+  roles: string[];
   active: boolean;
   whatsapp: string | null;
   created_at: string;
@@ -44,7 +51,7 @@ export default function StaffScreen() {
   const [token, setToken] = useState("");
   const [meId, setMeId] = useState("");
   const [staff, setStaff] = useState<Profile[]>([]);
-  const [form, setForm] = useState({ name: "", email: "", role: "coach", whatsapp: "" });
+  const [form, setForm] = useState<{ name: string; email: string; roles: string[]; whatsapp: string }>({ name: "", email: "", roles: ["coach"], whatsapp: "" });
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -62,8 +69,8 @@ export default function StaffScreen() {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
       const me = await supabase
-        .from("profiles").select("role").eq("id", data.session.user.id).single();
-      if (!me.data || me.data.role !== "admin") { router.replace("/admin"); return; }
+        .from("profiles").select("roles").eq("id", data.session.user.id).single();
+      if (!me.data || !(me.data.roles || []).includes("admin")) { router.replace("/admin"); return; }
       setToken(data.session.access_token);
       setMeId(data.session.user.id);
       setMyEmail(data.session.user.email || "");
@@ -81,19 +88,29 @@ export default function StaffScreen() {
   async function invite() {
     setErr(""); setMsg("");
     if (!form.name.trim() || !form.email.trim()) { setErr("Name and email are required."); return; }
+    if (form.roles.length === 0) { setErr("Select at least one role."); return; }
     setBusy(true);
     const res = await inviteStaff(token, form);
     setBusy(false);
     if (!res.ok) { setErr(res.error || "Could not send the invite."); return; }
     setMsg(`Invite sent to ${form.email.trim()}.`);
-    setForm({ name: "", email: "", role: "coach", whatsapp: "" });
+    setForm({ name: "", email: "", roles: ["coach"], whatsapp: "" });
     await load();
   }
 
-  async function changeRole(p: Profile, role: string) {
-    setStaff(prev => prev.map(x => (x.id === p.id ? { ...x, role } : x)));
-    const res = await setStaffRole(token, p.id, role);
-    if (!res.ok) { setErr(res.error || "Could not change role."); await load(); }
+  function toggleFormRole(role: string) {
+    setForm(prev => ({
+      ...prev,
+      roles: prev.roles.includes(role) ? prev.roles.filter(r => r !== role) : [...prev.roles, role],
+    }));
+  }
+
+  async function toggleStaffRole(p: Profile, role: string) {
+    const nextRoles = p.roles.includes(role) ? p.roles.filter(r => r !== role) : [...p.roles, role];
+    if (nextRoles.length === 0) { setErr("A staff member needs at least one role."); return; }
+    setStaff(prev => prev.map(x => (x.id === p.id ? { ...x, roles: nextRoles } : x)));
+    const res = await setStaffRoles(token, p.id, nextRoles);
+    if (!res.ok) { setErr(res.error || "Could not change roles."); await load(); }
   }
 
   async function toggleActive(p: Profile) {
@@ -129,7 +146,7 @@ export default function StaffScreen() {
   const set = (k: string, v: string) => setForm(prev => ({ ...prev, [k]: v }));
   const me = staff.find(p => p.id === meId) || null;
   const initials = ((me?.name || myEmail || "?").trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
-  const myColor = ROLE_COLOR[me?.role || ""] || "#3B9EFF";
+  const myColor = primaryRoleColor(me?.roles);
 
   async function logout() {
     await supabase.auth.signOut();
@@ -169,7 +186,12 @@ export default function StaffScreen() {
                     <div style={{ minWidth: 0 }}>
                       <div style={s.pmName}>{me?.name || "Account"}</div>
                       <div style={s.pmEmail}>{myEmail}</div>
-                      <span style={{ ...s.pmRole, color: myColor, borderColor: myColor + "66", background: myColor + "1c" }}>{me?.role}</span>
+                      <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 6 }}>
+                        {(me?.roles || []).map(r => {
+                          const c = ROLE_COLOR[r] || "#3B9EFF";
+                          return <span key={r} style={{ ...s.pmRole, marginTop: 0, color: c, borderColor: c + "66", background: c + "1c" }}>{r}</span>;
+                        })}
+                      </div>
                     </div>
                   </div>
                   {!pwOpen ? (
@@ -205,13 +227,21 @@ export default function StaffScreen() {
               <input className="g51-input" value={form.name} onChange={e => set("name", e.target.value)} style={s.input} /></label>
             <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
               <input className="g51-input" type="email" value={form.email} onChange={e => set("email", e.target.value)} style={s.input} /></label>
-            <label style={{ ...s.ctrl, flex: "0 0 150px" }}><span style={s.ctrlLabel}>Role</span>
-              <select className="g51-input" value={form.role} onChange={e => set("role", e.target.value)} style={s.input}>
-                <option value="coach">coach</option>
-                <option value="mechanic">mechanic</option>
-                <option value="facilities">facilities</option>
-                <option value="admin">admin</option>
-              </select></label>
+            <div style={{ ...s.ctrl, flex: "1 1 240px" }}>
+              <span style={s.ctrlLabel}>Roles (select any that apply)</span>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 5 }}>
+                {ROLES.map(r => {
+                  const isSel = form.roles.includes(r);
+                  const c = ROLE_COLOR[r] || "#F4F2EF";
+                  return (
+                    <button key={r} type="button" onClick={() => toggleFormRole(r)}
+                      style={{ background: isSel ? c + "22" : "transparent", border: `1px solid ${isSel ? c : "#3A352F"}`, borderRadius: 8, color: isSel ? c : "#B5AEA8", fontSize: 12.5, padding: "7px 11px", cursor: "pointer", fontFamily: "inherit", fontWeight: isSel ? 700 : 400 }}>
+                      {r}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <label style={s.ctrl}><span style={s.ctrlLabel}>WhatsApp</span>
               <input className="g51-input" value={form.whatsapp} onChange={e => set("whatsapp", e.target.value)} placeholder="+9715XXXXXXX" style={s.input} /></label>
           </div>
@@ -242,10 +272,19 @@ export default function StaffScreen() {
                 </div>
                 <div style={s.rowRight}>
                   {!p.active && <span style={s.inactive}>inactive</span>}
-                  <select value={p.role} onChange={e => changeRole(p, e.target.value)} disabled={isMe}
-                    className="g51-input" style={{ ...s.roleSelect, color: ROLE_COLOR[p.role] || "#F4F2EF" }}>
-                    {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                  </select>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {ROLES.map(r => {
+                      const isSel = p.roles.includes(r);
+                      const c = ROLE_COLOR[r] || "#F4F2EF";
+                      return (
+                        <button key={r} onClick={() => toggleStaffRole(p, r)} disabled={isMe}
+                          title={isMe ? "You can't change your own roles" : `Toggle ${r}`}
+                          style={{ background: isSel ? c + "22" : "transparent", border: `1px solid ${isSel ? c : "#3A352F"}`, borderRadius: 8, color: isSel ? c : "#6F6862", fontSize: 11.5, padding: "5px 9px", cursor: isMe ? "default" : "pointer", fontFamily: "inherit", fontWeight: isSel ? 700 : 400, opacity: isMe && !isSel ? 0.5 : 1 }}>
+                          {r}
+                        </button>
+                      );
+                    })}
+                  </div>
                   {!isMe && (
                     <button onClick={() => handleResendInvite(p)} disabled={resendBusyId === p.id}
                       className="g51-btn g51-ghost" style={s.ghostSmall} title="Delete the stale invite and send a fresh one">

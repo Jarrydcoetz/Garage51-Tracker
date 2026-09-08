@@ -137,8 +137,8 @@ export default function ClientsScreen() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
-      const { data: prof } = await supabase.from("profiles").select("role").eq("id", data.session.user.id).single();
-      if (!prof || (prof as { role: string }).role !== "admin") { router.replace("/admin/overview"); return; }
+      const { data: prof } = await supabase.from("profiles").select("roles").eq("id", data.session.user.id).single();
+      if (!prof || !(prof as { roles: string[] }).roles?.includes("admin")) { router.replace("/admin/overview"); return; }
       const [{ data: enqData }, { data: cliData }, { data: sbData }] = await Promise.all([
         supabase.from("enquiries").select("id,customer_name,phone,email,service_type,estimated_value,paid_at,stage,created_at,bike_details,bike_year,client_id").order("created_at", { ascending: false }),
         supabase.from("clients").select("id,name,whatsapp,email,notes,guardian_id,is_minor,relationship"),

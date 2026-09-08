@@ -41,7 +41,7 @@ type Task = {
   linked_client_phone: string | null; completed_at: string | null;
   created_at: string;
 };
-type Profile = { id: string; name: string | null; role: string };
+type Profile = { id: string; name: string | null; roles: string[] };
 const BLANK: Partial<Task> & { title: string } = {
   title: "", description: "", category: "general", status: "open",
   priority: "normal", assigned_to: null, due_date: null, linked_label: null,
@@ -102,7 +102,7 @@ function TasksInner() {
       setMyId(data.session.user.id);
       const [{ data: t }, { data: p }] = await Promise.all([
         supabase.from("tasks").select("*").order("created_at", { ascending: false }),
-        supabase.from("profiles").select("id,name,role").eq("active", true),
+        supabase.from("profiles").select("id,name,roles").eq("active", true),
       ]);
       setTasks((t as Task[]) || []);
       setProfiles((p as Profile[]) || []);

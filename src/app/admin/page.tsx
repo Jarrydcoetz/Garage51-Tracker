@@ -80,7 +80,7 @@ type Enquiry = {
 
 type ClientLite = { id: string; name: string | null; whatsapp: string | null; zoho_contact_id: string | null };
 type ClientBike = { label: string; make: string | null; model: string | null; year: string | null; vin: string | null };
-type Profile = { id: string; name: string | null; role: string; active: boolean; whatsapp: string | null };
+type Profile = { id: string; name: string | null; roles: string[]; active: boolean; whatsapp: string | null };
 
 const RED = "#ED1C24";
 const STAGES = ["new", "contacted", "booked", "lost", "cancelled"];
@@ -432,11 +432,15 @@ export default function Admin() {
       if (!data.session) { router.replace("/login"); return; }
       setMyEmail(data.session.user.email || "");
       const [{ data: prof }, { data: people }] = await Promise.all([
-        supabase.from("profiles").select("id, name, role, active, whatsapp").eq("id", data.session.user.id).single(),
-        supabase.from("profiles").select("id, name, role, active, whatsapp").eq("active", true).order("name"),
+        supabase.from("profiles").select("id, name, roles, active, whatsapp").eq("id", data.session.user.id).single(),
+        supabase.from("profiles").select("id, name, roles, active, whatsapp").eq("active", true).order("name"),
       ]);
-      if ((prof as Profile | null)?.role === "mechanic") { router.replace("/admin/workshop"); return; }
-      if ((prof as Profile | null)?.role === "facilities") { router.replace("/admin/overview"); return; }
+      // Only redirect away for an exclusively mechanic account — the workshop
+      // queue is genuinely a better fit for them. Everyone else (including
+      // facilities-only and any multi-role combination) stays here; this page
+      // already scopes to what's assigned to the signed-in user for non-admins.
+      const meRoles = (prof as Profile | null)?.roles || [];
+      if (meRoles.length === 1 && meRoles[0] === "mechanic") { router.replace("/admin/workshop"); return; }
       setMe((prof as Profile) || null);
       setStaff((people as Profile[]) || []);
       setReady(true);
@@ -973,7 +977,7 @@ export default function Admin() {
       // Non-admins are auto-assigned to themselves so the booking immediately
       // appears in their filtered view — a coach creating a booking for their
       // own student shouldn't have to manually assign it to themselves.
-      assigned_to: me?.role !== "admin" ? me?.id || null : null,
+      assigned_to: !me?.roles?.includes("admin") ? me?.id || null : null,
     }).select("*, sessions(*)").single();
     if (error || !data) { setCreating(false); setAddError(error?.message || "Could not create booking."); return; }
     const enq = data as Enquiry;
@@ -996,7 +1000,7 @@ export default function Admin() {
   }
 
   function exportCsv() {
-    const data = me?.role === "admin" ? rows : rows.filter(r => r.assigned_to === me?.id);
+    const data = me?.roles?.includes("admin") ? rows : rows.filter(r => r.assigned_to === me?.id);
     const headers = ["Created", "Name", "Phone", "Email", "Service", "Requested", "Stage", "Paid", "Sessions done", "Sessions total", "Est. value (AED)", "Bike", "Year", "Hours", "Work required", "Bike category", "Storage term", "Storage start", "Storage end", "Zoho invoice", "Notes"];
     const esc = (v: unknown) => `"${(v == null ? "" : String(v)).replace(/"/g, '""')}"`;
     const lines = [
@@ -1068,7 +1072,7 @@ export default function Admin() {
     showToast(`Workshop job created — ${wsForm.client.trim()} added to queue.`);
   }
 
-  const scoped = me?.role === "admin" ? rows : rows.filter(r => r.assigned_to === me?.id);
+  const scoped = me?.roles?.includes("admin") ? rows : rows.filter(r => r.assigned_to === me?.id);
 
   const pipeline = scoped.filter(r => ["new", "contacted"].includes(r.stage)).reduce((a, r) => a + (r.estimated_value || 0), 0);
   const booked = scoped.filter(r => r.stage === "booked" && !r.paid_at).reduce((a, r) => a + (r.estimated_value || 0), 0);
@@ -1131,7 +1135,10 @@ export default function Admin() {
     }
     editStaged(r.id, patch);
   };
-  const roleColor = (r?: string) => (r === "admin" ? RED : r === "mechanic" ? "#FFB02E" : "#3B9EFF");
+  // Display-only priority when someone holds several roles — has no bearing
+  // on access control, which always checks the full array.
+  const roleColor = (roles?: string[]) =>
+    (roles || []).includes("admin") ? RED : (roles || []).includes("mechanic") ? "#FFB02E" : "#3B9EFF";
   const initials = ((me?.name || myEmail || "?").trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
 
   return (
@@ -1144,7 +1151,7 @@ export default function Admin() {
           <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
           <div style={s.profileWrap}>
             <button onClick={() => setProfileOpen(o => !o)} className="g51-btn g51-ghost" style={s.profileBtn} aria-label="Account">
-              <span style={{ ...s.avatar, background: roleColor(me?.role) }}>{initials}</span>
+              <span style={{ ...s.avatar, background: roleColor(me?.roles) }}>{initials}</span>
               <Chevron open={profileOpen} />
             </button>
             {profileOpen && (
@@ -1152,11 +1159,11 @@ export default function Admin() {
                 <div style={s.overlay} onClick={() => { setProfileOpen(false); setPwOpen(false); }} />
                 <div className="g51-sheet" style={s.profileMenu}>
                   <div style={s.pmHead}>
-                    <span style={{ ...s.avatarLg, background: roleColor(me?.role) }}>{initials}</span>
+                    <span style={{ ...s.avatarLg, background: roleColor(me?.roles) }}>{initials}</span>
                     <div style={{ minWidth: 0 }}>
                       <div style={s.pmName}>{me?.name || "Account"}</div>
                       <div style={s.pmEmail}>{myEmail}</div>
-                      <span style={{ ...s.pmRole, color: roleColor(me?.role), borderColor: roleColor(me?.role) + "66", background: roleColor(me?.role) + "1c" }}>{me?.role}</span>
+                      <span style={{ ...s.pmRole, color: roleColor(me?.roles), borderColor: roleColor(me?.roles) + "66", background: roleColor(me?.roles) + "1c" }}>{(me?.roles || []).join(" · ")}</span>
                     </div>
                   </div>
                   {!pwOpen ? (
@@ -1186,7 +1193,7 @@ export default function Admin() {
             + Workshop intake
           </button>
           <button onClick={exportCsv} className="g51-btn g51-ghost" style={s.ghostBtn}>Export</button>
-          <AdminNav page="bookings" isAdmin={me?.role === "admin"} />
+          <AdminNav page="bookings" isAdmin={me?.roles?.includes("admin")} />
         </div>
       </header>
 
@@ -1298,7 +1305,7 @@ export default function Admin() {
               <label style={s.ctrl}><span style={s.ctrlLabel}>Assign to</span>
                 <select className="g51-input" value={wsForm.assignedTo} onChange={e => setWsForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>
                   <option value="">Unassigned</option>
-                  {staff.filter(p => p.role === "mechanic" || p.role === "admin").map(p => (
+                  {staff.filter(p => p.roles?.includes("mechanic") || p.roles?.includes("admin")).map(p => (
                     <option key={p.id} value={p.id}>{p.name || p.id}</option>
                   ))}
                 </select></label>
@@ -1640,15 +1647,15 @@ export default function Admin() {
                         )}
                       </div>
 
-                      {r.service_type !== "motorcycle_storage" && (me?.role === "admin" || r.assigned_to) && (
+                      {r.service_type !== "motorcycle_storage" && (me?.roles?.includes("admin") || r.assigned_to) && (
                         <div style={s.assignRow}>
                           <span style={s.assignLabel}>Assigned to</span>
-                          {me?.role === "admin" ? (
+                          {me?.roles?.includes("admin") ? (
                             <select className="g51-input" value={r.assigned_to || ""}
                               onChange={e => assignBooking(r, e.target.value)} style={s.assignSelect}>
                               <option value="">Unassigned</option>
                               {staff.map(p => (
-                                <option key={p.id} value={p.id}>{p.name || "(no name)"} · {p.role}</option>
+                                <option key={p.id} value={p.id}>{p.name || "(no name)"} · {(p.roles || []).join(", ")}</option>
                               ))}
                             </select>
                           ) : (

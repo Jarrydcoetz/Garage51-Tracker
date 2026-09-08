@@ -38,7 +38,7 @@ type ServiceEnquiry = {
   payment_intent_id: string | null; work_required: string | null;
   assigned_to: string | null;
 };
-type StaffProfile = { id: string; name: string | null; role: string };
+type StaffProfile = { id: string; name: string | null; roles: string[] };
 type SbServiceItem = {
   id: string; bike_id: string; name: string;
   interval_hours: number | null; last_done_hours: number | null;
@@ -177,7 +177,7 @@ export default function StorageBikesScreen() {
         supabase.from("sb_service_items").select("*").eq("active", true).order("created_at"),
         supabase.from("sb_service_log").select("*").order("created_at", { ascending: false }),
         supabase.from("enquiries").select("id,customer_name,phone,email,bike_details,storage_start_date,storage_end_date").eq("service_type", "motorcycle_storage"),
-        supabase.from("profiles").select("id,name,role").eq("active", true),
+        supabase.from("profiles").select("id,name,roles").eq("active", true),
       ]);
       const bikeList = (b as StorageBike[]) || [];
       setBikes(bikeList);
@@ -1447,7 +1447,7 @@ export default function StorageBikesScreen() {
                                                   <select className="g51-input" value={jobCardForm.assignedTo}
                                                     onChange={e => setJobCardForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>
                                                     <option value="">Unassigned</option>
-                                                    {profiles.filter(p => p.role === "mechanic" || p.role === "admin").map(p => (
+                                                    {profiles.filter(p => p.roles?.includes("mechanic") || p.roles?.includes("admin")).map(p => (
                                                       <option key={p.id} value={p.id}>{p.name || p.id}</option>
                                                     ))}
                                                   </select>

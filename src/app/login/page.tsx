@@ -16,13 +16,16 @@ export default function Login() {
     setError("");
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) { setLoading(false); setError(error.message); return; }
-    // Role-based landing: admins go to the overview, mechanics to the workshop
-    // queue, coaches straight into bookings.
-    const { data: prof } = await supabase.from("profiles").select("role").eq("id", data.user.id).single();
-    const role = (prof as { role: string } | null)?.role;
-    if (role === "admin") router.push("/admin/overview");
-    else if (role === "mechanic") router.push("/admin/workshop");
-    else if (role === "facilities") router.push("/admin/overview");
+    // Role-based landing: admins go to the overview, a mechanic-only account
+    // goes straight to the workshop queue. Everyone else (coaches,
+    // facilities, and anyone holding more than one role) lands on the
+    // general bookings page — it already scopes to what's assigned to them
+    // across every service type, which is more useful than picking just one
+    // role's dedicated view when someone holds several.
+    const { data: prof } = await supabase.from("profiles").select("roles").eq("id", data.user.id).single();
+    const roles = (prof as { roles: string[] } | null)?.roles || [];
+    if (roles.includes("admin")) router.push("/admin/overview");
+    else if (roles.length === 1 && roles[0] === "mechanic") router.push("/admin/workshop");
     else router.push("/admin");
   }
   return (

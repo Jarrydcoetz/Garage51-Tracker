@@ -33,7 +33,7 @@ const STATUS_COLOR: Record<string, string> = {
   queued: "#3B9EFF", in_progress: "#FFB02E", waiting_parts: "#C77B6B", completed: "#2FBF71",
 };
 
-type Profile = { id: string; name: string | null; role: string };
+type Profile = { id: string; name: string | null; roles: string[] };
 type Job = {
   id: string;
   customer_name: string;
@@ -72,7 +72,7 @@ function Chevron({ open }: { open: boolean }) {
 export default function WorkshopScreen() {
   const router = useRouter();
   const [ready, setReady] = useState(false);
-  const [myRole, setMyRole] = useState<string | null>(null);
+  const [myRoles, setMyRoles] = useState<string[]>([]);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [parts, setParts] = useState<Part[]>([]);
   const [movements, setMovements] = useState<StockMovement[]>([]);
@@ -92,10 +92,11 @@ export default function WorkshopScreen() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
-      const { data: prof } = await supabase.from("profiles").select("id, name, role").eq("id", data.session.user.id).single();
+      const { data: prof } = await supabase.from("profiles").select("id, name, roles").eq("id", data.session.user.id).single();
       const me = prof as Profile | null;
-      if (!me || (me.role !== "mechanic" && me.role !== "admin")) { router.replace("/admin"); return; }
-      setMyRole(me.role);
+      const meRoles = me?.roles || [];
+      if (!me || (!meRoles.includes("mechanic") && !meRoles.includes("admin"))) { router.replace("/admin"); return; }
+      setMyRoles(meRoles);
 
       const [{ data: jobsData }, { data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
         supabase.from("enquiries")
@@ -111,7 +112,7 @@ export default function WorkshopScreen() {
       ]);
 
       const all = (jobsData as Job[]) || [];
-      const scoped = me.role === "admin" ? all : all.filter(j => j.assigned_to === me.id);
+      const scoped = meRoles.includes("admin") ? all : all.filter(j => j.assigned_to === me.id);
       setJobs(scoped.filter(j => j.stage !== "cancelled" && j.stage !== "lost"));
       setParts((partsData as Part[]) || []);
       setMovements((movementsData as StockMovement[]) || []);
@@ -241,7 +242,7 @@ export default function WorkshopScreen() {
 
       <header style={s.header}>
         <img src="/garage51-logo.png" alt="Garage51" style={s.logo} />
-        <div style={{ position: "relative" }}><AdminNav page="workshop" isAdmin={myRole === 'admin'} /></div>
+        <div style={{ position: "relative" }}><AdminNav page="workshop" isAdmin={myRoles.includes('admin')} /></div>
       </header>
 
       

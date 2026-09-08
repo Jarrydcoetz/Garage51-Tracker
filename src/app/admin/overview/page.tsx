@@ -15,7 +15,7 @@ type BikeLite = { id: string; engine_hours: number };
 type StorageBikeLite = { id: string; engine_hours: number; storage_end_date: string | null; client_phone: string | null };
 type FleetDueLite = { bike_id: string; interval_hours: number; hours_at_last_done: number };
 type StorageDueLite = { storage_bike_id: string; interval_hours: number; hours_at_last_done: number };
-type StaffLite = { id: string; role: string };
+type StaffLite = { id: string; roles: string[] };
 
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
 
@@ -61,10 +61,10 @@ export default function OverviewScreen() {
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
       if (!data.session) { router.replace("/login"); return; }
-      const { data: prof } = await supabase.from("profiles").select("id, name, role").eq("id", data.session.user.id).single();
-      const me = prof as { id: string; name: string | null; role: string } | null;
+      const { data: prof } = await supabase.from("profiles").select("id, name, roles").eq("id", data.session.user.id).single();
+      const me = prof as { id: string; name: string | null; roles: string[] } | null;
       // Revenue and pipeline data lives here — admin only, same boundary as the Staff page.
-      if (!me || me.role !== "admin") { router.replace("/admin"); return; }
+      if (!me || !me.roles?.includes("admin")) { router.replace("/admin"); return; }
       setMeName(me.name);
 
       const [
@@ -81,7 +81,7 @@ export default function OverviewScreen() {
         supabase.from("fleet_service_due").select("bike_id, interval_hours, hours_at_last_done"),
         supabase.from("storage_bikes").select("id, engine_hours, storage_end_date, client_phone").eq("active", true),
         supabase.from("storage_bikes_service_due").select("storage_bike_id, interval_hours, hours_at_last_done"),
-        supabase.from("profiles").select("id, role").eq("active", true),
+        supabase.from("profiles").select("id, roles").eq("active", true),
       ]);
 
       setEnquiries((enqData as EnquiryLite[]) || []);
@@ -150,7 +150,8 @@ export default function OverviewScreen() {
   ]).size;
 
   // Staff
-  const staffByRole = (role: string) => staff.filter(p => p.role === role).length;
+  // A staff member with more than one role counts toward each of their roles.
+  const staffByRole = (role: string) => staff.filter(p => p.roles?.includes(role)).length;
 
   return (
     <main style={s.page}>

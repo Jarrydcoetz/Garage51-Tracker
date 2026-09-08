@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { hasRole } from "./roles";
 
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SUPABASE_ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -27,11 +28,11 @@ export async function verifyAdmin(
 
   const { data: prof } = await client
     .from("profiles")
-    .select("role")
+    .select("roles")
     .eq("id", user.id)
     .single();
 
-  return prof?.role === "admin" ? user.id : null;
+  return hasRole(prof?.roles, "admin") ? user.id : null;
 }
 
 /** Convenience: return a 401 JSON response */
