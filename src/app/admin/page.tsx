@@ -78,6 +78,7 @@ type Enquiry = {
 };
 
 type ClientLite = { id: string; name: string | null; whatsapp: string | null; zoho_contact_id: string | null };
+type ClientBike = { label: string; make: string | null; model: string | null; year: string | null; vin: string | null };
 type Profile = { id: string; name: string | null; role: string; active: boolean; whatsapp: string | null };
 
 const RED = "#ED1C24";
@@ -388,13 +389,14 @@ export default function Admin() {
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK });
   const [clientSearch, setClientSearch] = useState("");
-  const [clientList, setClientList] = useState<{ name: string; phone: string; email: string | null; bikes: string[] }[]>([]);
+  const [clientList, setClientList] = useState<{ name: string; phone: string; email: string | null; bikes: ClientBike[] }[]>([]);
   const [showClientDrop, setShowClientDrop] = useState(false);
-  const [clientBikes, setClientBikes] = useState<string[]>([]);
+  const [clientBikes, setClientBikes] = useState<ClientBike[]>([]);
   // Workshop intake form
   const [wsOpen, setWsOpen] = useState(false);
   const [wsClientSearch, setWsClientSearch] = useState("");
   const [wsShowDrop, setWsShowDrop] = useState(false);
+  const [wsClientBikes, setWsClientBikes] = useState<ClientBike[]>([]);
   const [wsForm, setWsForm] = useState({ client: "", phone: "", email: "", make: "", model: "", year: "", vin: "", work: "", assignedTo: "", amount: "", date: "" });
   const [creatingWs, setCreatingWs] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
@@ -450,7 +452,7 @@ export default function Admin() {
         supabase.from("storage_bikes").select("client_name, client_phone, client_email, make, model, year, vin, reference_number").eq("active", true),
       ]);
       const seen = new Set<string>();
-      const merged: { name: string; phone: string; email: string | null; bikes: string[] }[] = [];
+      const merged: { name: string; phone: string; email: string | null; bikes: ClientBike[] }[] = [];
       // Clients table first (canonical)
       for (const c of (cliData || []) as { name: string | null; whatsapp: string | null; email: string | null }[]) {
         const phone = (c.whatsapp || "").trim();
@@ -458,18 +460,22 @@ export default function Admin() {
         seen.add(phone);
         merged.push({ name: c.name || "", phone, email: c.email, bikes: [] });
       }
-      // Storage bike owners — attach bike make/model labels per phone
+      // Storage bike owners — attach full bike records (not just a label) per
+      // phone, so callers can auto-fill make/model/year/VIN individually
+      // instead of re-parsing a joined string.
       const sbList = (sbContacts || []) as { client_name: string | null; client_phone: string | null; client_email: string | null; make: string | null; model: string | null; year: string | null; vin: string | null; reference_number: string | null }[];
       for (const b of sbList) {
         const phone = (b.client_phone || "").trim();
         if (!phone) continue;
         const bikeLabel = [b.make, b.model, b.year].filter(Boolean).join(" ");
+        if (!bikeLabel) continue;
+        const bike: ClientBike = { label: bikeLabel, make: b.make, model: b.model, year: b.year, vin: b.vin };
         const existing = merged.find(m => m.phone === phone);
         if (existing) {
-          if (bikeLabel && !existing.bikes.includes(bikeLabel)) existing.bikes.push(bikeLabel);
+          if (!existing.bikes.some(bk => bk.label === bikeLabel)) existing.bikes.push(bike);
         } else {
           seen.add(phone);
-          merged.push({ name: b.client_name || "", phone, email: b.client_email, bikes: bikeLabel ? [bikeLabel] : [] });
+          merged.push({ name: b.client_name || "", phone, email: b.client_email, bikes: [bike] });
         }
       }
       // Enquiry history (deduplicated)
@@ -1053,6 +1059,7 @@ export default function Admin() {
     setRows(prev => [data as Enquiry, ...prev]);
     setWsForm({ client: "", phone: "", email: "", make: "", model: "", year: "", vin: "", work: "", assignedTo: "", amount: "", date: "" });
     setWsClientSearch("");
+    setWsClientBikes([]);
     setWsOpen(false);
     setCreatingWs(false);
     showToast(`Workshop job created — ${wsForm.client.trim()} added to queue.`);
@@ -1219,13 +1226,18 @@ export default function Admin() {
                       <button key={c.phone} onMouseDown={() => {
                         setWsForm(f => ({
                           ...f, client: c.name, phone: c.phone, email: c.email || "",
-                          ...(c.bikes.length === 1 ? { make: c.bikes[0].split(" ")[0] || "", model: c.bikes[0].split(" ").slice(1, -1).join(" ") || "", year: c.bikes[0].split(" ").at(-1) || "" } : {}),
+                          // Auto-fill bike fields only when there's exactly one on record —
+                          // with more than one, the picker below lets the admin choose.
+                          ...(c.bikes.length === 1
+                            ? { make: c.bikes[0].make || "", model: c.bikes[0].model || "", year: c.bikes[0].year || "", vin: c.bikes[0].vin || "" }
+                            : {}),
                         }));
+                        setWsClientBikes(c.bikes.length > 1 ? c.bikes : []);
                         setWsClientSearch(c.name); setWsShowDrop(false);
                       }}
                         style={{ display: "flex", flexDirection: "column", width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid #2A2623", padding: "9px 14px", cursor: "pointer", color: "#F4F2EF", fontFamily: "inherit" }}>
                         <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "(no name)"}</span>
-                        <span style={{ fontSize: 12, color: "#9A938D" }}>{c.phone}{c.bikes.length > 0 ? ` · ${c.bikes.join(", ")}` : ""}</span>
+                        <span style={{ fontSize: 12, color: "#9A938D" }}>{c.phone}{c.bikes.length > 0 ? ` · ${c.bikes.map(b => b.label).join(", ")}` : ""}</span>
                       </button>
                     ))}
                   </div>
@@ -1242,6 +1254,26 @@ export default function Admin() {
               <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
                 <input className="g51-input" value={wsForm.email} onChange={e => setWsForm(f => ({ ...f, email: e.target.value }))} style={s.input} /></label>
             </div>
+
+            {/* Multi-bike picker: shown when the selected client has more than one bike on record */}
+            {wsClientBikes.length > 1 && (
+              <div style={{ marginBottom: 10, background: "#1B1816", border: "1px solid #D85A3044", borderRadius: 9, padding: "8px 12px" }}>
+                <div style={{ fontSize: 11, color: "#D85A30", fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>
+                  Which bike is this job for?
+                </div>
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  {wsClientBikes.map(bike => {
+                    const isSel = wsForm.make === (bike.make || "") && wsForm.model === (bike.model || "") && wsForm.year === (bike.year || "");
+                    return (
+                      <button key={bike.label} onClick={() => setWsForm(f => ({ ...f, make: bike.make || "", model: bike.model || "", year: bike.year || "", vin: bike.vin || "" }))}
+                        style={{ background: isSel ? "#D85A3022" : "transparent", border: `1px solid ${isSel ? "#D85A30" : "#3A352F"}`, borderRadius: 8, color: isSel ? "#D85A30" : "#B5AEA8", fontSize: 13, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", fontWeight: isSel ? 700 : 400 }}>
+                        {bike.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Bike details */}
             <div style={s.controls}>
@@ -1320,7 +1352,7 @@ export default function Admin() {
                           phone: c.phone,
                           email: c.email || "",
                           // Auto-fill bike details if exactly one storage bike on record
-                          ...(c.bikes.length === 1 ? { bike_details: c.bikes[0] } : {}),
+                          ...(c.bikes.length === 1 ? { bike_details: c.bikes[0].label } : {}),
                         }));
                         setClientBikes(c.bikes.length > 1 ? c.bikes : []);
                         setClientSearch(c.name);
@@ -1330,7 +1362,7 @@ export default function Admin() {
                         <span style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "(no name)"}</span>
                         <span style={{ fontSize: 12, color: "#9A938D", marginTop: 2 }}>{c.phone}{c.email ? ` · ${c.email}` : ""}</span>
                         {c.bikes.length > 0 && (
-                          <span style={{ fontSize: 11.5, color: "#3B9EFF", marginTop: 3 }}>🏍 {c.bikes.join(" · ")}</span>
+                          <span style={{ fontSize: 11.5, color: "#3B9EFF", marginTop: 3 }}>🏍 {c.bikes.map(b => b.label).join(" · ")}</span>
                         )}
                       </button>
                     ))}
@@ -1353,9 +1385,9 @@ export default function Admin() {
                 </div>
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                   {clientBikes.map(bike => (
-                    <button key={bike} onClick={() => set("bike_details", bike)}
-                      style={{ background: form.bike_details === bike ? "#3B9EFF22" : "transparent", border: `1px solid ${form.bike_details === bike ? "#3B9EFF" : "#3A352F"}`, borderRadius: 8, color: form.bike_details === bike ? "#3B9EFF" : "#B5AEA8", fontSize: 13, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", fontWeight: form.bike_details === bike ? 700 : 400 }}>
-                      {bike}
+                    <button key={bike.label} onClick={() => set("bike_details", bike.label)}
+                      style={{ background: form.bike_details === bike.label ? "#3B9EFF22" : "transparent", border: `1px solid ${form.bike_details === bike.label ? "#3B9EFF" : "#3A352F"}`, borderRadius: 8, color: form.bike_details === bike.label ? "#3B9EFF" : "#B5AEA8", fontSize: 13, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", fontWeight: form.bike_details === bike.label ? 700 : 400 }}>
+                      {bike.label}
                     </button>
                   ))}
                 </div>
