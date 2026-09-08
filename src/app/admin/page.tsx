@@ -116,8 +116,11 @@ const SESSION_DURATION_MINUTES = 120;
 const STORAGE_RENEWAL_WINDOW_DAYS = 7;
 const cap = (x: string) => x.charAt(0).toUpperCase() + x.slice(1);
 const aed = (n: number) => "AED " + (Number(n) || 0).toLocaleString();
+const BUSINESS_UNIT_COLOR: Record<string, string> = {
+  workshop: "#D85A30", academy: "#14B8A6", desert_tour: "#D4A017",
+};
 const dotColor = (k: string) =>
-  STATE_COLOR[k] || (k === "needs_payment" ? PAID_COLOR : k === "sent" ? "#2FBF71" : k === "conflict" ? "#FF6B6B" : "#9A938D");
+  STATE_COLOR[k] || BUSINESS_UNIT_COLOR[k] || (k === "needs_payment" ? PAID_COLOR : k === "sent" ? "#2FBF71" : k === "conflict" ? "#FF6B6B" : "#9A938D");
 
 const FILTER_OPTS = [
   { key: "all", label: "All bookings" },
@@ -131,6 +134,10 @@ const FILTER_OPTS = [
   { key: "sent", label: "Payment link sent" },
   { key: "conflict", label: "Has conflict" },
   { key: "storage_due", label: "Storage renewal/removal due" },
+  // Business unit — storage isn't included here, it has its own dedicated page.
+  { key: "workshop", label: "Workshop" },
+  { key: "academy", label: "Academy" },
+  { key: "desert_tour", label: "Desert Tour" },
 ];
 
 const BLANK = {
@@ -1084,6 +1091,7 @@ export default function Admin() {
     if (f === "sent") return !!r.payment_link;
     if (f === "conflict") return bookingHasConflict(rows, r);
     if (f === "storage_due") return storageRenewalStatus(r) !== null;
+    if (f === "workshop" || f === "academy" || f === "desert_tour") return r.service_type === f;
     return bookingState(r) === f;
   };
 
