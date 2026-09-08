@@ -40,6 +40,7 @@ type Job = {
   bike_details: string | null;
   bike_year: string | null;
   bike_hours: string | null;
+  vin: string | null;
   work_required: string | null;
   job_status: string | null;
   labour_hours: number | null;
@@ -98,7 +99,7 @@ export default function WorkshopScreen() {
 
       const [{ data: jobsData }, { data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
         supabase.from("enquiries")
-          .select("id, customer_name, bike_details, bike_year, bike_hours, work_required, job_status, labour_hours, estimated_value, assigned_to, stage")
+          .select("id, customer_name, bike_details, bike_year, bike_hours, vin, work_required, job_status, labour_hours, estimated_value, assigned_to, stage")
           .eq("service_type", "workshop")
           .not("job_status", "is", null)
           .order("created_at", { ascending: true }),
@@ -282,6 +283,7 @@ export default function WorkshopScreen() {
                         {job.bike_details || "No bike details"}{job.bike_year ? ` · ${job.bike_year}` : ""}
                         {job.job_status === "completed" && job.estimated_value ? ` · ${aed(job.estimated_value)}` : ""}
                       </div>
+                      {job.vin && <div style={s.vinTag}>VIN: {job.vin}</div>}
                     </div>
                     <Chevron open={open} />
                   </div>
@@ -400,6 +402,7 @@ const s: Record<string, CSSProperties> = {
   nameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   jobName: { fontWeight: 700, fontSize: 16 },
   jobSub: { fontSize: 13, color: "#9A938D", marginTop: 3 },
+  vinTag: { fontSize: 11.5, color: "#6F6862", marginTop: 2, fontFamily: "ui-monospace, monospace" },
   pill: { fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", border: "1px solid", borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" },
   cardBody: { padding: "0 17px 17px", borderTop: "1px solid #2A2623", marginTop: 4, paddingTop: 14 },
   box: { border: "1px solid #2F2B27", borderRadius: 9, padding: "10px 12px", marginBottom: 14, background: "#1B1816" },

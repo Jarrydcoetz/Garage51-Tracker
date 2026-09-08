@@ -60,6 +60,7 @@ type Enquiry = {
   rider_count: number | null;
   bike_year: string | null;
   bike_hours: string | null;
+  vin: string | null;
   storage_start_date: string | null;
   storage_end_date: string | null;
   bike_category: string | null;
@@ -539,6 +540,7 @@ export default function Admin() {
       work_required: row.work_required || null,
       bike_year: row.bike_year || null,
       bike_hours: row.bike_hours || null,
+      vin: row.vin || null,
       storage_start_date: row.storage_start_date || null,
       storage_end_date: row.storage_end_date || null,
       bike_category: row.bike_category || null,
@@ -1045,6 +1047,7 @@ export default function Admin() {
       phone: wsForm.phone.trim(),
       email: wsForm.email.trim() || null,
       bike_details: bikeDetails || null,
+      vin: wsForm.vin.trim() || null,
       work_required: wsForm.work.trim(),
       assigned_to: wsForm.assignedTo || null,
       estimated_value: Number(wsForm.amount) || 0,
@@ -1052,7 +1055,7 @@ export default function Admin() {
       stage: "booked",
       job_status: "queued",
       source: "internal",
-      notes: wsForm.vin.trim() ? `VIN: ${wsForm.vin.trim()}` : "",
+      notes: "",
       sessions_total: 0,
     }).select("*, sessions(*), client:clients(id,name,whatsapp,zoho_contact_id)").single();
     if (error || !data) { showToast(error?.message || "Could not create workshop job.", "err"); setCreatingWs(false); return; }
@@ -1798,6 +1801,8 @@ export default function Admin() {
                               <input className="g51-input" value={r.bike_year || ""} onChange={e => editStaged(r.id, { bike_year: e.target.value })} style={s.input} /></label>
                             <label style={s.ctrl}><span style={s.ctrlLabel}>Hours / mileage</span>
                               <input className="g51-input" value={r.bike_hours || ""} onChange={e => editStaged(r.id, { bike_hours: e.target.value })} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>VIN</span>
+                              <input className="g51-input" value={r.vin || ""} onChange={e => editStaged(r.id, { vin: e.target.value })} style={s.input} /></label>
                           </div>
                           <label style={s.ctrl}><span style={s.ctrlLabel}>Work required</span>
                             <textarea className="g51-input" value={r.work_required || ""} onChange={e => editStaged(r.id, { work_required: e.target.value })} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
