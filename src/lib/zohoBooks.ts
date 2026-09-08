@@ -71,6 +71,66 @@ function isValidEmail(value: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
+type ZohoContactRecord = { contact_id: string; contact_name?: string; email?: string; phone?: string };
+
+function normalizePhoneDigits(p: string): string {
+  return (p || "").replace(/\D/g, "");
+}
+// Compares normalized digit strings, tolerant of a country-code prefix
+// mismatch (e.g. "0501234567" vs "971501234567") by also checking whether
+// one ends with the other's last 9 digits — the local-number length for UAE
+// mobiles regardless of which prefix form got stored where.
+function phonesMatch(a: string, b: string): boolean {
+  const da = normalizePhoneDigits(a);
+  const db = normalizePhoneDigits(b);
+  if (!da || !db) return false;
+  if (da === db) return true;
+  const tailLen = 9;
+  return da.length >= tailLen && db.length >= tailLen && da.slice(-tailLen) === db.slice(-tailLen);
+}
+
+// Looks for an existing Zoho contact before creating one — Zoho's contact
+// list only supports "_contains" (substring) filters, so every candidate is
+// re-checked here for a real exact match before being accepted. Tried in
+// order of reliability: email, then phone, then exact name as a last
+// resort (names alone can collide, so only used when nothing else matched).
+async function findZohoContact(input: ZohoContactInput): Promise<string | null> {
+  const cleanEmail = input.email && isValidEmail(input.email) ? input.email.trim() : null;
+  if (cleanEmail) {
+    const data = await zohoFetch(`/contacts?email_contains=${encodeURIComponent(cleanEmail)}`);
+    const match = ((data.contacts || []) as ZohoContactRecord[])
+      .find(c => (c.email || "").trim().toLowerCase() === cleanEmail.toLowerCase());
+    if (match) return match.contact_id;
+  }
+  if (input.phone?.trim()) {
+    const digits = normalizePhoneDigits(input.phone);
+    if (digits) {
+      const data = await zohoFetch(`/contacts?phone_contains=${encodeURIComponent(digits.slice(-9))}`);
+      const match = ((data.contacts || []) as ZohoContactRecord[])
+        .find(c => phonesMatch(c.phone || "", input.phone || ""));
+      if (match) return match.contact_id;
+    }
+  }
+  if (input.name?.trim()) {
+    const data = await zohoFetch(`/contacts?contact_name_contains=${encodeURIComponent(input.name.trim())}`);
+    const match = ((data.contacts || []) as ZohoContactRecord[])
+      .find(c => (c.contact_name || "").trim().toLowerCase() === input.name.trim().toLowerCase());
+    if (match) return match.contact_id;
+  }
+  return null;
+}
+
+// Reuses an existing Zoho contact when one genuinely matches (by email,
+// then phone, then exact name), only creating a new one when nothing does.
+// Use this instead of createZohoContact directly for anything reachable
+// more than once for the same person — it's what stops every invoice run
+// from spawning a fresh duplicate contact in Zoho.
+export async function findOrCreateZohoContact(input: ZohoContactInput): Promise<string> {
+  const existing = await findZohoContact(input);
+  if (existing) return existing;
+  return createZohoContact(input);
+}
+
 // Creates a new Zoho contact and returns its ID. Sends the email/phone in
 // both the shapes Zoho's contact object can plausibly expect (top-level and
 // nested under contact_persons) — extra/unused fields are harmless, a

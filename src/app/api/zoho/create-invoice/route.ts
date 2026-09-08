@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { verifyAdmin, unauthorised } from "../../../../lib/api-auth";
-import { createZohoContact, createZohoInvoice, invoiceWebUrl } from "../../../../lib/zohoBooks";
+import { findOrCreateZohoContact, createZohoInvoice, invoiceWebUrl } from "../../../../lib/zohoBooks";
+
+type LineItemInput = { name: string; description?: string | null; rate: number; quantity?: number };
 
 type Body = {
   zoho_contact_id?: string | null;
@@ -10,6 +12,11 @@ type Body = {
   line_item_name?: string;
   line_item_description?: string | null;
   amount?: number;
+  // Multi-line-item form — one invoice covering several things at once
+  // (e.g. one invoice for two bikes' storage renewals for the same client).
+  // When present this takes priority over the single line_item_*/amount
+  // fields above.
+  line_items?: LineItemInput[];
 };
 
 export async function POST(req: Request) {
@@ -24,27 +31,27 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  if (!payload.customer_name || !payload.amount) {
+  const lineItems: LineItemInput[] = Array.isArray(payload.line_items) && payload.line_items.length > 0
+    ? payload.line_items
+    : payload.amount
+    ? [{ name: payload.line_item_name || "Service", description: payload.line_item_description, rate: payload.amount }]
+    : [];
+
+  if (!payload.customer_name || lineItems.length === 0) {
     return NextResponse.json({ error: "Missing customer name or amount." }, { status: 400 });
   }
 
   try {
     let contactId = payload.zoho_contact_id || null;
     if (!contactId) {
-      contactId = await createZohoContact({
+      contactId = await findOrCreateZohoContact({
         name: payload.customer_name,
         email: payload.email,
         phone: payload.phone,
       });
     }
 
-    const { invoiceId, invoiceNumber } = await createZohoInvoice(contactId, [
-      {
-        name: payload.line_item_name || "Service",
-        description: payload.line_item_description,
-        rate: payload.amount,
-      },
-    ]);
+    const { invoiceId, invoiceNumber } = await createZohoInvoice(contactId, lineItems);
 
     return NextResponse.json({
       zoho_contact_id: contactId,

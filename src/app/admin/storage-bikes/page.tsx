@@ -163,6 +163,9 @@ export default function StorageBikesScreen() {
   const [profiles, setProfiles] = useState<StaffProfile[]>([]);
   const [serviceEnquiries, setServiceEnquiries] = useState<Record<string, ServiceEnquiry>>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-bike "date before I started previewing a package" — lets selectPackage
+  // recompute from a stable baseline when switching between package lengths.
+  const packageBaseDateRef = useRef<Record<string, string | null>>({});
 
   useEffect(() => {
     supabase.auth.getSession().then(async ({ data }) => {
@@ -402,18 +405,29 @@ export default function StorageBikesScreen() {
 
   // ---- renewal helpers ----
   function selectPackage(bike: StorageBike, months: number) {
-    // Only record which package is selected — nothing is written to the database
-    // until sendRenewalWhatsApp confirms the action. This keeps the flow clean:
-    // the admin can change their mind, check the draft, and restart without any
-    // lingering state from a previous selection.
+    // Base the computed renewal date off the bike's date as it stood before
+    // any package preview started, so switching between package lengths
+    // (e.g. 3mo -> 6mo) recomputes from that same starting point instead of
+    // compounding on top of whatever the previous preview already wrote.
+    if (selectedPkg[bike.id] === undefined) {
+      packageBaseDateRef.current[bike.id] = bike.storage_end_date || bike.storage_start_date;
+    }
+    const baseDate = packageBaseDateRef.current[bike.id] ?? null;
     setSelectedPkg(prev => ({ ...prev, [bike.id]: months }));
     // Reset the sent indicator so the flow can start fresh with the new package
     setWaSent(prev => { const n = new Set(prev); n.delete(bike.id); return n; });
+    // Auto-populate the renewal date for this package, local-only — nothing
+    // hits the database until an actual action (invoice, WhatsApp, manual
+    // paid) confirms it, so idly comparing package lengths can't silently
+    // push a bike's real renewal date into the future. It's still a normal
+    // editable field afterward: typing over it saves as usual.
+    editBikeLocal(bike.id, { storage_end_date: addMonths(baseDate, months) });
   }
 
   function resetBikePackage(bikeId: string) {
     setSelectedPkg(prev => { const n = { ...prev }; delete n[bikeId]; return n; });
     setWaSent(prev => { const n = new Set(prev); n.delete(bikeId); return n; });
+    delete packageBaseDateRef.current[bikeId];
   }
   function buildRenewalMsg(group: ClientGroup, bikes: StorageBike[], paymentLinks: Record<string, string> = {}) {
     const name = pendingClient[group.key]?.name || group.name || "there";
@@ -695,7 +709,10 @@ export default function StorageBikesScreen() {
   async function createRenewalInvoice(bike: StorageBike) {
     const months = selectedPkg[bike.id];
     if (!months) { showToast("Select a package first.", "err"); return; }
-    const newEnd = addMonths(bike.storage_end_date || bike.storage_start_date, months);
+    // storage_end_date already reflects the auto-populated preview (or a
+    // manual override on top of it) from selectPackage — fall back to a
+    // fresh computation only if that's somehow missing.
+    const newEnd = bike.storage_end_date || addMonths(bike.storage_start_date, months);
     const amount = (bike.monthly_rate || 0) * months;
     const now = new Date().toISOString();
 
@@ -740,6 +757,68 @@ export default function StorageBikesScreen() {
       }
     } else {
       showToast(`Renewed to ${fmtDate(newEnd)} ✓`);
+    }
+  }
+
+  // One Zoho invoice covering several of a client's bikes at once — e.g.
+  // two bikes renewing on the same date. Each bike still gets its own
+  // storage_end_date/renewal_invoiced_at update; only the Zoho side is
+  // combined into a single invoice with one line item per bike.
+  async function createCombinedRenewalInvoice(group: ClientGroup, targetBikes: StorageBike[]) {
+    const billable = targetBikes.filter(b => selectedPkg[b.id]);
+    if (billable.length < 2) { showToast("Select a renewal period for at least two bikes first.", "err"); return; }
+    const now = new Date().toISOString();
+
+    const lineItems = billable.map(bike => {
+      const months = selectedPkg[bike.id];
+      return {
+        name: "Motorcycle Storage",
+        description: `${months} month renewal — ${bikePrimaryLabel(bike)}${bike.reference_number ? ` (${bike.reference_number})` : ""}`,
+        rate: (bike.monthly_rate || 0) * months,
+      };
+    });
+    const totalAmount = lineItems.reduce((sum, li) => sum + li.rate, 0);
+
+    for (const bike of billable) {
+      const months = selectedPkg[bike.id];
+      const newEnd = bike.storage_end_date || addMonths(bike.storage_start_date, months);
+      await supabase.from("storage_bikes").update({
+        storage_end_date: newEnd,
+        renewal_invoiced_at: now,
+        renewal_paid_at: null,
+        renewal_payment_intent_id: null,
+      }).eq("id", bike.id);
+      editBikeLocal(bike.id, {
+        storage_end_date: newEnd,
+        renewal_invoiced_at: now,
+        renewal_paid_at: null,
+        renewal_payment_intent_id: null,
+      });
+    }
+    billable.forEach(bike => resetBikePackage(bike.id));
+
+    if (totalAmount > 0) {
+      try {
+        const res = await fetch("/api/zoho/create-invoice", {
+          method: "POST", headers: { "Content-Type": "application/json", ...(await supabase.auth.getSession().then(r => r.data.session?.access_token ? { Authorization: `Bearer ${r.data.session.access_token}` } : {}) as Record<string, string>) },
+          body: JSON.stringify({
+            customer_name: group.name,
+            phone: group.phone || null,
+            email: group.email || null,
+            line_items: lineItems,
+          }),
+        });
+        const json = await res.json();
+        if (json.zoho_invoice_number) {
+          showToast(`Invoice ${json.zoho_invoice_number} created for ${billable.length} bikes · AED ${totalAmount.toLocaleString()} ✓`);
+        } else {
+          showToast(`Renewed ${billable.length} bikes ✓ — Zoho: ${json.error || "could not create invoice"}`);
+        }
+      } catch {
+        showToast(`Renewed ${billable.length} bikes ✓ (Zoho unavailable)`);
+      }
+    } else {
+      showToast(`Renewed ${billable.length} bikes ✓`);
     }
   }
   async function createRenewalPaymentLink(bike: StorageBike) {
@@ -1026,6 +1105,14 @@ export default function StorageBikesScreen() {
                         {group.bikes.filter(b => ["overdue", "due_soon"].includes(renewalStatus(b.storage_end_date, b.renewal_paid_at))).every(b => waSent.has(b.id))
                           ? "✓ Sent"
                           : group.bikes.length > 1 ? "WhatsApp all + payment links" : "WhatsApp + payment link"}
+                      </button>
+                    )}
+                    {/* Combined invoice — appears once a renewal period is picked for 2+ of this client's bikes */}
+                    {group.bikes.filter(b => selectedPkg[b.id]).length >= 2 && (
+                      <button onClick={e => { e.stopPropagation(); createCombinedRenewalInvoice(group, group.bikes.filter(b => selectedPkg[b.id])); }}
+                        className="g51-btn g51-ghost"
+                        style={{ ...s.actionBtn, color: GOLD, borderColor: GOLD + "66", background: GOLD + "11", flexShrink: 0 }}>
+                        🧾 Create combined invoice — {group.bikes.filter(b => selectedPkg[b.id]).length} bikes
                       </button>
                     )}
                     <Chevron open={isGroupOpen} />
