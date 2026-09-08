@@ -651,8 +651,8 @@ export default function StorageBikesScreen() {
         });
         const json = await res.json();
         invoiceRef = json.zoho_invoice_number || null;
-        showToast(invoiceRef ? `Invoice ${invoiceRef} created ✓` : `Invoice recorded (Zoho: ${json.error || "unavailable"})`);
-      } catch { showToast("Invoice recorded — Zoho unavailable."); }
+        showToast(invoiceRef ? `Invoice ${invoiceRef} created ✓` : `Invoice recorded (Zoho: ${json.error || "unavailable"})`, invoiceRef ? "ok" : "err");
+      } catch { showToast("Invoice recorded — Zoho unavailable.", "err"); }
     }
 
     // 2. Write service log entry — this is the permanent audit record.
@@ -751,10 +751,10 @@ export default function StorageBikesScreen() {
         if (json.zoho_invoice_number) {
           showToast(`Invoice ${json.zoho_invoice_number} created · renewed to ${fmtDate(newEnd)} ✓`);
         } else {
-          showToast(`Renewed to ${fmtDate(newEnd)} ✓ — Zoho: ${json.error || "could not create invoice"}`);
+          showToast(`Renewed to ${fmtDate(newEnd)} ✓ — Zoho: ${json.error || "could not create invoice"}`, "err");
         }
       } catch {
-        showToast(`Renewed to ${fmtDate(newEnd)} ✓ (Zoho unavailable)`);
+        showToast(`Renewed to ${fmtDate(newEnd)} ✓ (Zoho unavailable)`, "err");
       }
     } else {
       showToast(`Renewed to ${fmtDate(newEnd)} ✓`);
@@ -813,10 +813,10 @@ export default function StorageBikesScreen() {
         if (json.zoho_invoice_number) {
           showToast(`Invoice ${json.zoho_invoice_number} created for ${billable.length} bikes · AED ${totalAmount.toLocaleString()} ✓`);
         } else {
-          showToast(`Renewed ${billable.length} bikes ✓ — Zoho: ${json.error || "could not create invoice"}`);
+          showToast(`Renewed ${billable.length} bikes ✓ — Zoho: ${json.error || "could not create invoice"}`, "err");
         }
       } catch {
-        showToast(`Renewed ${billable.length} bikes ✓ (Zoho unavailable)`);
+        showToast(`Renewed ${billable.length} bikes ✓ (Zoho unavailable)`, "err");
       }
     } else {
       showToast(`Renewed ${billable.length} bikes ✓`);
