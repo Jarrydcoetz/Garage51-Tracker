@@ -36,6 +36,19 @@ export type CalendarSessionInput = {
   durationMinutes?: number; // defaults to 120 (2 hours) — sessions normally carry their own real value now
 };
 
+export type CalendarTaskInput = {
+  taskId: string;
+  title: string;
+  description?: string | null;
+  category?: string | null;
+  linkedLabel?: string | null;
+  scheduledAt: string | null; // ISO string, or null = unscheduled
+  durationMinutes?: number; // defaults to 60
+  googleEventId: string | null;
+  assigneeNames?: string[];
+  primaryAssigneeId?: string | null; // drives the deterministic event color
+};
+
 export type CalendarEnquiryInput = {
   enquiryId: string;
   customerName: string;
@@ -112,6 +125,34 @@ function shouldRemoveFromCalendar(session: CalendarSessionInput) {
   return !session.scheduledAt || session.status === "cancelled" || session.status === "no_show";
 }
 
+function buildTaskEventBody(task: CalendarTaskInput) {
+  const start = new Date(task.scheduledAt as string);
+  const minutes = task.durationMinutes ?? 60;
+  const end = new Date(start.getTime() + minutes * 60000);
+
+  const descriptionParts: string[] = [];
+  if (task.description) descriptionParts.push(task.description);
+  if (task.linkedLabel) descriptionParts.push(`Linked to: ${task.linkedLabel}`);
+  if (task.assigneeNames && task.assigneeNames.length > 0) {
+    descriptionParts.push(`Assigned to: ${task.assigneeNames.join(", ")}`);
+  }
+
+  const assigneeSuffix = task.assigneeNames && task.assigneeNames.length > 0
+    ? ` · ${task.assigneeNames.join(", ")}`
+    : "";
+
+  return {
+    summary: `${task.title}${assigneeSuffix}`,
+    description: descriptionParts.join("\n"),
+    start: { dateTime: start.toISOString() },
+    end: { dateTime: end.toISOString() },
+    colorId: task.primaryAssigneeId ? colorIdForStaff(task.primaryAssigneeId) : undefined,
+    extendedProperties: {
+      private: { taskId: task.taskId },
+    },
+  };
+}
+
 function isNotFound(err: unknown) {
   const e = err as { code?: number; response?: { status?: number } };
   return e?.code === 404 || e?.response?.status === 404;
@@ -154,6 +195,48 @@ export async function syncSessionEvent(
       return data.id ?? session.googleEventId;
     } catch (err) {
       // Event may have been deleted directly in Calendar — fall through and recreate it.
+      if (!isNotFound(err)) throw err;
+    }
+  }
+
+  const { data } = await calendar.events.insert({ calendarId, requestBody });
+  return data.id ?? null;
+}
+
+/**
+ * Creates, updates, or removes the Google Calendar event for a task, based
+ * on its current scheduled_at. Returns the resulting Google event ID, or
+ * null if there is no event (removed, or never scheduled). Unlike sessions,
+ * this isn't called automatically on every edit — it's triggered by an
+ * explicit "push to calendar" action, since a task's schedule is optional
+ * and shouldn't silently start creating calendar events.
+ */
+export async function syncTaskEvent(task: CalendarTaskInput): Promise<string | null> {
+  const calendar = getCalendar();
+  const calendarId = getCalendarId();
+
+  if (!task.scheduledAt) {
+    if (task.googleEventId) {
+      try {
+        await calendar.events.delete({ calendarId, eventId: task.googleEventId });
+      } catch (err) {
+        if (!isNotFound(err)) throw err;
+      }
+    }
+    return null;
+  }
+
+  const requestBody = buildTaskEventBody(task);
+
+  if (task.googleEventId) {
+    try {
+      const { data } = await calendar.events.update({
+        calendarId,
+        eventId: task.googleEventId,
+        requestBody,
+      });
+      return data.id ?? task.googleEventId;
+    } catch (err) {
       if (!isNotFound(err)) throw err;
     }
   }

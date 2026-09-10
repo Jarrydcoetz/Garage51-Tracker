@@ -35,18 +35,38 @@ const STATUSES = [
 type Task = {
   id: string; title: string; description: string | null; category: string;
   status: string; priority: string;
-  assigned_to: string | null; created_by: string | null;
-  due_date: string | null; linked_label: string | null;
+  assigned_to: string[]; created_by: string | null;
+  due_date: string | null; scheduled_at: string | null;
+  duration_minutes: number | null; google_event_id: string | null;
+  linked_label: string | null;
   linked_enquiry_id: string | null; linked_storage_bike_id: string | null;
   linked_client_phone: string | null; completed_at: string | null;
   created_at: string;
 };
 type Profile = { id: string; name: string | null; roles: string[] };
-const BLANK: Partial<Task> & { title: string } = {
+const BLANK: Partial<Task> & { title: string; assigned_to: string[] } = {
   title: "", description: "", category: "general", status: "open",
-  priority: "normal", assigned_to: null, due_date: null, linked_label: null,
+  priority: "normal", assigned_to: [], due_date: null, linked_label: null,
   linked_enquiry_id: null, linked_storage_bike_id: null, linked_client_phone: null,
 };
+
+// Combines a date input's value with a time input's value into a UTC ISO
+// timestamp for Google Calendar — null if either half is missing, since a
+// task needs both to represent an actual scheduled slot (as opposed to
+// just a day-level due date).
+function combineDateTime(date: string | null | undefined, time: string | null | undefined): string | null {
+  if (!date || !time) return null;
+  const local = new Date(`${date}T${time}`);
+  return isNaN(local.getTime()) ? null : local.toISOString();
+}
+// Extracts the local HH:MM a stored scheduled_at falls on, for pre-filling
+// the time input when editing an already-scheduled task.
+function isoToLocalTime(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 function catColor(key: string) { return CATEGORIES.find(c => c.key === key)?.color || "#6F6862"; }
 function priColor(key: string) { return PRIORITIES.find(p => p.key === key)?.color || "#6F6862"; }
@@ -91,8 +111,11 @@ function TasksInner() {
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<typeof BLANK>({ ...BLANK });
+  const [formTime, setFormTime] = useState(""); // UI-only — combined with due_date into scheduled_at on create
   const [editForm, setEditForm] = useState<Partial<Task>>({});
+  const [editTime, setEditTime] = useState<string | null>(null); // null = "not touched, fall back to task's own time"
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [pushingCalendarId, setPushingCalendarId] = useState<string | null>(null);
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -130,6 +153,17 @@ function TasksInner() {
   }
   const setF = (k: string, v: string | null) => setForm(prev => ({ ...prev, [k]: v }));
   const setE = (k: string, v: string | null) => setEditForm(prev => ({ ...prev, [k]: v }));
+  function toggleFormAssignee(id: string) {
+    setForm(prev => ({
+      ...prev,
+      assigned_to: prev.assigned_to.includes(id) ? prev.assigned_to.filter(x => x !== id) : [...prev.assigned_to, id],
+    }));
+  }
+  function toggleEditAssignee(task: Task, id: string) {
+    const current = editForm.assigned_to ?? task.assigned_to;
+    const next = current.includes(id) ? current.filter(x => x !== id) : [...current, id];
+    setEditForm(prev => ({ ...prev, assigned_to: next }));
+  }
 
   async function createTask() {
     if (!form.title.trim()) { showToast("Title is required.", "err"); return; }
@@ -137,25 +171,36 @@ function TasksInner() {
     const { data, error } = await supabase.from("tasks").insert({
       title: form.title.trim(), description: form.description?.trim() || null,
       category: form.category, status: "open", priority: form.priority,
-      assigned_to: form.assigned_to || null, created_by: myId,
-      due_date: form.due_date || null, linked_label: form.linked_label || null,
+      assigned_to: form.assigned_to, created_by: myId,
+      due_date: form.due_date || null,
+      scheduled_at: combineDateTime(form.due_date, formTime),
+      duration_minutes: 60,
+      linked_label: form.linked_label || null,
       linked_storage_bike_id: form.linked_storage_bike_id || null,
       linked_client_phone: form.linked_client_phone || null,
       linked_enquiry_id: form.linked_enquiry_id || null,
     }).select().single();
     if (error || !data) { showToast(error?.message || "Could not create task.", "err"); setSaving(false); return; }
     setTasks(prev => [data as Task, ...prev]);
-    setForm({ ...BLANK }); setCreating(false); setSaving(false);
+    setForm({ ...BLANK }); setFormTime(""); setCreating(false); setSaving(false);
     showToast("Task created.");
     router.replace("/admin/tasks"); // clear URL params
   }
 
   async function saveEdit(task: Task) {
     setSaving(true);
-    const patch = { ...editForm };
+    const patch: Record<string, unknown> = { ...editForm };
+    // Only recompute scheduled_at if the date or time actually changed in
+    // this edit — otherwise leave whatever's already stored untouched.
+    if ("due_date" in editForm || editTime !== null) {
+      const nextDate = editForm.due_date ?? task.due_date;
+      const nextTime = editTime !== null ? editTime : isoToLocalTime(task.scheduled_at);
+      patch.scheduled_at = combineDateTime(nextDate, nextTime);
+    }
     const { error } = await supabase.from("tasks").update(patch).eq("id", task.id);
     if (error) { showToast(error.message || "Could not save.", "err"); setSaving(false); return; }
     setTasks(prev => prev.map(t => t.id === task.id ? { ...t, ...patch } : t));
+    setEditTime(null);
     setEditingId(null); setSaving(false);
     showToast("Task saved.");
   }
@@ -173,6 +218,66 @@ function TasksInner() {
     setTasks(prev => prev.filter(t => t.id !== id));
     if (expanded === id) setExpanded(null);
     showToast("Task deleted.");
+  }
+
+  async function authHeader(): Promise<Record<string, string>> {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token ? { Authorization: `Bearer ${data.session.access_token}` } : {};
+  }
+
+  // Creates or updates the task's Google Calendar event. Deliberately a
+  // manual action rather than auto-syncing on every edit — a task's
+  // schedule is optional, and pushing should be a deliberate choice.
+  async function pushTaskToCalendar(task: Task) {
+    if (!task.scheduled_at) { showToast("Set a due date and time first.", "err"); return; }
+    setPushingCalendarId(task.id);
+    try {
+      const assigneeNames = task.assigned_to.map(profileName).filter(Boolean) as string[];
+      const res = await fetch("/api/calendar/sync-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeader()) },
+        body: JSON.stringify({
+          task: {
+            id: task.id, title: task.title, description: task.description,
+            category: task.category, linked_label: task.linked_label,
+            scheduled_at: task.scheduled_at, duration_minutes: task.duration_minutes || 60,
+            google_event_id: task.google_event_id,
+            assignee_names: assigneeNames,
+            primary_assignee_id: task.assigned_to[0] || null,
+          },
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) { showToast(json.error || "Could not sync to calendar.", "err"); return; }
+      await supabase.from("tasks").update({ google_event_id: json.google_event_id }).eq("id", task.id);
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, google_event_id: json.google_event_id } : t));
+      showToast("Pushed to calendar ✓");
+    } catch {
+      showToast("Could not reach the calendar service.", "err");
+    } finally {
+      setPushingCalendarId(null);
+    }
+  }
+
+  async function removeTaskFromCalendar(task: Task) {
+    if (!task.google_event_id) return;
+    setPushingCalendarId(task.id);
+    try {
+      const res = await fetch("/api/calendar/sync-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeader()) },
+        body: JSON.stringify({ task: { id: task.id, title: task.title, scheduled_at: null, google_event_id: task.google_event_id } }),
+      });
+      const json = await res.json();
+      if (!res.ok) { showToast(json.error || "Could not remove from calendar.", "err"); return; }
+      await supabase.from("tasks").update({ google_event_id: null }).eq("id", task.id);
+      setTasks(prev => prev.map(t => t.id === task.id ? { ...t, google_event_id: null } : t));
+      showToast("Removed from calendar.");
+    } catch {
+      showToast("Could not reach the calendar service.", "err");
+    } finally {
+      setPushingCalendarId(null);
+    }
   }
 
   // Sort: open high → open normal → in_progress → open low → done
@@ -195,8 +300,8 @@ function TasksInner() {
     if (catFilter !== "all" && t.category !== catFilter) return false;
     if (priFilter !== "all" && t.priority !== priFilter) return false;
     if (assigneeFilter !== "all") {
-      if (assigneeFilter === "me" && t.assigned_to !== myId) return false;
-      if (assigneeFilter !== "me" && t.assigned_to !== assigneeFilter) return false;
+      if (assigneeFilter === "me" && !t.assigned_to.includes(myId || "")) return false;
+      if (assigneeFilter !== "me" && !t.assigned_to.includes(assigneeFilter)) return false;
     }
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -246,7 +351,7 @@ function TasksInner() {
               {counts.overdue > 0 && <span style={{ color: RED, fontWeight: 600 }}> · {counts.overdue} overdue</span>}
             </p>
           </div>
-          <button onClick={() => { setForm({ ...BLANK }); setCreating(true); }} className="g51-btn g51-ghost" style={s.ghostBtn}>+ New task</button>
+          <button onClick={() => { setForm({ ...BLANK }); setFormTime(""); setCreating(true); }} className="g51-btn g51-ghost" style={s.ghostBtn}>+ New task</button>
         </div>
 
         {/* Create form */}
@@ -264,11 +369,23 @@ function TasksInner() {
               <select className="g51-input" value={form.priority} onChange={e => setF("priority", e.target.value)} style={{ ...s.input, flex: "1 1 100px" }}>
                 {PRIORITIES.map(p => <option key={p.key} value={p.key}>{p.label} priority</option>)}
               </select>
-              <select className="g51-input" value={form.assigned_to || ""} onChange={e => setF("assigned_to", e.target.value || null)} style={{ ...s.input, flex: "1 1 140px" }}>
-                <option value="">Unassigned</option>
-                {profiles.map(p => <option key={p.id} value={p.id}>{p.name || p.id}</option>)}
-              </select>
               <input className="g51-input" type="date" value={form.due_date || ""} onChange={e => setF("due_date", e.target.value || null)} style={{ ...s.input, flex: "1 1 130px" }} />
+              <input className="g51-input" type="time" value={formTime} onChange={e => setFormTime(e.target.value)}
+                title="Optional — set a time to enable pushing this task to the calendar" style={{ ...s.input, flex: "1 1 110px" }} />
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: "#6F6862", marginBottom: 5 }}>Assign to (any number)</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {profiles.map(p => {
+                  const isSel = form.assigned_to.includes(p.id);
+                  return (
+                    <button key={p.id} type="button" onClick={() => toggleFormAssignee(p.id)}
+                      style={{ background: isSel ? BLUE + "22" : "transparent", border: `1px solid ${isSel ? BLUE : "#3A352F"}`, borderRadius: 8, color: isSel ? BLUE : "#B5AEA8", fontSize: 12.5, padding: "6px 11px", cursor: "pointer", fontFamily: "inherit", fontWeight: isSel ? 700 : 400 }}>
+                      {p.name || p.id}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
             {form.linked_label && (
               <div style={{ fontSize: 12.5, color: "#9A938D", marginBottom: 8, fontStyle: "italic" }}>
@@ -280,7 +397,7 @@ function TasksInner() {
                 style={{ background: BLUE, border: "none", borderRadius: 9, color: "#fff", fontSize: 13, fontWeight: 700, padding: "9px 18px", cursor: "pointer", opacity: saving ? 0.6 : 1 }}>
                 {saving ? "Creating…" : "Create task"}
               </button>
-              <button onClick={() => { setCreating(false); router.replace("/admin/tasks"); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
+              <button onClick={() => { setCreating(false); setFormTime(""); router.replace("/admin/tasks"); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
             </div>
           </div>
         )}
@@ -336,7 +453,8 @@ function TasksInner() {
               const isExpanded = expanded === task.id;
               const isEditing = editingId === task.id;
               const due = dueDateLabel(task.due_date);
-              const assigneeName = profileName(task.assigned_to);
+              const assigneeNames = task.assigned_to.map(profileName).filter(Boolean).join(", ");
+              const scheduledTime = task.scheduled_at ? isoToLocalTime(task.scheduled_at) : "";
               const catCol = catColor(task.category);
               const priCol = priColor(task.priority);
               const stsCol = statusColor(task.status);
@@ -345,7 +463,7 @@ function TasksInner() {
                 <div key={task.id} className="task-row" style={{ background: "#1E1B19", border: "1px solid #2F2B27", borderRadius: 12, overflow: "hidden", transition: "border-color .15s", opacity: task.status === "done" ? 0.65 : 1 }}>
                   {/* Task header row */}
                   <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", cursor: "pointer" }}
-                    onClick={() => { setExpanded(isExpanded ? null : task.id); if (!isExpanded) { setEditForm({}); setEditingId(null); } }}>
+                    onClick={() => { setExpanded(isExpanded ? null : task.id); if (!isExpanded) { setEditForm({}); setEditingId(null); setEditTime(null); } }}>
                     {/* Status toggle */}
                     <button onClick={e => { e.stopPropagation(); cycleStatus(task); }}
                       title={`Status: ${task.status} — click to advance`}
@@ -366,7 +484,9 @@ function TasksInner() {
                       <div style={{ display: "flex", gap: 10, marginTop: 3, flexWrap: "wrap" }}>
                         {task.linked_label && <span style={{ fontSize: 11.5, color: "#9A938D", fontStyle: "italic" }}>↗ {task.linked_label}</span>}
                         {due.text && <span style={{ fontSize: 11.5, color: due.color, fontWeight: due.color === RED ? 700 : 400 }}>{due.text}</span>}
-                        {assigneeName && <span style={{ fontSize: 11.5, color: "#6F6862" }}>→ {assigneeName}</span>}
+                        {scheduledTime && <span style={{ fontSize: 11.5, color: "#6F6862" }}>🕐 {scheduledTime}</span>}
+                        {task.google_event_id && <span style={{ fontSize: 11.5, color: GREEN }}>📅 On calendar</span>}
+                        {assigneeNames && <span style={{ fontSize: 11.5, color: "#6F6862" }}>→ {assigneeNames}</span>}
                       </div>
                     </div>
                     <svg width="13" height="13" viewBox="0 0 24 24" style={{ transform: isExpanded ? "rotate(180deg)" : "none", transition: "transform .2s", opacity: 0.5, flexShrink: 0 }}>
@@ -393,26 +513,50 @@ function TasksInner() {
                             <select className="g51-input" value={editForm.priority ?? task.priority} onChange={e => setE("priority", e.target.value)} style={{ ...s.input, flex: "1 1 100px" }}>
                               {PRIORITIES.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
                             </select>
-                            <select className="g51-input" value={editForm.assigned_to ?? task.assigned_to ?? ""} onChange={e => setE("assigned_to", e.target.value || null)} style={{ ...s.input, flex: "1 1 130px" }}>
-                              <option value="">Unassigned</option>
-                              {profiles.map(p => <option key={p.id} value={p.id}>{p.name || p.id}</option>)}
-                            </select>
                             <input className="g51-input" type="date" value={editForm.due_date ?? task.due_date ?? ""} onChange={e => setE("due_date", e.target.value || null)} style={{ ...s.input, flex: "1 1 130px" }} />
+                            <input className="g51-input" type="time" value={editTime !== null ? editTime : isoToLocalTime(task.scheduled_at)} onChange={e => setEditTime(e.target.value)}
+                              title="Optional — set a time to enable pushing this task to the calendar" style={{ ...s.input, flex: "1 1 110px" }} />
+                          </div>
+                          <div style={{ marginBottom: 10 }}>
+                            <div style={{ fontSize: 11, color: "#6F6862", marginBottom: 5 }}>Assign to (any number)</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              {profiles.map(p => {
+                                const currentAssignees = editForm.assigned_to ?? task.assigned_to;
+                                const isSel = currentAssignees.includes(p.id);
+                                return (
+                                  <button key={p.id} type="button" onClick={() => toggleEditAssignee(task, p.id)}
+                                    style={{ background: isSel ? BLUE + "22" : "transparent", border: `1px solid ${isSel ? BLUE : "#3A352F"}`, borderRadius: 8, color: isSel ? BLUE : "#B5AEA8", fontSize: 12.5, padding: "6px 11px", cursor: "pointer", fontFamily: "inherit", fontWeight: isSel ? 700 : 400 }}>
+                                    {p.name || p.id}
+                                  </button>
+                                );
+                              })}
+                            </div>
                           </div>
                           <div style={{ display: "flex", gap: 8 }}>
                             <button onClick={() => saveEdit(task)} disabled={saving} style={{ background: GREEN, border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "8px 16px", cursor: "pointer" }}>
                               {saving ? "Saving…" : "Save"}
                             </button>
-                            <button onClick={() => setEditingId(null)} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
+                            <button onClick={() => { setEditingId(null); setEditTime(null); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Cancel</button>
                           </div>
                         </div>
                       ) : (
                         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <button onClick={() => { setEditingId(task.id); setEditForm({}); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Edit</button>
+                          <button onClick={() => { setEditingId(task.id); setEditForm({}); setEditTime(null); }} className="g51-btn g51-ghost" style={s.ghostBtn}>Edit</button>
                           <button onClick={() => cycleStatus(task)} className="g51-btn g51-ghost"
                             style={{ ...s.ghostBtn, color: statusColor(nextStatus(task.status)), borderColor: statusColor(nextStatus(task.status)) + "55" }}>
                             → Mark {STATUSES.find(s => s.key === nextStatus(task.status))?.label}
                           </button>
+                          {task.scheduled_at && (
+                            <button onClick={() => pushTaskToCalendar(task)} disabled={pushingCalendarId === task.id} className="g51-btn g51-ghost"
+                              style={{ ...s.ghostBtn, color: GREEN, borderColor: GREEN + "55" }}>
+                              {pushingCalendarId === task.id ? "Syncing…" : task.google_event_id ? "🔄 Update calendar event" : "📅 Push to calendar"}
+                            </button>
+                          )}
+                          {task.google_event_id && (
+                            <button onClick={() => removeTaskFromCalendar(task)} disabled={pushingCalendarId === task.id} className="g51-btn g51-ghost" style={s.ghostBtn}>
+                              Remove from calendar
+                            </button>
+                          )}
                           <button onClick={() => deleteTask(task.id)} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, color: "#FF7A7A", marginLeft: "auto" }}>Delete</button>
                         </div>
                       )}
