@@ -177,22 +177,37 @@ export type ZohoInvoiceResult = {
   invoiceNumber: string;
 };
 
+// A contact found by findOrCreateZohoContact may have been archived directly
+// in Zoho Books (independently of this app) at some point after it was
+// created — Zoho refuses to invoice an inactive contact outright.
+export async function reactivateZohoContact(contactId: string): Promise<void> {
+  await zohoFetch(`/contacts/${contactId}/active`, { method: "POST" });
+}
+
 export async function createZohoInvoice(
   contactId: string,
   lineItems: ZohoInvoiceLineItem[]
 ): Promise<ZohoInvoiceResult> {
-  const data = await zohoFetch("/invoices", {
-    method: "POST",
-    body: JSON.stringify({
-      customer_id: contactId,
-      line_items: lineItems.map(li => ({
-        name: li.name,
-        ...(li.description ? { description: li.description } : {}),
-        rate: li.rate,
-        quantity: li.quantity ?? 1,
-      })),
-    }),
+  const body = JSON.stringify({
+    customer_id: contactId,
+    line_items: lineItems.map(li => ({
+      name: li.name,
+      ...(li.description ? { description: li.description } : {}),
+      rate: li.rate,
+      quantity: li.quantity ?? 1,
+    })),
   });
+  let data;
+  try {
+    data = await zohoFetch("/invoices", { method: "POST", body });
+  } catch (err) {
+    // Reactivate once and retry, rather than failing the whole invoice over
+    // a contact-status flag this app doesn't otherwise manage.
+    const message = err instanceof Error ? err.message : "";
+    if (!/inactive/i.test(message)) throw err;
+    await reactivateZohoContact(contactId);
+    data = await zohoFetch("/invoices", { method: "POST", body });
+  }
   return {
     invoiceId: data.invoice.invoice_id as string,
     invoiceNumber: data.invoice.invoice_number as string,
