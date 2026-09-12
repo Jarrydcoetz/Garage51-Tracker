@@ -137,31 +137,40 @@ export async function findOrCreateZohoContact(input: ZohoContactInput): Promise<
 // missing one isn't. The email is only included if it actually looks like
 // one; Zoho's own validation rejects the request outright otherwise.
 //
-// vat_treatment defaults to "vat_not_registered" — this org's UAE Zoho
-// Books setup requires every contact to have a VAT treatment before an
-// invoice can be raised for them, and contacts created via this API (unlike
-// ones created through Zoho's own UI) never got one set, which silently
-// broke invoice creation for any brand-new customer. Confirmed with the
-// business this default is correct for Garage51's typical customer.
+// vat_treatment defaults to "dz_vat_not_registered" ("Non VAT Registered -
+// Designated Zone" in Zoho's UI) — this org is registered as a UAE Free
+// Zone business specifically in a Designated Zone (confirmed in Zoho
+// Books → Organization Profile), which uses a distinct set of tax
+// treatment values from a standard UAE mainland business. Using the plain
+// "vat_not_registered" value here previously failed outright with
+// "Invalid value passed for VAT Treatment" for exactly this reason.
+// Retrying without the field at all is kept as a last-resort fallback in
+// case this org's configuration changes again in a way this code can't see.
 export async function createZohoContact(input: ZohoContactInput): Promise<string> {
   const cleanEmail = input.email && isValidEmail(input.email) ? input.email.trim() : null;
-  const data = await zohoFetch("/contacts", {
-    method: "POST",
-    body: JSON.stringify({
-      contact_name: input.name,
-      vat_treatment: "vat_not_registered",
-      ...(cleanEmail ? { email: cleanEmail } : {}),
-      ...(input.phone ? { phone: input.phone } : {}),
-      contact_persons: [
-        {
-          first_name: input.name,
-          is_primary_contact: true,
-          ...(cleanEmail ? { email: cleanEmail } : {}),
-          ...(input.phone ? { phone: input.phone } : {}),
-        },
-      ],
-    }),
+  const buildBody = (vatTreatment: string | null) => JSON.stringify({
+    contact_name: input.name,
+    ...(vatTreatment ? { vat_treatment: vatTreatment } : {}),
+    ...(cleanEmail ? { email: cleanEmail } : {}),
+    ...(input.phone ? { phone: input.phone } : {}),
+    contact_persons: [
+      {
+        first_name: input.name,
+        is_primary_contact: true,
+        ...(cleanEmail ? { email: cleanEmail } : {}),
+        ...(input.phone ? { phone: input.phone } : {}),
+      },
+    ],
   });
+
+  let data;
+  try {
+    data = await zohoFetch("/contacts", { method: "POST", body: buildBody("dz_vat_not_registered") });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "";
+    if (!/vat treatment/i.test(message)) throw err;
+    data = await zohoFetch("/contacts", { method: "POST", body: buildBody(null) });
+  }
   return data.contact.contact_id as string;
 }
 
