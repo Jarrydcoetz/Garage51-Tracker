@@ -193,6 +193,17 @@ export async function reactivateZohoContact(contactId: string): Promise<void> {
   await zohoFetch(`/contacts/${contactId}/active`, { method: "POST" });
 }
 
+// Contacts created before this app started setting vat_treatment on new
+// contacts (or created directly in Zoho's UI without one) have none set —
+// Zoho refuses to invoice them until they do. "dz_vat_not_registered" is
+// this org's correct default (UAE Designated Zone, see createZohoContact).
+export async function setZohoContactVatTreatment(contactId: string, vatTreatment: string): Promise<void> {
+  await zohoFetch(`/contacts/${contactId}`, {
+    method: "PUT",
+    body: JSON.stringify({ vat_treatment: vatTreatment }),
+  });
+}
+
 export async function createZohoInvoice(
   contactId: string,
   lineItems: ZohoInvoiceLineItem[]
@@ -206,16 +217,31 @@ export async function createZohoInvoice(
       quantity: li.quantity ?? 1,
     })),
   });
+
+  // Contacts that predate this app's active-status/VAT-treatment handling
+  // (or that were edited directly in Zoho Books) can fail invoice creation
+  // for either reason — repair whichever specific problem Zoho reports and
+  // retry, rather than failing the whole invoice over a contact detail this
+  // app is able to fix on its own. Capped at two repairs in case a contact
+  // needs both.
   let data;
-  try {
-    data = await zohoFetch("/invoices", { method: "POST", body });
-  } catch (err) {
-    // Reactivate once and retry, rather than failing the whole invoice over
-    // a contact-status flag this app doesn't otherwise manage.
-    const message = err instanceof Error ? err.message : "";
-    if (!/inactive/i.test(message)) throw err;
-    await reactivateZohoContact(contactId);
-    data = await zohoFetch("/invoices", { method: "POST", body });
+  let repairsLeft = 2;
+  for (;;) {
+    try {
+      data = await zohoFetch("/invoices", { method: "POST", body });
+      break;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "";
+      if (repairsLeft <= 0) throw err;
+      repairsLeft--;
+      if (/inactive/i.test(message)) {
+        await reactivateZohoContact(contactId);
+      } else if (/vat treatment/i.test(message)) {
+        await setZohoContactVatTreatment(contactId, "dz_vat_not_registered");
+      } else {
+        throw err;
+      }
+    }
   }
   return {
     invoiceId: data.invoice.invoice_id as string,
