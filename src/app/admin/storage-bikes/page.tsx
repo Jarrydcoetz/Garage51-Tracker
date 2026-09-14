@@ -343,10 +343,14 @@ export default function StorageBikesScreen() {
       done_at_hours: doneHours, performed_by: logForm.by.trim() || null, notes: logForm.notes.trim() || null,
     }).select().single();
     if (error || !data) { showToast(error?.message || "Could not log.", "err"); setSavingLog(false); return; }
-    // Update last_done_hours on the item so status recalculates
+    // Update last_done_hours on the item so status recalculates, and carry
+    // the same reading onto the bike's own master engine_hours — the hours
+    // logged at service time are the most current known reading for the
+    // bike, not just for this one service item.
     if (doneHours) {
       await supabase.from("sb_service_items").update({ last_done_hours: doneHours }).eq("id", item.id);
       setSvcItems(prev => prev.map(i => i.id === item.id ? { ...i, last_done_hours: doneHours } : i));
+      await saveBikeField(bike.id, "engine_hours", doneHours);
     }
     setSvcLogs(prev => [data as SbServiceLog, ...prev]);
     setLogPanel(null);
