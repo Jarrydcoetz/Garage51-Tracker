@@ -72,10 +72,13 @@ function catColor(key: string) { return CATEGORIES.find(c => c.key === key)?.col
 function priColor(key: string) { return PRIORITIES.find(p => p.key === key)?.color || "#6F6862"; }
 function statusColor(key: string) { return STATUSES.find(s => s.key === key)?.color || "#6F6862"; }
 
-function dueDateLabel(d: string | null): { text: string; color: string } {
+function dueDateLabel(d: string | null, status?: string): { text: string; color: string } {
   if (!d) return { text: "", color: "#6F6862" };
-  const today = new Date(); today.setHours(0, 0, 0, 0);
   const due = new Date(d);
+  // A done task is never "overdue" — that language only makes sense for
+  // something still outstanding. Show the plain date instead.
+  if (status === "done") return { text: due.toLocaleDateString("en-GB", { day: "numeric", month: "short" }), color: "#6F6862" };
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   const diff = Math.round((due.getTime() - today.getTime()) / 86400000);
   if (diff < 0) return { text: `${Math.abs(diff)}d overdue`, color: RED };
   if (diff === 0) return { text: "Due today", color: AMBER };
@@ -452,7 +455,7 @@ function TasksInner() {
             {visible.map(task => {
               const isExpanded = expanded === task.id;
               const isEditing = editingId === task.id;
-              const due = dueDateLabel(task.due_date);
+              const due = dueDateLabel(task.due_date, task.status);
               const assigneeNames = task.assigned_to.map(profileName).filter(Boolean).join(", ");
               const scheduledTime = task.scheduled_at ? isoToLocalTime(task.scheduled_at) : "";
               const catCol = catColor(task.category);
