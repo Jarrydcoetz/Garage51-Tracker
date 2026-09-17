@@ -891,14 +891,33 @@ export default function Admin() {
     }
   }
 
-  function messageGroup(groupRows: Enquiry[]) {
+  function buildGroupMessage(groupRows: Enquiry[]): string {
     const first = groupRows[0];
-    if (!first?.phone) return;
     const total = groupRows.reduce((sum, r) => sum + (Number(r.estimated_value) || 0), 0);
     const lines = groupRows.map(r => `- ${r.bike_details || "Bike"}: ${aed(r.estimated_value)}`).join("\n");
     const linkLine = first.payment_link ? `\n\nPay securely: ${first.payment_link}` : "";
-    const msg = `Hi ${first.customer_name}, here's your Garage51 storage booking summary:\n\n${lines}\n\nTotal: ${aed(total)}${linkLine}`;
-    window.open(`https://wa.me/${waNumber(first.phone)}?text=${encodeURIComponent(msg)}`, "_blank");
+    return `Hi ${first.customer_name}, here's your Garage51 storage booking summary:\n\n${lines}\n\nTotal: ${aed(total)}${linkLine}`;
+  }
+
+  function messageGroup(groupRows: Enquiry[]) {
+    const first = groupRows[0];
+    if (!first?.phone) return;
+    window.open(`https://wa.me/${waNumber(first.phone)}?text=${encodeURIComponent(buildGroupMessage(groupRows))}`, "_blank");
+  }
+
+  // Used inside the payment-link submenu, once a combined link exists —
+  // mirrors whatsappLink(row) above, but for the group as a whole.
+  function groupWhatsappLink(groupRows: Enquiry[]): string {
+    const first = groupRows[0];
+    return `https://wa.me/${waNumber(first?.phone || "")}?text=${encodeURIComponent(buildGroupMessage(groupRows))}`;
+  }
+
+  async function markGroupLinkSent(groupRows: Enquiry[]) {
+    const now = new Date().toISOString();
+    for (const row of groupRows) {
+      await supabase.from("enquiries").update({ payment_link_sent_at: now }).eq("id", row.id);
+      edit(row.id, { payment_link_sent_at: now });
+    }
   }
 
   async function createCombinedPaymentLink(groupRows: Enquiry[]) {
@@ -1315,7 +1334,7 @@ export default function Admin() {
   // Header for a grouped multi-bike storage batch (2+ rows sharing phone +
   // storage dates) — badge shows the least-settled state across the group
   // so a single unpaid bike still surfaces as needing attention.
-  const renderGroupHeader = (groupRows: Enquiry[]) => {
+  const renderGroupHeader = (groupKey: string, groupRows: Enquiry[]) => {
     const first = groupRows[0];
     const total = groupRows.reduce((sum, r) => sum + (Number(r.estimated_value) || 0), 0);
     const allPaid = groupRows.every(r => r.paid_at || r.stage === "paid");
@@ -1343,9 +1362,35 @@ export default function Admin() {
         <div style={s.quick}>
           <button onClick={() => markGroupPaid(groupRows)} className="g51-btn" style={s.quickBtn}>Mark all paid</button>
           <button onClick={() => messageGroup(groupRows)} className="g51-btn" style={s.quickBtn}>Message all</button>
-          <button onClick={() => createCombinedPaymentLink(groupRows)} disabled={busy} className="g51-btn" style={s.quickBtn}>
-            {busy ? "Creating…" : "Combined payment link"}
-          </button>
+          <div style={s.payWrap}>
+            {!first.payment_link ? (
+              <button onClick={() => createCombinedPaymentLink(groupRows)} disabled={busy} className="g51-btn" style={s.quickBtn}>
+                {busy ? "Creating…" : "Combined payment link"}
+              </button>
+            ) : (
+              <button onClick={() => setPayMenuId(payMenuId === groupKey ? null : groupKey)} className="g51-btn" style={s.quickBtn}>
+                Combined payment link{first.payment_link_sent_at && <span style={s.sentTick}>✓</span>}
+                <Chevron open={payMenuId === groupKey} />
+              </button>
+            )}
+            {payMenuId === groupKey && first.payment_link && (
+              <>
+                <div style={s.overlay} onClick={() => setPayMenuId(null)} />
+                <div className="g51-sheet" style={s.payMenu}>
+                  {!first.payment_link_sent_at ? (
+                    <a href={groupWhatsappLink(groupRows)} target="_blank" rel="noreferrer"
+                      onClick={() => { markGroupLinkSent(groupRows); setPayMenuId(null); }}
+                      className="g51-item" style={s.payItemWa}>Send link on WhatsApp</a>
+                  ) : (
+                    <div style={s.paySent}>Link sent {new Date(first.payment_link_sent_at).toLocaleDateString()}</div>
+                  )}
+                  <a href={first.payment_link} target="_blank" rel="noreferrer" onClick={() => setPayMenuId(null)} className="g51-item" style={s.payItem}>Open link</a>
+                  <button onClick={() => { copyLink(first.payment_link!); setPayMenuId(null); }} className="g51-item" style={s.payItem}>Copy link</button>
+                  <button onClick={() => { createCombinedPaymentLink(groupRows); setPayMenuId(null); }} disabled={busy} className="g51-item" style={s.payItem}>{busy ? "Generating…" : "Generate new link"}</button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     );
@@ -1743,7 +1788,7 @@ export default function Admin() {
           <div style={s.list}>
             {displayGroups.map(dg => (
               <div key={dg.key} style={dg.kind === "group" ? s.groupWrap : undefined}>
-                {dg.kind === "group" && renderGroupHeader(dg.rows)}
+                {dg.kind === "group" && renderGroupHeader(dg.key, dg.rows)}
                 {(dg.kind === "group" ? dg.rows : [dg.row]).map(r => {
               const open = expanded.has(r.id);
               const st = bookingState(r);
