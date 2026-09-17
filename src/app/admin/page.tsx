@@ -1001,6 +1001,65 @@ export default function Admin() {
     }
   }
 
+  // One invoice covering every bike in a grouped multi-bike storage batch,
+  // instead of a separate invoice per bike — mirrors createCombinedRenewalInvoice
+  // in storage-bikes/page.tsx, which the /api/zoho/create-invoice route's
+  // line_items form was originally built for.
+  async function createCombinedInvoiceForGroup(groupRows: Enquiry[]) {
+    const first = groupRows[0];
+    if (!first) return;
+    setZohoBusy(first.id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const authHeader: Record<string, string> = session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` } : {};
+      const lineItems = groupRows.map(r => ({
+        name: "Motorcycle Storage",
+        description: r.bike_details || "Bike",
+        rate: Number(r.estimated_value) || 0,
+      }));
+      const res = await fetch("/api/zoho/create-invoice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify({
+          zoho_contact_id: first.client?.zoho_contact_id || null,
+          customer_name: first.customer_name,
+          email: first.email,
+          phone: first.phone,
+          line_items: lineItems,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { showToast(data.error || "Could not create the Zoho invoice.", "err"); return; }
+
+      for (const row of groupRows) {
+        await supabase.from("enquiries").update({
+          zoho_invoice_id: data.zoho_invoice_id,
+          zoho_invoice_number: data.zoho_invoice_number,
+          zoho_invoice_url: data.invoice_url,
+        }).eq("id", row.id);
+        edit(row.id, {
+          zoho_invoice_id: data.zoho_invoice_id,
+          zoho_invoice_number: data.zoho_invoice_number,
+          zoho_invoice_url: data.invoice_url,
+        });
+      }
+
+      if (first.client?.id && data.zoho_contact_id && first.client.zoho_contact_id !== data.zoho_contact_id) {
+        await supabase.from("clients").update({ zoho_contact_id: data.zoho_contact_id }).eq("id", first.client.id);
+        const clientId = first.client.id;
+        setRows(prev => prev.map(r =>
+          r.client?.id === clientId ? { ...r, client: { ...(r.client as ClientLite), zoho_contact_id: data.zoho_contact_id } } : r));
+      }
+
+      showToast(`Invoice ${data.zoho_invoice_number} created for ${groupRows.length} bikes in Zoho Books.`);
+    } catch {
+      showToast("Could not reach the invoicing service.", "err");
+    } finally {
+      setZohoBusy(null);
+    }
+  }
+
   function copyLink(url: string) {
     if (navigator.clipboard) { navigator.clipboard.writeText(url); showToast("Payment link copied."); }
     else { window.prompt("Copy this payment link:", url); }
@@ -1391,6 +1450,15 @@ export default function Admin() {
               </>
             )}
           </div>
+          {first.zoho_invoice_id ? (
+            <a href={first.zoho_invoice_url || "#"} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>
+              Invoice {first.zoho_invoice_number}<span style={s.sentTick}>✓</span>
+            </a>
+          ) : (
+            <button onClick={() => createCombinedInvoiceForGroup(groupRows)} disabled={zohoBusy === first.id} className="g51-btn" style={s.quickBtn}>
+              {zohoBusy === first.id ? "Creating…" : "Combined invoice"}
+            </button>
+          )}
         </div>
       </div>
     );
