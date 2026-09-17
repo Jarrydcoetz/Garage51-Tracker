@@ -366,17 +366,27 @@ export default function ClientsScreen() {
       : `Permanently delete ${client.name}? This cannot be undone.`;
     if (!window.confirm(confirmMsg)) return;
 
-    // Sessions and waiver acceptances reference enquiries by id with no
-    // cascade, so they have to go first — otherwise Postgres rejects the
-    // enquiries delete below. That failure used to be silently ignored, so
-    // the "deleted" client just reappeared once the page reloaded and
-    // re-fetched the untouched row.
+    // Several tables reference an enquiry by id with no cascade, so they
+    // have to go first — otherwise Postgres rejects the enquiries delete
+    // below. That failure used to be silently ignored, so the "deleted"
+    // client just reappeared once the page reloaded and re-fetched the
+    // untouched rows.
     const enquiryIds = client.enquiries.map(e => e.id);
     if (enquiryIds.length > 0) {
-      const { error } = await supabase.from("sessions").delete().in("enquiry_id", enquiryIds);
-      if (error) { showToast("Could not delete this client's sessions.", "err"); return; }
+      const { error } = await supabase.from("stock_movements").delete().in("enquiry_id", enquiryIds);
+      if (error) { showToast("Could not delete this client's parts usage records.", "err"); return; }
+      const { error: appError } = await supabase.from("service_product_applications").delete().in("enquiry_id", enquiryIds);
+      if (appError) { showToast("Could not delete this client's service records.", "err"); return; }
+      const { error: sessionError } = await supabase.from("sessions").delete().in("enquiry_id", enquiryIds);
+      if (sessionError) { showToast("Could not delete this client's sessions.", "err"); return; }
       const { error: waiverError } = await supabase.from("waiver_acceptances").delete().in("enquiry_id", enquiryIds);
       if (waiverError) { showToast("Could not delete this client's waiver records.", "err"); return; }
+      const { error: taskError } = await supabase.from("tasks").delete().in("linked_enquiry_id", enquiryIds);
+      if (taskError) { showToast("Could not delete this client's linked tasks.", "err"); return; }
+    }
+    if (client.phone) {
+      const { error } = await supabase.from("tasks").delete().eq("linked_client_phone", client.phone);
+      if (error) { showToast("Could not delete this client's linked tasks.", "err"); return; }
     }
     if (client.phone) {
       const { error } = await supabase.from("storage_bikes").delete().eq("client_phone", client.phone);
