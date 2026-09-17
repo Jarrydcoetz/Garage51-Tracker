@@ -879,6 +879,57 @@ export default function Admin() {
     }
   }
 
+  // Combined actions for a same-client, same-term multi-bike storage batch
+  // (see displayGroups below) — mirror the single-row versions above but
+  // apply to every member row at once.
+  async function markGroupPaid(groupRows: Enquiry[]) {
+    const paid_at = new Date().toISOString();
+    for (const row of groupRows) {
+      if (row.paid_at) continue;
+      await supabase.from("enquiries").update({ paid_at }).eq("id", row.id);
+      edit(row.id, { paid_at });
+    }
+  }
+
+  function messageGroup(groupRows: Enquiry[]) {
+    const first = groupRows[0];
+    if (!first?.phone) return;
+    const total = groupRows.reduce((sum, r) => sum + (Number(r.estimated_value) || 0), 0);
+    const lines = groupRows.map(r => `- ${r.bike_details || "Bike"}: ${aed(r.estimated_value)}`).join("\n");
+    const linkLine = first.payment_link ? `\n\nPay securely: ${first.payment_link}` : "";
+    const msg = `Hi ${first.customer_name}, here's your Garage51 storage booking summary:\n\n${lines}\n\nTotal: ${aed(total)}${linkLine}`;
+    window.open(`https://wa.me/${waNumber(first.phone)}?text=${encodeURIComponent(msg)}`, "_blank");
+  }
+
+  async function createCombinedPaymentLink(groupRows: Enquiry[]) {
+    const first = groupRows[0];
+    if (!first) return;
+    const total = groupRows.reduce((sum, r) => sum + (Number(r.estimated_value) || 0), 0);
+    if (total < 2) { showToast("Set an estimated value of at least AED 2 before creating a payment link.", "err"); return; }
+    setLinkBusy(first.id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const authHeader: Record<string, string> = session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` } : {};
+      const res = await fetch("/api/payment-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeader },
+        body: JSON.stringify({ amount: total, message: `Garage51 - ${first.customer_name} (${groupRows.length} bikes)` }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.url) { showToast(data.error || "Could not create the payment link.", "err"); return; }
+      for (const row of groupRows) {
+        await supabase.from("enquiries").update({ payment_link: data.url, payment_intent_id: data.id, payment_link_sent_at: null }).eq("id", row.id);
+        edit(row.id, { payment_link: data.url, payment_intent_id: data.id, payment_link_sent_at: null });
+      }
+      copyLink(data.url);
+    } catch {
+      showToast("Could not reach the payment service. Check your connection and try again.", "err");
+    } finally {
+      setLinkBusy(null);
+    }
+  }
+
   // Creates a draft invoice in Zoho Books for a booking that's already been
   // paid via Ziina. Reuses the customer's stored Zoho contact if they have
   // one; otherwise creates one and saves it back to their client record so
@@ -1161,6 +1212,37 @@ export default function Admin() {
     r.service_type.toLowerCase().includes(q)
   );
 
+  // Cluster rows created together as one multi-bike storage batch (shared
+  // phone + identical storage dates) so they render as one card with
+  // combined actions instead of N identical-looking cards. Anything else —
+  // every other service type, and storage bookings that don't share this
+  // signature — renders exactly as before, one row per entry.
+  const storageGroupKey = (r: Enquiry): string | null =>
+    r.service_type === "motorcycle_storage" && r.storage_start_date && r.storage_end_date
+      ? `${r.phone}|${r.storage_start_date}|${r.storage_end_date}`
+      : null;
+  const groupBuckets = new Map<string, Enquiry[]>();
+  for (const r of visible) {
+    const key = storageGroupKey(r);
+    if (!key) continue;
+    if (!groupBuckets.has(key)) groupBuckets.set(key, []);
+    groupBuckets.get(key)!.push(r);
+  }
+  const emittedGroups = new Set<string>();
+  type DisplayGroup = { key: string; kind: "single"; row: Enquiry } | { key: string; kind: "group"; rows: Enquiry[] };
+  const displayGroups: DisplayGroup[] = [];
+  for (const r of visible) {
+    const key = storageGroupKey(r);
+    const bucket = key ? groupBuckets.get(key) : undefined;
+    if (!key || !bucket || bucket.length < 2) {
+      displayGroups.push({ key: r.id, kind: "single", row: r });
+      continue;
+    }
+    if (emittedGroups.has(key)) continue;
+    emittedGroups.add(key);
+    displayGroups.push({ key, kind: "group", rows: bucket });
+  }
+
   const currentLabel = FILTER_OPTS.find(o => o.key === filter)?.label ?? "All";
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
   // Switching the create form's Service select needs special handling only
@@ -1228,6 +1310,45 @@ export default function Admin() {
   const roleColor = (roles?: string[]) =>
     (roles || []).includes("admin") ? RED : (roles || []).includes("mechanic") ? "#FFB02E" : "#3B9EFF";
   const initials = ((me?.name || myEmail || "?").trim().split(/\s+/).filter(Boolean).map(w => w[0]).slice(0, 2).join("") || "?").toUpperCase();
+
+  // Header for a grouped multi-bike storage batch (2+ rows sharing phone +
+  // storage dates) — badge shows the least-settled state across the group
+  // so a single unpaid bike still surfaces as needing attention.
+  const renderGroupHeader = (groupRows: Enquiry[]) => {
+    const first = groupRows[0];
+    const total = groupRows.reduce((sum, r) => sum + (Number(r.estimated_value) || 0), 0);
+    const allPaid = groupRows.every(r => r.paid_at || r.stage === "paid");
+    const statePriority = ["cancelled", "lost", "new", "contacted", "queued", "waiting parts", "in progress", "booked", "completed", "paid"];
+    const worst = groupRows.map(bookingState).reduce((a, b) =>
+      statePriority.indexOf(b) < statePriority.indexOf(a) ? b : a);
+    const badgeLabel = allPaid ? "paid" : worst;
+    const badgeColor = allPaid ? PAID_COLOR : (STATE_COLOR[worst] || "#9A938D");
+    const dateRange = first.storage_start_date && first.storage_end_date
+      ? `${new Date(first.storage_start_date).toLocaleDateString()} – ${new Date(first.storage_end_date).toLocaleDateString()}`
+      : "";
+    const busy = linkBusy === first.id;
+    return (
+      <div style={s.groupHeaderInner}>
+        <div style={s.nameRow}>
+          <span style={s.name}>{first.customer_name}</span>
+          <span style={{ ...s.pill, color: badgeColor, borderColor: badgeColor + "66", background: badgeColor + "1c" }}>{badgeLabel}</span>
+          <span style={{ fontSize: 12, color: "#9A938D" }}>{groupRows.length} bikes</span>
+        </div>
+        <div style={s.sub}>
+          Motorcycle storage
+          {dateRange && <><span style={s.dotSep}>·</span>{dateRange}</>}
+          <span style={s.dotSep}>·</span>Total {aed(total)}
+        </div>
+        <div style={s.quick}>
+          <button onClick={() => markGroupPaid(groupRows)} className="g51-btn" style={s.quickBtn}>Mark all paid</button>
+          <button onClick={() => messageGroup(groupRows)} className="g51-btn" style={s.quickBtn}>Message all</button>
+          <button onClick={() => createCombinedPaymentLink(groupRows)} disabled={busy} className="g51-btn" style={s.quickBtn}>
+            {busy ? "Creating…" : "Combined payment link"}
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <main style={s.page}>
@@ -1619,7 +1740,10 @@ export default function Admin() {
           <div style={s.empty}>Nothing matches this view.</div>
         ) : (
           <div style={s.list}>
-            {visible.map(r => {
+            {displayGroups.map(dg => (
+              <div key={dg.key} style={dg.kind === "group" ? s.groupWrap : undefined}>
+                {dg.kind === "group" && renderGroupHeader(dg.rows)}
+                {(dg.kind === "group" ? dg.rows : [dg.row]).map(r => {
               const open = expanded.has(r.id);
               const st = bookingState(r);
               const sc = STATE_COLOR[st] || "#9A938D";
@@ -2048,7 +2172,9 @@ export default function Admin() {
                   )}
                 </div>
               );
-            })}
+                })}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -2094,6 +2220,8 @@ const s: Record<string, CSSProperties> = {
   menuCount: { fontSize: 12, color: "#8C857F" },
   list: { display: "flex", flexDirection: "column", gap: 10 },
   card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14 },
+  groupWrap: { background: "#1C1A18", border: "1px dashed #3A342E", borderRadius: 14, padding: "14px 17px 4px", display: "flex", flexDirection: "column", gap: 10 },
+  groupHeaderInner: { display: "flex", flexDirection: "column", gap: 6, paddingBottom: 10, borderBottom: "1px solid #2F2B27" },
   cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer", borderTopLeftRadius: 14, borderTopRightRadius: 14 },
   headMain: { flex: 1, minWidth: 0 },
   name: { fontWeight: 600, fontSize: 15.5 },

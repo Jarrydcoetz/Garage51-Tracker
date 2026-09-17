@@ -53,18 +53,23 @@ export async function POST(req: Request) {
     // Ziina sends amount in fils (smallest unit) — convert to AED
     const paidAmountAed = payload.data.amount ? payload.data.amount / 100 : null;
 
-    // 4. Match enquiry — verify paid amount >= expected before marking paid
-    const { data: enq } = await supabase
+    // 4. Match enquiry/enquiries — verify paid amount >= expected before marking paid.
+    // A combined multi-bike booking shares one payment_intent_id across several
+    // rows (see the Bookings page's "Combined payment link"), so this can't use
+    // .single() — that errors out (returning no data) the moment more than one
+    // row matches, which would silently skip the paid_at update below for every
+    // combined payment.
+    const { data: enqs } = await supabase
       .from("enquiries")
       .select("id, estimated_value")
-      .eq("payment_intent_id", paymentId)
-      .single();
+      .eq("payment_intent_id", paymentId);
 
-    if (enq) {
-      if (paidAmountAed !== null && enq.estimated_value && paidAmountAed < enq.estimated_value * 0.99) {
+    if (enqs && enqs.length > 0) {
+      const expectedTotal = enqs.reduce((sum, e) => sum + (e.estimated_value || 0), 0);
+      if (paidAmountAed !== null && expectedTotal && paidAmountAed < expectedTotal * 0.99) {
         // Underpayment threshold: allow up to 1% rounding difference
         console.error(
-          `Webhook amount mismatch: expected AED ${enq.estimated_value}, received AED ${paidAmountAed} for enquiry ${enq.id}`
+          `Webhook amount mismatch: expected AED ${expectedTotal}, received AED ${paidAmountAed} for enquiry ids ${enqs.map(e => e.id).join(", ")}`
         );
         // Still mark paid but log — don't silently accept significant underpayments in production
         // Change to `return NextResponse.json({ error: "Amount mismatch" }, { status: 400 })` for strict mode
