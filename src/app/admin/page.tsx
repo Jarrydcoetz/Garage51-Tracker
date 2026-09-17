@@ -996,9 +996,10 @@ export default function Admin() {
     }
     return n;
   }
-  function whatsappLink(phone: string, name: string, link: string) {
-    const msg = `Hi ${name}, here is your Garage51 booking payment link: ${link}`;
-    return `https://wa.me/${waNumber(phone)}?text=${encodeURIComponent(msg)}`;
+  function whatsappLink(row: Enquiry) {
+    const service = cap(row.service_type.replace("_", " "));
+    const msg = `Hi ${row.customer_name}, here's your Garage51 ${service} booking payment link for ${aed(row.estimated_value)}: ${row.payment_link}`;
+    return `https://wa.me/${waNumber(row.phone)}?text=${encodeURIComponent(msg)}`;
   }
   function waChat(phone: string) {
     return `https://wa.me/${waNumber(phone)}`;
@@ -1833,7 +1834,7 @@ export default function Admin() {
                             <div style={s.overlay} onClick={() => setPayMenuId(null)} />
                             <div className="g51-sheet" style={s.payMenu}>
                               {!r.payment_link_sent_at ? (
-                                <a href={whatsappLink(r.phone, r.customer_name, r.payment_link)} target="_blank" rel="noreferrer"
+                                <a href={whatsappLink(r)} target="_blank" rel="noreferrer"
                                   onClick={() => { markLinkSent(r); setPayMenuId(null); }}
                                   className="g51-item" style={s.payItemWa}>Send link on WhatsApp</a>
                               ) : (
