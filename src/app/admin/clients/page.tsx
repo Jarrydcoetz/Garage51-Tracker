@@ -358,20 +358,42 @@ export default function ClientsScreen() {
   }
 
   async function deleteClient(client: ClientRecord) {
-    const confirmMsg = client.phone
-      ? `Permanently delete ${client.name}?\n\nThis will remove:\n• Their profile record\n• ${client.enquiries.length} booking${client.enquiries.length !== 1 ? "s" : ""}\n\nThis cannot be undone.`
+    const parts: string[] = [];
+    if (client.enquiries.length > 0) parts.push(`${client.enquiries.length} booking${client.enquiries.length !== 1 ? "s" : ""}`);
+    if (client.bikes.length > 0) parts.push(`${client.bikes.length} storage bike${client.bikes.length !== 1 ? "s" : ""}`);
+    const confirmMsg = parts.length > 0
+      ? `Permanently delete ${client.name}?\n\nThis will remove:\n• Their profile record\n• ${parts.join("\n• ")}\n\nThis cannot be undone.`
       : `Permanently delete ${client.name}? This cannot be undone.`;
     if (!window.confirm(confirmMsg)) return;
-    // Delete clients table record
-    if (client.clientId) {
-      await supabase.from("clients").delete().eq("id", client.clientId);
+
+    // Sessions and waiver acceptances reference enquiries by id with no
+    // cascade, so they have to go first — otherwise Postgres rejects the
+    // enquiries delete below. That failure used to be silently ignored, so
+    // the "deleted" client just reappeared once the page reloaded and
+    // re-fetched the untouched row.
+    const enquiryIds = client.enquiries.map(e => e.id);
+    if (enquiryIds.length > 0) {
+      const { error } = await supabase.from("sessions").delete().in("enquiry_id", enquiryIds);
+      if (error) { showToast("Could not delete this client's sessions.", "err"); return; }
+      const { error: waiverError } = await supabase.from("waiver_acceptances").delete().in("enquiry_id", enquiryIds);
+      if (waiverError) { showToast("Could not delete this client's waiver records.", "err"); return; }
     }
-    // Delete enquiries linked to this phone
     if (client.phone) {
-      await supabase.from("enquiries").delete().eq("phone", client.phone);
+      const { error } = await supabase.from("storage_bikes").delete().eq("client_phone", client.phone);
+      if (error) { showToast("Could not delete this client's storage bikes.", "err"); return; }
     }
+    if (client.phone) {
+      const { error } = await supabase.from("enquiries").delete().eq("phone", client.phone);
+      if (error) { showToast("Could not delete this client's bookings.", "err"); return; }
+    }
+    if (client.clientId) {
+      const { error } = await supabase.from("clients").delete().eq("id", client.clientId);
+      if (error) { showToast("Could not delete this client's profile record.", "err"); return; }
+    }
+
     // Remove from local state
     setEnquiries(prev => prev.filter(e => e.phone !== client.phone));
+    setStorageBikes(prev => prev.filter(sb => sb.client_phone !== client.phone));
     setClientRows(prev => prev.filter(r => r.id !== client.clientId));
     setExpanded(null);
     showToast(`${client.name} deleted.`);
