@@ -295,9 +295,11 @@ export default function ClientsScreen() {
 
   async function saveClientEdit(client: ClientRecord) {
     setSavingEdit(true);
+    const oldPhone = client.phone;
+    const newPhone = editForm.phone.trim() || null;
     const patch = {
       name: editForm.name.trim() || null,
-      whatsapp: editForm.phone.trim() || null,
+      whatsapp: newPhone,
       email: editForm.email.trim() || null,
       relationship: editForm.relationship.trim() || null,
       is_minor: editForm.isMinor,
@@ -310,6 +312,24 @@ export default function ClientsScreen() {
         const { data } = await supabase.from("clients").insert({ ...patch }).select().single();
         if (data) setClientRows(prev => [...prev, data as ClientRow]);
       }
+
+      // Phone is the join key the rest of this page (and the storage-bikes
+      // and bookings pages) group bookings by — it lives on enquiries and
+      // storage_bikes, not just on the clients row above. Without this, a
+      // corrected number never shows up anywhere, since every list here is
+      // grouped by enquiries.phone / storage_bikes.client_phone.
+      if (newPhone && newPhone !== oldPhone) {
+        await supabase.from("enquiries").update({ phone: newPhone }).eq("phone", oldPhone);
+        await supabase.from("storage_bikes").update({ client_phone: newPhone }).eq("client_phone", oldPhone);
+        setEnquiries(prev => prev.map(e => e.phone === oldPhone ? { ...e, phone: newPhone } : e));
+        setStorageBikes(prev => prev.map(sb => sb.client_phone === oldPhone ? { ...sb, client_phone: newPhone } : sb));
+        setNotes(prev => {
+          if (!(oldPhone in prev)) return prev;
+          const { [oldPhone]: moved, ...rest } = prev;
+          return { ...rest, [newPhone]: moved };
+        });
+      }
+
       showToast("Client details saved.");
       setEditMode(null);
     } catch { showToast("Could not save.", "err"); }
