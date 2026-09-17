@@ -76,10 +76,15 @@ type Enquiry = {
   sessions: Session[];
   client: ClientLite | null;
   assigned_to: string | null;
+  whatsapp_ack_sent_at: string | null;
+  whatsapp_ack_error: string | null;
 };
 
 type ClientLite = { id: string; name: string | null; whatsapp: string | null; zoho_contact_id: string | null };
 type ClientBike = { label: string; make: string | null; model: string | null; year: string | null; vin: string | null };
+// One bike within a multi-bike motorcycle-storage booking created from the
+// "+ New booking" form — each becomes its own `enquiries` row on submit.
+type StorageBikeEntry = { category: string; details: string; estimatedValue: number };
 type Profile = { id: string; name: string | null; roles: string[]; active: boolean; whatsapp: string | null };
 
 const RED = "#ED1C24";
@@ -145,6 +150,9 @@ const BLANK = {
   source: "whatsapp", stage: "new", estimated_value: 0, booking_at: "", notes: "",
   storage_start_date: "", storage_end_date: "", bike_category: "adult", storage_term: "month_to_month",
   preferred_date: "", sessions_total: 1, bike_details: "",
+  // Multi-bike motorcycle-storage entries — one `enquiries` row is created
+  // per entry on submit. Starts with a single blank bike.
+  storageBikes: [{ category: "adult", details: "", estimatedValue: storageTotalPrice("adult", "month_to_month") }] as StorageBikeEntry[],
 };
 
 // ---- session / state helpers ----------------------------------------------
@@ -965,6 +973,52 @@ export default function Admin() {
     const isStorage = form.service_type === "motorcycle_storage";
     const isWorkshop = form.service_type === "workshop";
     const sessionsTotal = Math.max(1, Number(form.sessions_total) || 1);
+    if (isStorage) {
+      // One or more bikes for the same client/term/dates — insert sequentially
+      // (not Promise.all) so a partial failure is easy to reason about and report.
+      const created: Enquiry[] = [];
+      for (let i = 0; i < form.storageBikes.length; i++) {
+        const bike = form.storageBikes[i];
+        const { data, error } = await supabase.from("enquiries").insert({
+          customer_name: form.customer_name,
+          phone: form.phone,
+          email: form.email || null,
+          service_type: form.service_type,
+          source: form.source,
+          stage: form.stage,
+          estimated_value: Number(bike.estimatedValue) || 0,
+          sessions_total: sessionsTotal,
+          booking_at: null,
+          preferred_date: null,
+          storage_start_date: form.storage_start_date || null,
+          storage_end_date: form.storage_end_date || null,
+          bike_category: bike.category,
+          storage_term: form.storage_term,
+          bike_details: bike.details || null,
+          notes: form.notes || "",
+          assigned_to: !me?.roles?.includes("admin") ? me?.id || null : null,
+        }).select("*, sessions(*)").single();
+        if (error || !data) {
+          setCreating(false);
+          if (created.length > 0) setRows(prev => [...created, ...prev]);
+          setAddError(error?.message
+            ? `Bike ${i + 1} of ${form.storageBikes.length}: ${error.message}`
+            : `Could not create booking for bike ${i + 1} of ${form.storageBikes.length}.`);
+          return;
+        }
+        created.push(data as Enquiry);
+      }
+      setCreating(false);
+      setRows(prev => [...created, ...prev]);
+      setForm({ ...BLANK });
+      setClientSearch("");
+      setClientBikes([]);
+      setAdding(false);
+      showToast(created.length > 1
+        ? `${created.length} bookings created for ${form.customer_name}.`
+        : `Booking created for ${form.customer_name}.`);
+      return;
+    }
     const { data, error } = await supabase.from("enquiries").insert({
       customer_name: form.customer_name,
       phone: form.phone,
@@ -1109,15 +1163,22 @@ export default function Admin() {
 
   const currentLabel = FILTER_OPTS.find(o => o.key === filter)?.label ?? "All";
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
-  const setStorageCategory = (category: string) =>
-    setForm(prev => ({ ...prev, bike_category: category, estimated_value: storageTotalPrice(category, prev.storage_term) }));
+  // Switching the create form's Service select needs special handling only
+  // when landing on motorcycle storage: give it a fresh single-bike list
+  // (rather than whatever was left over from a previous visit to this
+  // service type — "switching away and back" should start clean).
+  const setServiceType = (service_type: string) =>
+    setForm(prev => prev.service_type === service_type ? prev : service_type === "motorcycle_storage"
+      ? { ...prev, service_type, storageBikes: [{ category: "adult", details: "", estimatedValue: storageTotalPrice("adult", prev.storage_term) }] }
+      : { ...prev, service_type });
   const setStorageTerm = (term: string) =>
     setForm(prev => {
-      const estimated_value = storageTotalPrice(prev.bike_category, term);
       const storage_end_date = term !== "month_to_month" && prev.storage_start_date
         ? addMonths(prev.storage_start_date, storageTermMonths(term))
         : prev.storage_end_date;
-      return { ...prev, storage_term: term, estimated_value, storage_end_date };
+      // The shared term drives every bike's price, not just one scalar.
+      const storageBikes = prev.storageBikes.map(b => ({ ...b, estimatedValue: storageTotalPrice(b.category, term) }));
+      return { ...prev, storage_term: term, storage_end_date, storageBikes };
     });
   const setStorageStartDate = (value: string) =>
     setForm(prev => {
@@ -1126,6 +1187,25 @@ export default function Admin() {
         : prev.storage_end_date;
       return { ...prev, storage_start_date: value, storage_end_date };
     });
+  const setStorageBikeCategory = (i: number, category: string) =>
+    setForm(prev => ({
+      ...prev,
+      storageBikes: prev.storageBikes.map((b, idx) => idx === i ? { ...b, category, estimatedValue: storageTotalPrice(category, prev.storage_term) } : b),
+    }));
+  const setStorageBikeDetails = (i: number, details: string) =>
+    setForm(prev => ({ ...prev, storageBikes: prev.storageBikes.map((b, idx) => idx === i ? { ...b, details } : b) }));
+  const setStorageBikeValue = (i: number, estimatedValue: number) =>
+    setForm(prev => ({ ...prev, storageBikes: prev.storageBikes.map((b, idx) => idx === i ? { ...b, estimatedValue } : b) }));
+  const addStorageBike = () =>
+    setForm(prev => ({
+      ...prev,
+      storageBikes: [...prev.storageBikes, { category: "adult", details: "", estimatedValue: storageTotalPrice("adult", prev.storage_term) }],
+    }));
+  const removeStorageBike = (i: number) =>
+    setForm(prev => ({
+      ...prev,
+      storageBikes: prev.storageBikes.length > 1 ? prev.storageBikes.filter((_, idx) => idx !== i) : prev.storageBikes,
+    }));
   const setRowStorageCategory = (r: Enquiry, category: string) =>
     editStaged(r.id, { bike_category: category, estimated_value: storageTotalPrice(category, r.storage_term || "month_to_month") });
   const setRowStorageTerm = (r: Enquiry, term: string) => {
@@ -1415,7 +1495,7 @@ export default function Admin() {
               <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
                 <input className="g51-input" value={form.email} onChange={e => set("email", e.target.value)} style={s.input} /></label>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Service</span>
-                <select className="g51-input" value={form.service_type} onChange={e => set("service_type", e.target.value)} style={s.input}>
+                <select className="g51-input" value={form.service_type} onChange={e => setServiceType(e.target.value)} style={s.input}>
                   <option value="academy">academy</option>
                   <option value="rental">rental</option>
                   <option value="desert_tour">desert tour</option>
@@ -1434,20 +1514,44 @@ export default function Admin() {
             </div>
             {form.service_type === "motorcycle_storage" && (
               <div style={s.controls}>
-                <label style={s.ctrl}><span style={s.ctrlLabel}>Bike category</span>
-                  <select className="g51-input" value={form.bike_category} onChange={e => setStorageCategory(e.target.value)} style={s.input}>
-                    <option value="adult">Adult (≥85cc)</option>
-                    <option value="junior">Junior (≤65cc)</option>
-                  </select></label>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Term</span>
                   <select className="g51-input" value={form.storage_term} onChange={e => setStorageTerm(e.target.value)} style={s.input}>
                     {STORAGE_TERMS.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
                   </select></label>
               </div>
             )}
+            {form.service_type === "motorcycle_storage" && (
+              <div style={{ marginBottom: 13 }}>
+                {form.storageBikes.map((bike, i) => (
+                  <div key={i} style={{ ...s.controls, alignItems: "flex-end", marginBottom: 8 }}>
+                    <label style={s.ctrl}><span style={s.ctrlLabel}>Bike category</span>
+                      <select className="g51-input" value={bike.category} onChange={e => setStorageBikeCategory(i, e.target.value)} style={s.input}>
+                        <option value="adult">Adult (≥85cc)</option>
+                        <option value="junior">Junior (≤65cc)</option>
+                      </select></label>
+                    <label style={s.ctrl}><span style={s.ctrlLabel}>Bike (make / model)</span>
+                      <input className="g51-input" value={bike.details} onChange={e => setStorageBikeDetails(i, e.target.value)} style={s.input} /></label>
+                    <label style={{ ...s.ctrl, flex: "0 1 140px" }}><span style={s.ctrlLabel}>{form.storage_term === "month_to_month" ? "Monthly (AED)" : "Total (AED)"}</span>
+                      <input className="g51-input" type="number" value={bike.estimatedValue} onChange={e => setStorageBikeValue(i, Number(e.target.value))} style={s.input} /></label>
+                    {form.storageBikes.length > 1 && (
+                      <button type="button" onClick={() => removeStorageBike(i)} title="Remove this bike"
+                        style={{ background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 13, padding: "0 2px 13px", flexShrink: 0 }}>× Remove</button>
+                    )}
+                  </div>
+                ))}
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <button type="button" onClick={addStorageBike} className="g51-btn g51-ghost" style={s.addSes}>+ Add another bike</button>
+                  <span style={{ fontSize: 12.5, color: "#9A938D" }}>
+                    Total: {aed(form.storageBikes.reduce((sum, b) => sum + (Number(b.estimatedValue) || 0), 0))}
+                  </span>
+                </div>
+              </div>
+            )}
             <div style={s.controls}>
-              <label style={s.ctrl}><span style={s.ctrlLabel}>{form.service_type === "motorcycle_storage" ? (form.storage_term === "month_to_month" ? "Monthly rate (AED)" : "Total for term (AED)") : "Est. value (AED)"}</span>
-                <input className="g51-input" type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
+              {form.service_type !== "motorcycle_storage" && (
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
+                  <input className="g51-input" type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
+              )}
               {!["motorcycle_storage", "workshop"].includes(form.service_type) && (
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Package size (sessions)</span>
                   <input className="g51-input" type="number" min={1} value={form.sessions_total} onChange={e => set("sessions_total", Math.max(1, Number(e.target.value) || 1))} style={s.input} /></label>
@@ -1554,6 +1658,9 @@ export default function Admin() {
                         {conflicted && <span style={s.conflictBadge} title="One of this booking's sessions overlaps another booking for the same staff member">⚠ Conflict</span>}
                         {renewal === "overdue" && <span style={s.conflictBadge} title="This storage term has ended — confirm renewal payment or arrange bike pick-up">⚠ Pick-up overdue</span>}
                         {renewal === "due_soon" && <span style={s.renewalDueBadge} title="This storage term ends soon — confirm renewal or pick-up">⏰ Renewal due</span>}
+                        {r.whatsapp_ack_error && (
+                          <span style={s.conflictBadge} title={`Automatic WhatsApp acknowledgement failed: ${r.whatsapp_ack_error} — message this customer manually`}>⚠ WhatsApp not sent</span>
+                        )}
                         {dirty.has(r.id) && <span style={s.unsaved}>unsaved</span>}
                       </div>
                       <div style={s.sub}>

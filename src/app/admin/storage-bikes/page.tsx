@@ -55,10 +55,17 @@ type ClientGroup = {
   bikes: StorageBike[]; worstStatus: RenewalStatus;
 };
 
+type BikeEntry = {
+  make: string; model: string; year: string; vin: string; bike_number: string;
+  engine_hours: number; monthly_rate: number;
+};
+const BLANK_BIKE_ENTRY: BikeEntry = {
+  make: "", model: "", year: "", vin: "", bike_number: "", engine_hours: 0, monthly_rate: 0,
+};
 const BLANK_BIKE = {
-  name: "", enquiry_id: "", make: "", model: "", year: "", engine_hours: 0,
-  vin: "", bike_number: "", storage_start_date: "", storage_end_date: "",
-  client_name: "", client_phone: "", client_email: "", monthly_rate: 0,
+  enquiry_id: "", storage_start_date: "", storage_end_date: "",
+  client_name: "", client_phone: "", client_email: "",
+  bikeEntries: [{ ...BLANK_BIKE_ENTRY }] as BikeEntry[],
 };
 const RENEWAL_THRESHOLD_DAYS = 14;
 const STORAGE_PACKAGES = [
@@ -235,6 +242,15 @@ export default function StorageBikesScreen() {
     toastTimer.current = setTimeout(() => setToast(null), 3400);
   }
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
+  const setEntry = (idx: number, k: keyof BikeEntry, v: string | number) => setForm(prev => ({
+    ...prev,
+    bikeEntries: prev.bikeEntries.map((entry, i) => i === idx ? { ...entry, [k]: v } : entry),
+  }));
+  const addBikeEntry = () => setForm(prev => ({ ...prev, bikeEntries: [...prev.bikeEntries, { ...BLANK_BIKE_ENTRY }] }));
+  const removeBikeEntry = (idx: number) => setForm(prev => ({
+    ...prev,
+    bikeEntries: prev.bikeEntries.length > 1 ? prev.bikeEntries.filter((_, i) => i !== idx) : prev.bikeEntries,
+  }));
   function toggleBike(id: string) { setExpandedBikes(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; }); }
   function toggleGroup(key: string) { setExpandedGroups(prev => { const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n; }); }
   // Group bikes by client phone (or name fallback)
@@ -906,25 +922,42 @@ export default function StorageBikesScreen() {
   async function createBike() {
     if (!form.client_name.trim()) { setAddError("Client name is required."); return; }
     setCreating(true); setAddError("");
-    const startingHours = Number(form.engine_hours) || 0;
-    const { data, error } = await supabase.from("storage_bikes").insert({
-      name: `${form.client_name.trim()} — ${[form.make, form.model].filter(Boolean).join(" ") || "bike"}`,
-      enquiry_id: form.enquiry_id || null,
-      make: form.make.trim() || null, model: form.model.trim() || null,
-      year: form.year.trim() || null, engine_hours: startingHours,
-      vin: form.vin.trim() || null, bike_number: form.bike_number.trim() || null,
-      storage_start_date: form.storage_start_date || null,
-      storage_end_date: form.storage_end_date || null,
-      client_name: form.client_name.trim() || null,
-      client_phone: form.client_phone.trim() || null,
-      client_email: form.client_email.trim() || null,
-      monthly_rate: Number(form.monthly_rate) || null,
-    }).select().single();
-    if (error || !data) { setCreating(false); setAddError(error?.message || "Could not add bike."); return; }
-    const bike = data as StorageBike;
-    setBikes(prev => [...prev, bike].sort((a, b) => (a.reference_number || "").localeCompare(b.reference_number || "")));
+    const clientName = form.client_name.trim();
+    const newBikes: StorageBike[] = [];
+    for (let i = 0; i < form.bikeEntries.length; i++) {
+      const entry = form.bikeEntries[i];
+      const startingHours = Number(entry.engine_hours) || 0;
+      const { data, error } = await supabase.from("storage_bikes").insert({
+        name: `${clientName} — ${[entry.make, entry.model].filter(Boolean).join(" ") || "bike"}`,
+        enquiry_id: form.enquiry_id || null,
+        make: entry.make.trim() || null, model: entry.model.trim() || null,
+        year: entry.year.trim() || null, engine_hours: startingHours,
+        vin: entry.vin.trim() || null, bike_number: entry.bike_number.trim() || null,
+        storage_start_date: form.storage_start_date || null,
+        storage_end_date: form.storage_end_date || null,
+        client_name: clientName || null,
+        client_phone: form.client_phone.trim() || null,
+        client_email: form.client_email.trim() || null,
+        monthly_rate: Number(entry.monthly_rate) || null,
+      }).select().single();
+      if (error || !data) {
+        setCreating(false);
+        setAddError(`Bike ${i + 1} of ${form.bikeEntries.length} failed: ${error?.message || "Could not add bike."}`);
+        if (newBikes.length > 0) {
+          setBikes(prev => [...prev, ...newBikes].sort((a, b) => (a.reference_number || "").localeCompare(b.reference_number || "")));
+        }
+        return;
+      }
+      newBikes.push(data as StorageBike);
+    }
+    setBikes(prev => [...prev, ...newBikes].sort((a, b) => (a.reference_number || "").localeCompare(b.reference_number || "")));
     setCreating(false); setForm({ ...BLANK_BIKE }); setAdding(false);
-    showToast(`Added ${bikePrimaryLabel(bike)} — ref ${bike.reference_number || "pending"}. Open the bike to add service items.`);
+    if (newBikes.length === 1) {
+      const bike = newBikes[0];
+      showToast(`Added ${bikePrimaryLabel(bike)} — ref ${bike.reference_number || "pending"}. Open the bike to add service items.`);
+    } else {
+      showToast(`Added ${newBikes.length} bikes for ${clientName}.`);
+    }
   }
 
   if (!ready) return <main style={s.loading}>Loading…</main>;
@@ -1030,22 +1063,41 @@ export default function StorageBikesScreen() {
             </div>
             <div style={s.section}>
               <div style={s.sectionLabel}>BIKE DETAILS</div>
-              <div style={s.fieldRow}>
-                <label style={s.fieldCtrl}><span style={s.fieldLabel}>Make</span>
-                  <input className="g51-input" value={form.make} onChange={e => set("make", e.target.value)} style={s.input} /></label>
-                <label style={s.fieldCtrl}><span style={s.fieldLabel}>Model</span>
-                  <input className="g51-input" value={form.model} onChange={e => set("model", e.target.value)} style={s.input} /></label>
-                <label style={s.fieldCtrl}><span style={s.fieldLabel}>Year</span>
-                  <input className="g51-input" value={form.year} onChange={e => set("year", e.target.value)} style={s.input} /></label>
-                <label style={s.fieldCtrl}><span style={s.fieldLabel}>Bike number</span>
-                  <input className="g51-input" value={form.bike_number} onChange={e => set("bike_number", e.target.value)} placeholder="e.g. Bike 1" style={s.input} /></label>
-              </div>
-              <div style={s.fieldRow}>
-                <label style={s.fieldCtrl}><span style={s.fieldLabel}>VIN</span>
-                  <input className="g51-input" value={form.vin} onChange={e => set("vin", e.target.value)} style={s.input} /></label>
-                <label style={s.fieldCtrl}><span style={s.fieldLabel}>Engine hours</span>
-                  <input className="g51-input" type="number" value={form.engine_hours} onChange={e => set("engine_hours", Number(e.target.value))} style={s.input} /></label>
-              </div>
+              {form.bikeEntries.map((entry, idx) => (
+                <div key={idx} style={{
+                  border: "1px solid #2A2623", borderRadius: 10, padding: "12px", marginBottom: 10,
+                  background: "#1B1816",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#9A938D" }}>BIKE {idx + 1}</span>
+                    {form.bikeEntries.length > 1 && (
+                      <button onClick={() => removeBikeEntry(idx)} className="g51-btn"
+                        style={{ background: "transparent", border: "none", color: RED, fontSize: 12, fontWeight: 600, cursor: "pointer", fontFamily: "inherit", padding: 0 }}>
+                        × Remove
+                      </button>
+                    )}
+                  </div>
+                  <div style={s.fieldRow}>
+                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Make</span>
+                      <input className="g51-input" value={entry.make} onChange={e => setEntry(idx, "make", e.target.value)} style={s.input} /></label>
+                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Model</span>
+                      <input className="g51-input" value={entry.model} onChange={e => setEntry(idx, "model", e.target.value)} style={s.input} /></label>
+                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Year</span>
+                      <input className="g51-input" value={entry.year} onChange={e => setEntry(idx, "year", e.target.value)} style={s.input} /></label>
+                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Bike number</span>
+                      <input className="g51-input" value={entry.bike_number} onChange={e => setEntry(idx, "bike_number", e.target.value)} placeholder="e.g. Bike 1" style={s.input} /></label>
+                  </div>
+                  <div style={{ ...s.fieldRow, marginTop: 10 }}>
+                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>VIN</span>
+                      <input className="g51-input" value={entry.vin} onChange={e => setEntry(idx, "vin", e.target.value)} style={s.input} /></label>
+                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Engine hours</span>
+                      <input className="g51-input" type="number" value={entry.engine_hours} onChange={e => setEntry(idx, "engine_hours", Number(e.target.value))} style={s.input} /></label>
+                    <label style={s.fieldCtrl}><span style={s.fieldLabel}>Monthly rate (AED)</span>
+                      <input className="g51-input" type="number" value={entry.monthly_rate} onChange={e => setEntry(idx, "monthly_rate", Number(e.target.value))} style={s.input} /></label>
+                  </div>
+                </div>
+              ))}
+              <button onClick={addBikeEntry} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, marginTop: 2 }}>+ Add another bike</button>
             </div>
             <div style={s.section}>
               <div style={s.sectionLabel}>STORAGE TERM</div>
@@ -1054,8 +1106,6 @@ export default function StorageBikesScreen() {
                   <input className="g51-input" type="date" value={form.storage_start_date} onChange={e => set("storage_start_date", e.target.value)} style={s.input} /></label>
                 <label style={s.fieldCtrl}><span style={s.fieldLabel}>End / renewal date</span>
                   <input className="g51-input" type="date" value={form.storage_end_date} onChange={e => set("storage_end_date", e.target.value)} style={s.input} /></label>
-                <label style={s.fieldCtrl}><span style={s.fieldLabel}>Monthly rate (AED)</span>
-                  <input className="g51-input" type="number" value={form.monthly_rate} onChange={e => set("monthly_rate", Number(e.target.value))} style={s.input} /></label>
               </div>
               <div style={s.fieldRow}>
                 <label style={s.fieldCtrl}><span style={s.fieldLabel}>Linked booking (optional)</span>

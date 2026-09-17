@@ -181,10 +181,10 @@ export default function EnquiryForm() {
   const [wsWork, setWsWork] = useState("");
 
   // storage
-  const [stCategory, setStCategory] = useState<"" | "adult" | "junior">("");
+  const [stBikes, setStBikes] = useState<{ category: "" | "adult" | "junior"; make: string; model: string }[]>([
+    { category: "", make: "", model: "" },
+  ]);
   const [stTerm, setStTerm] = useState<"" | "month_to_month" | "3_months" | "6_months" | "12_months">("");
-  const [stMake, setStMake] = useState("");
-  const [stModel, setStModel] = useState("");
 
   // membership
   const [memberPkg, setMemberPkg] = useState("");
@@ -240,6 +240,16 @@ export default function EnquiryForm() {
   function pickCat(c: "junior" | "adult") { setCat(c); setPkg(""); }
   function pickGear(g: boolean) { setOwnGear(g); setPkg(""); }
   function pickBike(b: string) { setBike(b); setDur(""); setRentalCustom(false); }
+
+  function updateStBike(idx: number, patch: Partial<{ category: "" | "adult" | "junior"; make: string; model: string }>) {
+    setStBikes(prev => prev.map((b, i) => (i === idx ? { ...b, ...patch } : b)));
+  }
+  function addStBike() {
+    setStBikes(prev => [...prev, { category: "", make: "", model: "" }]);
+  }
+  function removeStBike(idx: number) {
+    setStBikes(prev => prev.length > 1 ? prev.filter((_, i) => i !== idx) : prev);
+  }
 
   function requiredWaivers(): WaiverDef[] {
     return getRequiredWaivers(service, cat, desert)
@@ -318,15 +328,20 @@ export default function EnquiryForm() {
       return { price: null, selection: `Workshop / ${wsMake} ${wsModel}`.trim(), custom: true };
     }
     if (service === "motorcycle_storage") {
-      if (!stCategory || !stTerm) return { price: null, selection: "", custom: false };
-      const total = storageTotalPrice(stCategory, stTerm);
-      const catLabel = stCategory === "adult" ? "Adult" : "Junior";
+      const chosen = stBikes.filter(b => b.category);
+      if (!stBikes[0]?.category || !stTerm) return { price: null, selection: "", custom: false };
+      const total = chosen.reduce((sum, b) => sum + storageTotalPrice(b.category, stTerm), 0);
       const termInfo = STORAGE_TERMS.find(t => t.key === stTerm);
       const termLabel = termInfo ? (termInfo.key === "month_to_month" ? termInfo.label : `${termInfo.label} (paid upfront)`) : stTerm;
-      const bikeLabel = (stMake || stModel) ? ` — ${stMake} ${stModel}`.trim() : "";
+      const bikeList = chosen.map(b => {
+        const catLabel = b.category === "adult" ? "Adult" : "Junior";
+        const bikeLabel = (b.make || b.model) ? ` ${b.make} ${b.model}`.trim() : "";
+        return `${catLabel}${bikeLabel}`;
+      }).join(", ");
+      const countLabel = chosen.length > 1 ? ` — ${chosen.length} bikes: ${bikeList}` : (bikeList ? ` — ${bikeList}` : "");
       return {
         price: total,
-        selection: `Storage / ${catLabel} / ${termLabel}${bikeLabel}`,
+        selection: `Storage / ${termLabel}${countLabel}`,
         custom: false,
         perMonth: stTerm === "month_to_month",
       };
@@ -349,7 +364,7 @@ export default function EnquiryForm() {
     if (service === "desert_tour") return !!desert;
     if (service === "membership") return !!memberPkg;
     if (service === "workshop") return !!wsMake.trim() && !!wsModel.trim() && !!wsWork.trim();
-    if (service === "motorcycle_storage") return !!stCategory && !!stTerm;
+    if (service === "motorcycle_storage") return stBikes.some(b => !!b.category) && !!stTerm;
     return false;
   }
 
@@ -371,7 +386,6 @@ export default function EnquiryForm() {
     const isStorage = service === "motorcycle_storage";
     const bikeDetails =
       service === "workshop" ? `${wsMake} ${wsModel}`.trim() :
-      isStorage ? (`${stMake} ${stModel}`.trim() || null) :
       null;
     const waiverDefs = requiredWaivers();
     const res = await submitEnquiry({
@@ -390,7 +404,7 @@ export default function EnquiryForm() {
       bike_year: service === "workshop" ? wsYear || null : null,
       bike_hours: service === "workshop" ? wsHours || null : null,
       work_required: service === "workshop" ? wsWork || null : null,
-      bike_category: isStorage ? stCategory || null : null,
+      bike_category: null,
       storage_term: isStorage ? stTerm || null : null,
       storage_start_date: isStorage ? (preferredDate || null) : null,
       storage_end_date: isStorage && stTerm && stTerm !== "month_to_month" && preferredDate
@@ -400,6 +414,14 @@ export default function EnquiryForm() {
       notes,
       hp_field: hpField,
       turnstile_token: turnstileToken || undefined,
+      ...(isStorage ? {
+        storage_bikes: stBikes.filter(b => b.category).map(b => ({
+          category: b.category,
+          make: b.make || null,
+          model: b.model || null,
+          estimated_value: storageTotalPrice(b.category, stTerm),
+        })),
+      } : {}),
       ...(waiverDefs.length > 0 ? {
         waiver: {
           waiverIds: waiverDefs.map(w => w.id),
@@ -572,30 +594,61 @@ export default function EnquiryForm() {
 
         {step === 2 && service === "motorcycle_storage" && (
           <section style={s.card}>
-            <div style={s.q}>What size is the bike?</div>
+            <div style={s.q}>What size is the first bike?</div>
             <div style={s.row}>
-              <Opt active={stCategory === "adult"} onClick={() => setStCategory("adult")} title="Adult" sub="85cc and over" half />
-              <Opt active={stCategory === "junior"} onClick={() => setStCategory("junior")} title="Junior" sub="65cc and under" half />
+              <Opt active={stBikes[0].category === "adult"} onClick={() => updateStBike(0, { category: "adult" })} title="Adult" sub="85cc and over" half />
+              <Opt active={stBikes[0].category === "junior"} onClick={() => updateStBike(0, { category: "junior" })} title="Junior" sub="65cc and under" half />
             </div>
-            {stCategory && (
+            {stBikes[0].category && (
               <>
                 <div style={s.q}>How long would you like to store it?</div>
                 {STORAGE_TERMS.map(t => (
                   <Opt key={t.key} active={stTerm === t.key} onClick={() => setStTerm(t.key)}
                     title={t.label}
-                    sub={t.key === "month_to_month" ? undefined : `${aed(storageMonthlyRate(stCategory, t.key))}/month — paid upfront for ${t.months} months`}
-                    price={storageTotalPrice(stCategory, t.key)}
+                    sub={t.key === "month_to_month" ? undefined : `${aed(storageMonthlyRate(stBikes[0].category, t.key))}/month — paid upfront for ${t.months} months`}
+                    price={storageTotalPrice(stBikes[0].category, t.key)}
                     perMonth={t.key === "month_to_month"} />
                 ))}
               </>
             )}
-            {stCategory && stTerm && (
-              <div style={s.row}>
-                <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Make</span>
-                  <input value={stMake} onChange={e => setStMake(e.target.value)} placeholder="e.g. KTM" style={s.input} /></label>
-                <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Model</span>
-                  <input value={stModel} onChange={e => setStModel(e.target.value)} placeholder="e.g. 350 SX-F" style={s.input} /></label>
-              </div>
+            {stBikes[0].category && stTerm && (
+              <>
+                {stBikes.map((b, idx) => (
+                  <div key={idx} style={{ marginBottom: 16, paddingTop: idx > 0 ? 14 : 0, borderTop: idx > 0 ? "1px solid #2A2623" : undefined }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={s.q}>{idx === 0 ? "Bike 1" : `Bike ${idx + 1}`}</div>
+                      {stBikes.length > 1 && (
+                        <button type="button" onClick={() => removeStBike(idx)}
+                          style={{ background: "transparent", border: "1px solid #3A332E", borderRadius: 8, color: "#9A938D", fontSize: 12.5, padding: "4px 10px", cursor: "pointer", fontFamily: "inherit", marginBottom: 12 }}>
+                          Remove
+                        </button>
+                      )}
+                    </div>
+                    {idx > 0 && (
+                      <div style={s.row}>
+                        <Opt active={b.category === "adult"} onClick={() => updateStBike(idx, { category: "adult" })} title="Adult" sub="85cc and over" half />
+                        <Opt active={b.category === "junior"} onClick={() => updateStBike(idx, { category: "junior" })} title="Junior" sub="65cc and under" half />
+                      </div>
+                    )}
+                    <div style={s.row}>
+                      <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Make</span>
+                        <input value={b.make} onChange={e => updateStBike(idx, { make: e.target.value })} placeholder="e.g. KTM" style={s.input} /></label>
+                      <label style={{ ...s.field, flex: 1 }}><span style={s.label}>Model</span>
+                        <input value={b.model} onChange={e => updateStBike(idx, { model: e.target.value })} placeholder="e.g. 350 SX-F" style={s.input} /></label>
+                    </div>
+                  </div>
+                ))}
+
+                <button type="button" onClick={addStBike}
+                  style={{ background: "transparent", border: "1px solid #3A332E", borderRadius: 8, color: "#9A938D", fontSize: 12.5, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", marginBottom: 16 }}>
+                  + Add another bike
+                </button>
+
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 14, fontWeight: 700, borderTop: "1px solid #2A2623", paddingTop: 12 }}>
+                  <span>Total</span>
+                  <span>{aed(stBikes.filter(b => b.category).reduce((sum, b) => sum + storageTotalPrice(b.category, stTerm), 0))}</span>
+                </div>
+              </>
             )}
           </section>
         )}

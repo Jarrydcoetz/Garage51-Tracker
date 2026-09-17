@@ -2,6 +2,7 @@
 
 import { createClient } from "@supabase/supabase-js";
 import { WAIVERS, waiverRef } from "../lib/waivers";
+import { sendEnquiryAck } from "../lib/whatsapp";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -47,6 +48,7 @@ type EnquiryInput = {
   hp_field?: string;
   turnstile_token?: string;
   waiver?: WaiverAcceptanceInput;
+  storage_bikes?: { category: string; make?: string | null; model?: string | null; estimated_value: number }[];
 };
 
 async function verifyTurnstile(token: string): Promise<boolean> {
@@ -111,8 +113,9 @@ export async function submitEnquiry(input: EnquiryInput): Promise<{ ok: boolean;
     clientId = nc?.id ?? null;
   }
 
-  // 7. Insert enquiry
-  const { data: enqData, error } = await supabase.from("enquiries").insert({
+  // 7. Insert enquiry (or enquiries) — one row per bike when storage_bikes is present,
+  // otherwise the single-row insert exactly as before.
+  const baseEnquiryFields = {
     customer_name: name, phone, email: input.email || null,
     service_type: input.service_type, source: "form", stage: "new",
     sessions_total: input.sessions_total || 1,
@@ -121,31 +124,60 @@ export async function submitEnquiry(input: EnquiryInput): Promise<{ ok: boolean;
     selection: input.selection || null,
     rider_count: input.rider_count || null,
     preferred_date: input.preferred_date || null,
-    bike_details: input.bike_details || null,
     bike_year: input.bike_year || null,
     bike_hours: input.bike_hours || null,
     work_required: input.work_required || null,
-    bike_category: input.bike_category || null,
     storage_term: input.storage_term || null,
     storage_start_date: input.storage_start_date || null,
     storage_end_date: input.storage_end_date || null,
-    estimated_value: input.estimated_value ?? 0,
     notes: input.notes || "",
-  }).select("id").single();
+  };
 
-  if (error || !enqData) {
-    console.error("Enquiry insert failed:", error?.message);
-    return { ok: false, error: "Something went wrong. Please try again." };
+  let enqData: { id: string } | null = null;
+  const enquiryIds: string[] = [];
+
+  if (input.storage_bikes && input.storage_bikes.length > 0) {
+    for (const bikeEntry of input.storage_bikes) {
+      const { data, error } = await supabase.from("enquiries").insert({
+        ...baseEnquiryFields,
+        bike_details: [bikeEntry.make, bikeEntry.model].filter(Boolean).join(" ") || null,
+        bike_category: bikeEntry.category || null,
+        estimated_value: bikeEntry.estimated_value ?? 0,
+      }).select("id").single();
+
+      if (error || !data) {
+        console.error("Enquiry insert failed (storage bike):", error?.message);
+        return { ok: false, error: "Something went wrong. Please try again." };
+      }
+      if (!enqData) enqData = data;
+      enquiryIds.push(data.id);
+    }
+  } else {
+    const { data, error } = await supabase.from("enquiries").insert({
+      ...baseEnquiryFields,
+      bike_details: input.bike_details || null,
+      bike_category: input.bike_category || null,
+      estimated_value: input.estimated_value ?? 0,
+    }).select("id").single();
+
+    if (error || !data) {
+      console.error("Enquiry insert failed:", error?.message);
+      return { ok: false, error: "Something went wrong. Please try again." };
+    }
+    enqData = data;
+    enquiryIds.push(data.id);
   }
 
-  // 8. Store waiver acceptance records (one per waiver)
-  if (input.waiver && input.waiver.waiverIds.length > 0) {
+  // 8. Store waiver acceptance records (one per waiver), keyed off the first
+  // inserted enquiry. Storage bookings never carry waiver data, so in the
+  // multi-bike branch this is a no-op regardless of which id is used.
+  if (input.waiver && input.waiver.waiverIds.length > 0 && enqData) {
     const acceptedAt = new Date().toISOString();
     const records = input.waiver.waiverIds.map(waiverIdStr => {
       const def = WAIVERS[waiverIdStr];
       const ref = def ? waiverRef(def) : waiverIdStr;
       return {
-        enquiry_id: enqData.id,
+        enquiry_id: enqData!.id,
         waiver_id: waiverIdStr,
         waiver_version: def?.version || "1.0",
         document_hash: ref,
@@ -166,6 +198,18 @@ export async function submitEnquiry(input: EnquiryInput): Promise<{ ok: boolean;
     });
 
     await supabase.from("waiver_acceptances").insert(records);
+  }
+
+  // 9. Acknowledge the enquiry over WhatsApp. Never let this block or fail
+  // the customer's submission — they've already been saved above. Fires
+  // exactly once per submission, and stamps every enquiry row created in
+  // this batch (there's only ever one outside the multi-bike storage case).
+  try {
+    await sendEnquiryAck(phone, name, input.service_type);
+    await supabase.from("enquiries").update({ whatsapp_ack_sent_at: new Date().toISOString() }).in("id", enquiryIds);
+  } catch (err) {
+    console.error("WhatsApp enquiry acknowledgement failed:", err);
+    await supabase.from("enquiries").update({ whatsapp_ack_error: (err as Error).message }).in("id", enquiryIds);
   }
 
   return { ok: true };
