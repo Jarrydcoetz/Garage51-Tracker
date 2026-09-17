@@ -1893,16 +1893,14 @@ export default function Admin() {
                         )}
                       </div>
                     )}
-                    {r.paid_at && (
-                      r.zoho_invoice_id ? (
-                        <a href={r.zoho_invoice_url || "#"} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>
-                          Invoice {r.zoho_invoice_number}<span style={s.sentTick}>✓</span>
-                        </a>
-                      ) : (
-                        <button onClick={() => createZohoInvoiceForBooking(r)} disabled={zohoBusy === r.id} className="g51-btn" style={s.quickBtn}>
-                          {zohoBusy === r.id ? "Creating…" : "Create invoice"}
-                        </button>
-                      )
+                    {r.zoho_invoice_id ? (
+                      <a href={r.zoho_invoice_url || "#"} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>
+                        Invoice {r.zoho_invoice_number}<span style={s.sentTick}>✓</span>
+                      </a>
+                    ) : (
+                      <button onClick={() => createZohoInvoiceForBooking(r)} disabled={zohoBusy === r.id} className="g51-btn" style={s.quickBtn}>
+                        {zohoBusy === r.id ? "Creating…" : "Create invoice"}
+                      </button>
                     )}
                   </div>
 
