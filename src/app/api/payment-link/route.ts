@@ -49,7 +49,7 @@ export async function POST(req: Request) {
     }
 
     const data = await res.json();
-    return NextResponse.json({ id: data.id, url: data.payment_link_url ?? data.url });
+    return NextResponse.json({ id: data.id, url: data.redirect_url });
   } catch (err) {
     console.error("Payment link error:", err instanceof Error ? err.message : "unknown");
     return NextResponse.json({ error: "Payment gateway error." }, { status: 500 });
