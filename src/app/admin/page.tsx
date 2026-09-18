@@ -5,7 +5,7 @@ import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
 import { AdminNav } from "../../components/AdminNav";
-import { STORAGE_TERMS, storageTermMonths, storageTotalPrice, addMonths } from "../../lib/storagePricing";
+import { STORAGE_TERMS, storageTermMonths, storageTotalPrice, storageMonthlyRate, addMonths } from "../../lib/storagePricing";
 import {
   type Part,
   type StockMovement,
@@ -1138,15 +1138,42 @@ export default function Admin() {
         }
         created.push(data as Enquiry);
       }
+
+      // A storage booking only puts the client in the sales pipeline as an
+      // enquiry — the storage-bikes page tracks physical bikes separately,
+      // from its own storage_bikes table. Without this, a bike booked here
+      // never shows up there at all. Best-effort: the booking above already
+      // succeeded, so a failure here is reported but doesn't roll it back.
+      const bikeSyncFailures: string[] = [];
+      for (let i = 0; i < created.length; i++) {
+        const enq = created[i];
+        const bike = form.storageBikes[i];
+        const { error: sbError } = await supabase.from("storage_bikes").insert({
+          name: `${form.customer_name} — ${bike?.details || "bike"}`,
+          enquiry_id: enq.id,
+          storage_start_date: form.storage_start_date || null,
+          storage_end_date: form.storage_end_date || null,
+          client_name: form.customer_name,
+          client_phone: form.phone,
+          client_email: form.email || null,
+          monthly_rate: storageMonthlyRate(bike?.category || "adult", form.storage_term),
+        });
+        if (sbError) bikeSyncFailures.push(bike?.details || `bike ${i + 1}`);
+      }
+
       setCreating(false);
       setRows(prev => [...created, ...prev]);
       setForm({ ...BLANK });
       setClientSearch("");
       setClientBikes([]);
       setAdding(false);
-      showToast(created.length > 1
-        ? `${created.length} bookings created for ${form.customer_name}.`
-        : `Booking created for ${form.customer_name}.`);
+      if (bikeSyncFailures.length > 0) {
+        showToast(`Booking created, but couldn't add ${bikeSyncFailures.join(", ")} to the storage-bikes list — add manually there.`, "err");
+      } else {
+        showToast(created.length > 1
+          ? `${created.length} bookings created for ${form.customer_name}.`
+          : `Booking created for ${form.customer_name}.`);
+      }
       return;
     }
     const { data, error } = await supabase.from("enquiries").insert({

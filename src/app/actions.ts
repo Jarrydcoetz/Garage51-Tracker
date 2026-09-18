@@ -3,6 +3,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { WAIVERS, waiverRef } from "../lib/waivers";
 import { sendEnquiryAck } from "../lib/whatsapp";
+import { storageMonthlyRate } from "../lib/storagePricing";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -166,6 +167,46 @@ export async function submitEnquiry(input: EnquiryInput): Promise<{ ok: boolean;
     }
     enqData = data;
     enquiryIds.push(data.id);
+  }
+
+  // 7b. A storage booking only puts the client in the sales pipeline as an
+  // enquiry — the storage-bikes page tracks physical bikes separately, from
+  // its own storage_bikes table. Without this, a bike booked here never
+  // shows up there at all. Best-effort: logged, never blocks the customer's
+  // already-saved submission.
+  if (input.service_type === "motorcycle_storage") {
+    if (input.storage_bikes && input.storage_bikes.length > 0) {
+      for (let i = 0; i < input.storage_bikes.length; i++) {
+        const bikeEntry = input.storage_bikes[i];
+        const enqId = enquiryIds[i];
+        if (!enqId) continue;
+        const { error: sbError } = await supabase.from("storage_bikes").insert({
+          name: `${name} — ${[bikeEntry.make, bikeEntry.model].filter(Boolean).join(" ") || "bike"}`,
+          enquiry_id: enqId,
+          make: bikeEntry.make || null,
+          model: bikeEntry.model || null,
+          storage_start_date: input.storage_start_date || null,
+          storage_end_date: input.storage_end_date || null,
+          client_name: name,
+          client_phone: phone,
+          client_email: input.email || null,
+          monthly_rate: storageMonthlyRate(bikeEntry.category, input.storage_term || "month_to_month"),
+        });
+        if (sbError) console.error("storage_bikes insert failed:", sbError.message);
+      }
+    } else if (enqData) {
+      const { error: sbError } = await supabase.from("storage_bikes").insert({
+        name: `${name} — ${input.bike_details || "bike"}`,
+        enquiry_id: enqData.id,
+        storage_start_date: input.storage_start_date || null,
+        storage_end_date: input.storage_end_date || null,
+        client_name: name,
+        client_phone: phone,
+        client_email: input.email || null,
+        monthly_rate: storageMonthlyRate(input.bike_category || "adult", input.storage_term || "month_to_month"),
+      });
+      if (sbError) console.error("storage_bikes insert failed:", sbError.message);
+    }
   }
 
   // 8. Store waiver acceptance records (one per waiver), keyed off the first
