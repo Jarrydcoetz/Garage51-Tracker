@@ -1022,6 +1022,17 @@ export default function Admin() {
     showToast(`Applied "${product.name}" — ${aed(product.price)}.`);
   }
 
+  async function removePartFromBooking(row: Enquiry, partId: string, partName: string) {
+    if (!window.confirm(`Remove "${partName}" from this job? The stock used will be returned to inventory.`)) return;
+    const { error } = await supabase.from("stock_movements").delete()
+      .eq("enquiry_id", row.id).eq("part_id", partId).eq("reason", "used").is("service_product_application_id", null);
+    if (error) { showToast(error.message || "Could not remove the part.", "err"); return; }
+    const newMovements = movements.filter(m => !(m.enquiry_id === row.id && m.part_id === partId && m.reason === "used" && !m.service_product_application_id));
+    setMovements(newMovements);
+    await syncWorkshopEstimate(row, { movements: newMovements });
+    showToast(`"${partName}" removed.`);
+  }
+
   async function removeServiceProduct(app: ServiceProductApplication) {
     if (!window.confirm(`Remove "${app.name_snapshot}" from this job? This will also restore any stock decremented by the product recipe.`)) return;
     const row = rows.find(r => r.id === app.enquiry_id);
@@ -2761,6 +2772,9 @@ export default function Admin() {
                                     <div key={line.part_id} style={s.sesRow}>
                                       <span style={{ flex: "1 1 auto" }}>{part?.name || "Unknown part"} × {line.qty}</span>
                                       <span style={{ fontWeight: 700 }}>{aed(line.qty * line.sellSnapshot)}</span>
+                                      <button onClick={() => removePartFromBooking(r, line.part_id, part?.name || "this part")}
+                                        title="Remove this part"
+                                        style={{ background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 17, lineHeight: 1, padding: "0 2px", flexShrink: 0 }}>×</button>
                                     </div>
                                   );
                                 })}

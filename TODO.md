@@ -74,3 +74,13 @@ Started: 2026-09-25. Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md
 - [ ] Agent: admin/page.tsx — eligibility, conflict exemption, session mirroring + single shared calendar event, create-group flow, merge-existing flow, group header, ungroup/remove
 - [ ] Verify (tsc, eslint, build), review diff
 - [ ] Commit/push on Jarryd's go-ahead, then click-through per plan's Verification section
+
+---
+
+# TODO — Round: Parts page fixes (2026-09-25)
+Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md`
+- [x] Custom part categories (`part_categories` table, "+ New category" on filter row and Category selects)
+- [x] Explicit Save/Cancel on part edit (name, SKU, unit, category, supplier, cost, markup, reorder, location)
+- [x] Remove a part from a booking card (× on parts line; restores stock, re-syncs estimate)
+- [ ] Jarryd runs the `part_categories` SQL in Supabase
+- [ ] Commit/push on go-ahead, then click-through

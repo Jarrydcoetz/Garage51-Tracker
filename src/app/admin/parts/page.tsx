@@ -27,11 +27,25 @@ const CATEGORIES = [
   { key: "hardware", label: "Hardware & fasteners" },
   { key: "consumables", label: "Shop consumables" },
 ];
-const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(CATEGORIES.map(c => [c.key, c.label]));
 const CATEGORY_COLOR: Record<string, string> = {
   fluids: "#3B9EFF", filters: "#FFB02E", brakes: "#ED1C24", drivetrain: "#A78BFA",
   electrical: "#2FBF71", tires: "#5DCAA5", hardware: "#9A938D", consumables: "#D4537E",
 };
+const CUSTOM_COLORS = ["#F97316", "#14B8A6", "#EAB308", "#8B5CF6", "#EC4899", "#22C55E", "#0EA5E9", "#F43F5E"];
+function colorForCategory(key: string): string {
+  if (CATEGORY_COLOR[key]) return CATEGORY_COLOR[key];
+  let h = 0;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  return CUSTOM_COLORS[h % CUSTOM_COLORS.length];
+}
+type PartDraft = { name: string; sku: string; unit: string; category: string; supplier_id: string; cost_price: string; markup_pct: string; reorder_threshold: string; location: string };
+function toDraft(p: Part): PartDraft {
+  return {
+    name: p.name, sku: p.sku || "", unit: p.unit, category: p.category, supplier_id: p.supplier_id || "",
+    cost_price: String(p.cost_price ?? 0), markup_pct: String(p.markup_pct ?? 0), reorder_threshold: String(p.reorder_threshold ?? 0), location: p.location || "",
+  };
+}
+const NEW_CATEGORY = "__new_category__";
 const CATEGORY_PREFIX: Record<string, string> = {
   fluids: "FLU", filters: "FIL", brakes: "BRK", drivetrain: "DRV",
   electrical: "ELE", tires: "TIR", hardware: "HW", consumables: "CON",
@@ -100,6 +114,9 @@ export default function PartsScreen() {
   const [addError, setAddError] = useState("");
   const [form, setForm] = useState({ ...BLANK_PART });
   const [filter, setFilter] = useState("all");
+  const [customCats, setCustomCats] = useState<{ key: string; label: string }[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, PartDraft>>({});
+  const [savingPartId, setSavingPartId] = useState<string | null>(null);
   const [receiveOpenId, setReceiveOpenId] = useState<string | null>(null);
   const [receiveQty, setReceiveQty] = useState("");
   const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
@@ -110,13 +127,15 @@ export default function PartsScreen() {
       if (!data.session) { router.replace("/login"); return; }
       const { data: prof } = await supabase.from("profiles").select("roles").eq("id", data.session.user.id).single();
       setMyRoles((prof as { roles: string[] } | null)?.roles || []);
-      const [{ data: p }, { data: m }, { data: s }, { data: sp }, { data: spi }] = await Promise.all([
+      const [{ data: p }, { data: m }, { data: s }, { data: sp }, { data: spi }, { data: pc }] = await Promise.all([
         supabase.from("parts").select("*").eq("active", true).order("name"),
         supabase.from("stock_movements").select("id, part_id, quantity, reason, created_at"),
         supabase.from("suppliers").select("id, name").order("name"),
         supabase.from("service_products").select("*").eq("active", true).order("name"),
         supabase.from("service_product_items").select("*"),
+        supabase.from("part_categories").select("key, label").order("label"),
       ]);
+      setCustomCats((pc as { key: string; label: string }[]) || []);
       setParts((p as Part[]) || []);
       setMovements((m as Movement[]) || []);
       setSuppliers((s as Supplier[]) || []);
@@ -169,9 +188,51 @@ export default function PartsScreen() {
   function editPartLocal(id: string, patch: Partial<Part>) {
     setParts(prev => prev.map(p => (p.id === id ? { ...p, ...patch } : p)));
   }
-  async function savePart(id: string, patch: Partial<Part>) {
-    const { error } = await supabase.from("parts").update(patch).eq("id", id);
-    if (error) showToast(error.message || "Could not save changes.", "err");
+
+  const categories = [...CATEGORIES, ...customCats.filter(c => !CATEGORIES.some(b => b.key === c.key))];
+  const categoryLabel = (key: string) => categories.find(c => c.key === key)?.label || key;
+
+  // Returns the new category's key (also selects nothing itself) or null if cancelled/failed.
+  async function createCategory(): Promise<string | null> {
+    const label = window.prompt("New category name:")?.trim();
+    if (!label) return null;
+    const key = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!key) { showToast("Use letters or numbers in the category name.", "err"); return null; }
+    if (categories.some(c => c.key === key || c.label.toLowerCase() === label.toLowerCase())) {
+      showToast("That category already exists.", "err");
+      return null;
+    }
+    const { error } = await supabase.from("part_categories").insert({ key, label });
+    if (error) { showToast(error.message || "Could not create the category.", "err"); return null; }
+    setCustomCats(prev => [...prev, { key, label }].sort((a, b) => a.label.localeCompare(b.label)));
+    showToast(`Added category "${label}".`);
+    return key;
+  }
+
+  function setDraftField(p: Part, k: keyof PartDraft, v: string) {
+    setDrafts(prev => ({ ...prev, [p.id]: { ...(prev[p.id] ?? toDraft(p)), [k]: v } }));
+  }
+  function discardDraft(id: string) {
+    setDrafts(prev => { const next = { ...prev }; delete next[id]; return next; });
+  }
+  async function savePartDraft(p: Part) {
+    const d = drafts[p.id];
+    if (!d) return;
+    if (!d.name.trim()) { showToast("Name is required.", "err"); return; }
+    const cost = Number(d.cost_price), markup = Number(d.markup_pct), reorder = Number(d.reorder_threshold);
+    if ([cost, markup, reorder].some(n => Number.isNaN(n) || n < 0)) { showToast("Prices and thresholds must be numbers, zero or more.", "err"); return; }
+    const patch: Partial<Part> = {
+      name: d.name.trim(), sku: d.sku.trim() || null, unit: d.unit, category: d.category,
+      supplier_id: d.supplier_id || null, cost_price: cost, markup_pct: markup, reorder_threshold: reorder,
+      location: d.location.trim() || null,
+    };
+    setSavingPartId(p.id);
+    const { error } = await supabase.from("parts").update(patch).eq("id", p.id);
+    setSavingPartId(null);
+    if (error) { showToast(error.message || "Could not save changes.", "err"); return; }
+    editPartLocal(p.id, patch);
+    discardDraft(p.id);
+    showToast(`Saved "${patch.name}".`);
   }
 
   async function createProduct() {
@@ -236,7 +297,7 @@ export default function PartsScreen() {
   const visible = filter === "all" ? parts : parts.filter(p => p.category === filter);
   const lowCount = parts.filter(p => isLow(p, stockFor(p.id, movements))).length;
   const counts: Record<string, number> = { all: parts.length };
-  CATEGORIES.forEach(c => { counts[c.key] = parts.filter(p => p.category === c.key).length; });
+  categories.forEach(c => { counts[c.key] = parts.filter(p => p.category === c.key).length; });
 
   return (
     <main style={s.page}>
@@ -279,8 +340,14 @@ export default function PartsScreen() {
               </div>
               <div style={s.controls}>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Category</span>
-                  <select className="g51-input" value={form.category} onChange={e => set("category", e.target.value)} style={s.input}>
-                    {CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                  <select className="g51-input" value={form.category}
+                    onChange={async e => {
+                      if (e.target.value !== NEW_CATEGORY) { set("category", e.target.value); return; }
+                      const key = await createCategory();
+                      if (key) set("category", key);
+                    }} style={s.input}>
+                    {categories.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                    <option value={NEW_CATEGORY}>+ New category…</option>
                   </select></label>
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Unit</span>
                   <select className="g51-input" value={form.unit} onChange={e => set("unit", e.target.value)} style={s.input}>
@@ -396,12 +463,15 @@ export default function PartsScreen() {
           <button onClick={() => setFilter("all")} className="g51-btn" style={{ ...s.filterPill, ...(filter === "all" ? s.filterPillOn : {}) }}>
             All <span style={s.filterCount}>{counts.all}</span>
           </button>
-          {CATEGORIES.map(c => (
+          {categories.map(c => (
             <button key={c.key} onClick={() => setFilter(c.key)} className="g51-btn"
-              style={{ ...s.filterPill, ...(filter === c.key ? { ...s.filterPillOn, borderColor: CATEGORY_COLOR[c.key] } : {}) }}>
+              style={{ ...s.filterPill, ...(filter === c.key ? { ...s.filterPillOn, borderColor: colorForCategory(c.key) } : {}) }}>
               {c.label} <span style={s.filterCount}>{counts[c.key] ?? 0}</span>
             </button>
           ))}
+          <button onClick={async () => { const key = await createCategory(); if (key) setFilter(key); }} className="g51-btn g51-ghost" style={s.filterPill}>
+            + New category
+          </button>
         </div>
 
         {visible.length === 0 ? (
@@ -417,8 +487,8 @@ export default function PartsScreen() {
                   <div style={s.rowMain}>
                     <div style={s.nameRow}>
                       <span style={s.partName}>{p.name}</span>
-                      <span style={{ ...s.pill, color: CATEGORY_COLOR[p.category], borderColor: CATEGORY_COLOR[p.category] + "66", background: CATEGORY_COLOR[p.category] + "1c" }}>
-                        {CATEGORY_LABEL[p.category] || p.category}
+                      <span style={{ ...s.pill, color: colorForCategory(p.category), borderColor: colorForCategory(p.category) + "66", background: colorForCategory(p.category) + "1c" }}>
+                        {categoryLabel(p.category)}
                       </span>
                       {low && <span style={s.lowBadge}>⚠ Low stock</span>}
                     </div>
@@ -447,31 +517,57 @@ export default function PartsScreen() {
                   </div>
                   <details style={s.editWrap}>
                     <summary style={s.editSummary}>Edit</summary>
-                    <div style={s.controls}>
-                      <label style={s.ctrl}><span style={s.ctrlLabel}>Cost price (AED)</span>
-                        <input className="g51-input" type="number" value={p.cost_price}
-                          onChange={e => editPartLocal(p.id, { cost_price: Number(e.target.value) })}
-                          onBlur={e => savePart(p.id, { cost_price: Number(e.target.value) })} style={s.input} /></label>
-                      <label style={s.ctrl}><span style={s.ctrlLabel}>Markup %</span>
-                        <input className="g51-input" type="number" value={p.markup_pct}
-                          onChange={e => editPartLocal(p.id, { markup_pct: Number(e.target.value) })}
-                          onBlur={e => savePart(p.id, { markup_pct: Number(e.target.value) })} style={s.input} /></label>
-                      <label style={s.ctrl}><span style={s.ctrlLabel}>Reorder at</span>
-                        <input className="g51-input" type="number" value={p.reorder_threshold}
-                          onChange={e => editPartLocal(p.id, { reorder_threshold: Number(e.target.value) })}
-                          onBlur={e => savePart(p.id, { reorder_threshold: Number(e.target.value) })} style={s.input} /></label>
-                    </div>
-                    <div style={s.controls}>
-                      <label style={s.ctrl}><span style={s.ctrlLabel}>Shelf / bin location</span>
-                        <input className="g51-input" value={p.location || ""}
-                          onChange={e => editPartLocal(p.id, { location: e.target.value })}
-                          onBlur={e => savePart(p.id, { location: e.target.value || null })} style={s.input} /></label>
-                      <label style={s.ctrl}><span style={s.ctrlLabel}>Category</span>
-                        <select className="g51-input" value={p.category}
-                          onChange={e => { editPartLocal(p.id, { category: e.target.value }); savePart(p.id, { category: e.target.value }); }} style={s.input}>
-                          {CATEGORIES.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
-                        </select></label>
-                    </div>
+                    {(() => {
+                      const d = drafts[p.id] ?? toDraft(p);
+                      const dirty = !!drafts[p.id];
+                      return (
+                        <>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Name</span>
+                              <input className="g51-input" value={d.name} onChange={e => setDraftField(p, "name", e.target.value)} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>SKU</span>
+                              <input className="g51-input" value={d.sku} onChange={e => setDraftField(p, "sku", e.target.value)} style={s.input} /></label>
+                          </div>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Category</span>
+                              <select className="g51-input" value={d.category}
+                                onChange={async e => {
+                                  if (e.target.value !== NEW_CATEGORY) { setDraftField(p, "category", e.target.value); return; }
+                                  const key = await createCategory();
+                                  if (key) setDraftField(p, "category", key);
+                                }} style={s.input}>
+                                {categories.map(c => <option key={c.key} value={c.key}>{c.label}</option>)}
+                                <option value={NEW_CATEGORY}>+ New category…</option>
+                              </select></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Unit</span>
+                              <select className="g51-input" value={d.unit} onChange={e => setDraftField(p, "unit", e.target.value)} style={s.input}>
+                                {(UNITS.includes(d.unit) ? UNITS : [...UNITS, d.unit]).map(u => <option key={u} value={u}>{u}</option>)}
+                              </select></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Supplier</span>
+                              <select className="g51-input" value={d.supplier_id} onChange={e => setDraftField(p, "supplier_id", e.target.value)} style={s.input}>
+                                <option value="">None</option>
+                                {suppliers.map(sp => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+                              </select></label>
+                          </div>
+                          <div style={s.controls}>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Cost price (AED)</span>
+                              <input className="g51-input" type="number" value={d.cost_price} onChange={e => setDraftField(p, "cost_price", e.target.value)} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Markup %</span>
+                              <input className="g51-input" type="number" value={d.markup_pct} onChange={e => setDraftField(p, "markup_pct", e.target.value)} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Reorder at</span>
+                              <input className="g51-input" type="number" value={d.reorder_threshold} onChange={e => setDraftField(p, "reorder_threshold", e.target.value)} style={s.input} /></label>
+                            <label style={s.ctrl}><span style={s.ctrlLabel}>Shelf / bin location</span>
+                              <input className="g51-input" value={d.location} onChange={e => setDraftField(p, "location", e.target.value)} style={s.input} /></label>
+                          </div>
+                          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                            <button onClick={() => savePartDraft(p)} disabled={!dirty || savingPartId === p.id} className="g51-btn g51-primary" style={s.smallPrimary}>
+                              {savingPartId === p.id ? "Saving…" : "Save changes"}
+                            </button>
+                            {dirty && <button onClick={() => discardDraft(p.id)} className="g51-btn g51-ghost" style={s.smallGhost}>Cancel</button>}
+                          </div>
+                        </>
+                      );
+                    })()}
                     <button onClick={async () => {
                       await supabase.from("parts").update({ active: false }).eq("id", p.id);
                       setParts(prev => prev.filter(x => x.id !== p.id));
