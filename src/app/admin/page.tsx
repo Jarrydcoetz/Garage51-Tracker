@@ -247,8 +247,7 @@ function findConflict(allRows: Enquiry[], forRow: Enquiry, forSession: Session):
 }
 
 function lessonGroupEligible(r: Enquiry): boolean {
-  return r.service_type === "academy" && r.stage !== "cancelled" && r.stage !== "lost" && !r.lesson_group_id &&
-    (r.sessions_total === 1 || /group/i.test(r.selection || ""));
+  return r.service_type === "academy" && r.stage !== "cancelled" && r.stage !== "lost" && !r.lesson_group_id;
 }
 
 function nextLessonLabel(members: Enquiry[]): string | null {
@@ -431,6 +430,7 @@ export default function Admin() {
   const [showClientDrop, setShowClientDrop] = useState(false);
   const [lg, setLg] = useState(newLg);
   const [selectMode, setSelectMode] = useState(false);
+  const [groupPkgConfirmed, setGroupPkgConfirmed] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [groupPanelOpen, setGroupPanelOpen] = useState(false);
   const [groupInstructor, setGroupInstructor] = useState("");
@@ -866,7 +866,7 @@ export default function Admin() {
       for (let i = 1; i < work.length; i++) work[i] = await mirrorToRow(work[i], ls.seq, patch);
     }
     for (const seq of new Set(work.flatMap(m => (m.sessions || []).map(x => x.seq)))) await syncGroupLesson(work, seq);
-    setSelectMode(false); setSelectedIds([]); setGroupPanelOpen(false); setGroupBusy(false);
+    setSelectMode(false); setSelectedIds([]); setGroupPanelOpen(false); setGroupBusy(false); setGroupPkgConfirmed(false);
     showToast(`${work.length} bookings grouped into one lesson.`);
   }
 
@@ -2305,7 +2305,7 @@ export default function Admin() {
         )}
 
         <div style={s.toolbar}>
-          <button onClick={() => { setSelectMode(m => !m); setSelectedIds([]); setGroupPanelOpen(false); }} className="g51-btn g51-ghost"
+          <button onClick={() => { setSelectMode(m => !m); setSelectedIds([]); setGroupPanelOpen(false); setGroupPkgConfirmed(false); }} className="g51-btn g51-ghost"
             style={{ ...s.ghostBtn, height: 42, ...(selectMode ? { color: BUSINESS_UNIT_COLOR.academy, borderColor: BUSINESS_UNIT_COLOR.academy + "66" } : {}) }}>
             Group lessons
           </button>
@@ -2354,11 +2354,17 @@ export default function Admin() {
                       <option value="">Unassigned</option>
                       {staff.map(p => <option key={p.id} value={p.id}>{p.name || "(no name)"} · {(p.roles || []).join(", ")}</option>)}
                     </select></label>
+                  {selectedRows[0].sessions_total > 1 && (
+                    <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, color: "#D7D0CA", cursor: "pointer" }}>
+                      <input type="checkbox" checked={groupPkgConfirmed} onChange={e => setGroupPkgConfirmed(e.target.checked)} />
+                      These are a predetermined group package ({selectedRows[0].sessions_total} lessons shared), not individual packages
+                    </label>
+                  )}
                   <div style={{ fontSize: 12.5, color: "#FFB02E" }}>
                     {selectedRows[0].customer_name}&apos;s lesson times will overwrite the other bookings&apos; lesson times, and their individual calendar events will be replaced by one shared event.
                   </div>
                   <div style={s.actions}>
-                    <button onClick={applyLessonGrouping} disabled={groupBusy} className="g51-btn g51-primary" style={s.save}>{groupBusy ? "Grouping…" : "Confirm group"}</button>
+                    <button onClick={applyLessonGrouping} disabled={groupBusy || (selectedRows[0].sessions_total > 1 && !groupPkgConfirmed)} className="g51-btn g51-primary" style={s.save}>{groupBusy ? "Grouping…" : "Confirm group"}</button>
                     <button onClick={() => setGroupPanelOpen(false)} disabled={groupBusy} className="g51-btn g51-ghost" style={s.ghostBtn}>Back</button>
                   </div>
                 </div>
@@ -2367,7 +2373,7 @@ export default function Admin() {
               <span style={{ fontSize: 13, color: "#9A938D" }}>
                 {selectedRows.length >= 2
                   ? "These bookings have different package sizes — tick bookings with the same number of lessons."
-                  : "Tick 2 or more academy bookings (single lessons or group packages) to group them into one lesson."}
+                  : "Tick 2 or more academy bookings to group them into one lesson (single lessons, or clients sharing a group package — never individual packages)."}
               </span>
             )}
           </div>
@@ -2459,6 +2465,9 @@ export default function Admin() {
                     )}
                     {r.phone && (
                       <a href={waChat(r.phone)} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>Message</a>
+                    )}
+                    {lessonGroupEligible(r) && (
+                      <button onClick={() => { setSelectMode(true); setSelectedIds([r.id]); setGroupPanelOpen(false); setGroupPkgConfirmed(false); window.scrollTo({ top: 0, behavior: "smooth" }); showToast(`${r.customer_name} selected — tick the other bookings to group with.`); }} className="g51-btn" style={s.quickBtn}>Group lesson</button>
                     )}
                     {isAcademy && r.lesson_group_id && (
                       <button onClick={() => removeFromGroup(r)} className="g51-btn" style={s.quickBtn}>Remove from group</button>
