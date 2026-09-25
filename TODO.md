@@ -36,3 +36,27 @@ Started: 2026-09-15. Plan: `/Users/jarryd/.claude/plans/sunny-stirring-eclipse.m
 - [ ] Once Jarryd has Meta test credentials + approved template: joint test — submit one real enquiry, confirm the WhatsApp message arrives on a verified test number and `whatsapp_ack_sent_at` is set
 
 Two test rows now sit in production `enquiries` for Jarryd to delete: phone +971500000001 and +971500000002, both named "TEST — Claude live test (delete me)".
+
+---
+
+# TODO — Round: Reconcile storage-bike service logs with the workshop booking/invoice flow
+
+Started: 2026-09-25. Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md` (approved 2026-09-25)
+
+- [x] Explore storage-bikes service-log flow and workshop-intake flow (2 Explore agents)
+- [x] Plan approved; manual-log behaviour chosen: booking created by default, can untick for no-charge work
+- [x] Write shared idempotent helper `src/lib/serviceLog.ts` (`recordServiceForJob`)
+- [ ] Jarryd runs the schema SQL in Supabase (enquiries.storage_bike_id, enquiries.job_group_id, unique index on sb_service_log)
+- [x] Agent A: multi-bike workshop intake + workshop group display/combined actions (admin/page.tsx)
+- [x] Agent B: storage page manual log -> booking flow, idempotent invoice log, createJobCard sets storage_bike_id (storage-bikes/page.tsx)
+- [ ] Agent C: workshop completion writes service log + engine hours (workshop/page.tsx)
+- [x] Integrate + verify: tsc, eslint on touched files, npm run build, diff review
+- [ ] Commit/push on Jarryd's go-ahead, then manual click-through per plan's Verification section
+
+## Follow-up (2026-09-25): single flow — workshop intake is the only path
+- [x] Decision: Storage Bikes page hands off to workshop intake; log is written on job completion
+- [ ] Jarryd runs: `alter table enquiries add column service_item_id uuid references sb_service_items(id) on delete set null;`
+- [x] admin/page.tsx: deep-link (?ws_bike/ws_item/ws_work/ws_amount) opens intake pre-filled; intake stores service_item_id and points storage_bikes.service_enquiry_id at the new job
+- [x] workshop/page.tsx: completion passes service_item_id so the interval item's last_done_hours updates
+- [ ] storage-bikes/page.tsx (agent): 'Log service' hand-off button, 'Past record' backfill form (log-only), request flow hands off instead of creating job cards
+- [ ] Verify (tsc/eslint/build), review diff, commit on go-ahead

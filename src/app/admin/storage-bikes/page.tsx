@@ -5,6 +5,7 @@ import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
 import { AdminNav } from "../../../components/AdminNav";
+import { recordServiceForJob } from "../../../lib/serviceLog";
 // bikeServiceShared no longer used — service tracking is now fully custom per bike
 
 const RED = "#ED1C24";
@@ -165,9 +166,6 @@ export default function StorageBikesScreen() {
   // Service request flow state
   const [servicePanel, setServicePanel] = useState<string | null>(null);
   const [serviceDraft, setServiceDraft] = useState<Record<string, { text: string; cost: string }>>({});
-  const [jobCardPanel, setJobCardPanel] = useState<string | null>(null);
-  const [jobCardForm, setJobCardForm] = useState({ work: "", assignedTo: "", amount: "", date: "" });
-  const [creatingJob, setCreatingJob] = useState(false);
   const [profiles, setProfiles] = useState<StaffProfile[]>([]);
   const [serviceEnquiries, setServiceEnquiries] = useState<Record<string, ServiceEnquiry>>({});
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -588,37 +586,6 @@ export default function StorageBikesScreen() {
     showToast("Service request sent via WhatsApp.");
   }
 
-  async function createJobCard(bike: StorageBike, group: ClientGroup) {
-    if (!jobCardForm.work.trim()) { showToast("Describe the work required.", "err"); return; }
-    if (!jobCardForm.amount || Number(jobCardForm.amount) < 1) { showToast("Enter an estimated amount.", "err"); return; }
-    setCreatingJob(true);
-    const { data, error } = await supabase.from("enquiries").insert({
-      service_type: "workshop",
-      customer_name: bike.client_name || group.name || bike.name,
-      phone: bike.client_phone || group.phone || null,
-      email: bike.client_email || group.email || null,
-      stage: "booked",
-      job_status: "queued",
-      bike_details: bikePrimaryLabel(bike),
-      bike_year: bike.year || null,
-      vin: bike.vin || null,
-      work_required: jobCardForm.work.trim(),
-      assigned_to: jobCardForm.assignedTo || null,
-      estimated_value: Number(jobCardForm.amount),
-      preferred_date: jobCardForm.date || null,
-      notes: `Storage bike ${bike.reference_number || bike.id.slice(0, 8)} — service confirmed by client`,
-    }).select().single();
-    if (error || !data) { showToast(error?.message || "Could not create job.", "err"); setCreatingJob(false); return; }
-    const enqId = (data as { id: string }).id;
-    await supabase.from("storage_bikes").update({ service_enquiry_id: enqId }).eq("id", bike.id);
-    editBikeLocal(bike.id, { service_enquiry_id: enqId });
-    setServiceEnquiries(prev => ({ ...prev, [enqId]: { ...data as ServiceEnquiry } }));
-    setJobCardPanel(null);
-    setJobCardForm({ work: "", assignedTo: "", amount: "", date: "" });
-    setCreatingJob(false);
-    showToast("Job card created — now in the workshop queue.");
-  }
-
   async function sendServicePaymentWhatsApp(bike: StorageBike, group: ClientGroup, enq: ServiceEnquiry) {
     const phone = pendingClient[group.key]?.phone || group.phone;
     if (!phone) { showToast("No client phone number.", "err"); return; }
@@ -643,7 +610,7 @@ export default function StorageBikesScreen() {
       } catch { /* proceed without link */ }
     }
     const msg = `Hi ${name}, we've scheduled the service for your ${bikePrimaryLabel(bike)} at Garage51! 🔧\n\n` +
-      `Work: ${enq.work_required || jobCardForm.work}\n` +
+      `Work: ${enq.work_required || bike.service_request_text || ""}\n` +
       `Amount: AED ${amount.toLocaleString()}\n\n` +
       (paymentUrl ? `Pay securely here:\n${paymentUrl}\n\n` : "") +
       `Let us know if you have any questions. Thank you! 🙏`;
@@ -685,20 +652,24 @@ export default function StorageBikesScreen() {
       invoiceRef ? `Invoice: ${invoiceRef}` : null,
     ].filter(Boolean).join(" · ");
 
-    const { data: logEntry } = await supabase.from("sb_service_log").insert({
-      bike_id: bike.id,
-      item_id: null,
-      item_name: enq.work_required || `Workshop service — ${bikePrimaryLabel(bike)}`,
-      done_at: now.slice(0, 10),
-      done_at_hours: bike.engine_hours || null,
-      performed_by: mechanic,
+    const { logId } = await recordServiceForJob(supabase, {
+      enquiryId: enq.id,
+      bikeId: bike.id,
+      itemName: enq.work_required || `Workshop service — ${bikePrimaryLabel(bike)}`,
+      doneAt: now.slice(0, 10),
+      doneAtHours: bike.engine_hours || null,
+      performedBy: mechanic,
+      amountCharged: amount || null,
+      invoiceRef,
       notes: noteParts || null,
-      enquiry_id: enq.id,
-      invoice_ref: invoiceRef,
-      amount_charged: amount || null,
-    }).select().single();
+    });
 
-    if (logEntry) setSvcLogs(prev => [logEntry as SbServiceLog, ...prev]);
+    if (logId) {
+      const { data: logEntry } = await supabase.from("sb_service_log").select("*").eq("id", logId).single();
+      if (logEntry) {
+        setSvcLogs(prev => [logEntry as SbServiceLog, ...prev.filter(l => l.id !== logId)]);
+      }
+    }
 
     // 3. Mark bike service cycle complete and enquiry closed
     await supabase.from("storage_bikes").update({ service_completed_at: now }).eq("id", bike.id);
@@ -1456,7 +1427,7 @@ export default function StorageBikesScreen() {
                                         )
                                       )}
 
-                                      {/* STATE 2 — Request sent, awaiting job card creation */}
+                                      {/* STATE 2 — Request sent, awaiting client confirmation */}
                                       {bike.service_request_sent_at && !bike.service_enquiry_id && (
                                         <div>
                                           <div style={{ fontSize: 12.5, color: "#3B9EFF", fontWeight: 600, marginBottom: 4 }}>
@@ -1471,86 +1442,11 @@ export default function StorageBikesScreen() {
                                             </div>
                                           )}
 
-                                          {jobCardPanel === bike.id ? (
-                                            /* ---- Job card form ---- */
-                                            <div style={{ background: "#141211", border: "1px solid #3A352F", borderRadius: 12, overflow: "hidden", marginTop: 8 }}>
-                                              {/* Header: client + bike context */}
-                                              <div style={{ background: "#1B1816", borderBottom: "1px solid #2A2623", padding: "12px 14px" }}>
-                                                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6F6862", marginBottom: 8 }}>JOB CARD</div>
-                                                <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                                                  <div>
-                                                    <div style={{ fontSize: 10, color: "#6F6862", marginBottom: 2 }}>CLIENT</div>
-                                                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{bike.client_name || group.name}</div>
-                                                    {(bike.client_phone || group.phone) && <div style={{ fontSize: 12, color: "#9A938D" }}>{bike.client_phone || group.phone}</div>}
-                                                  </div>
-                                                  <div>
-                                                    <div style={{ fontSize: 10, color: "#6F6862", marginBottom: 2 }}>BIKE</div>
-                                                    <div style={{ fontSize: 13.5, fontWeight: 600 }}>{bikePrimaryLabel(bike)}</div>
-                                                    <div style={{ fontSize: 12, color: "#9A938D" }}>
-                                                      {bike.reference_number && <span>{bike.reference_number}</span>}
-                                                      {bike.vin && <span> · VIN: {bike.vin}</span>}
-                                                    </div>
-                                                  </div>
-                                                </div>
-                                              </div>
-
-                                              {/* Editable job details */}
-                                              <div style={{ padding: "12px 14px" }}>
-                                                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", color: "#6F6862", marginBottom: 10 }}>JOB DETAILS</div>
-                                                <div style={s.fieldRow}>
-                                                  <label style={{ ...s.fieldCtrl, flex: "2 1 200px" }}>
-                                                    <span style={s.fieldLabel}>Work required</span>
-                                                    <textarea className="g51-input" value={jobCardForm.work}
-                                                      onChange={e => setJobCardForm(f => ({ ...f, work: e.target.value }))}
-                                                      rows={3} style={{ ...s.input, resize: "vertical" }} />
-                                                  </label>
-                                                  <div style={{ flex: "1 1 140px", display: "flex", flexDirection: "column", gap: 8 }}>
-                                                    <label style={s.fieldCtrl}>
-                                                      <span style={s.fieldLabel}>Estimated value (AED)</span>
-                                                      <input className="g51-input" type="number" value={jobCardForm.amount}
-                                                        onChange={e => setJobCardForm(f => ({ ...f, amount: e.target.value }))} style={s.input} />
-                                                    </label>
-                                                    <label style={s.fieldCtrl}>
-                                                      <span style={s.fieldLabel}>Preferred date</span>
-                                                      <input className="g51-input" type="date" value={jobCardForm.date}
-                                                        onChange={e => setJobCardForm(f => ({ ...f, date: e.target.value }))} style={s.input} />
-                                                    </label>
-                                                  </div>
-                                                </div>
-                                                <label style={{ ...s.fieldCtrl, marginTop: 8, width: "100%" }}>
-                                                  <span style={s.fieldLabel}>Assign to</span>
-                                                  <select className="g51-input" value={jobCardForm.assignedTo}
-                                                    onChange={e => setJobCardForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>
-                                                    <option value="">Unassigned</option>
-                                                    {profiles.filter(p => p.roles?.includes("mechanic") || p.roles?.includes("admin")).map(p => (
-                                                      <option key={p.id} value={p.id}>{p.name || p.id}</option>
-                                                    ))}
-                                                  </select>
-                                                </label>
-                                                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                                                  <button onClick={() => createJobCard(bike, group)} disabled={creatingJob}
-                                                    style={{ background: "#ED1C24", border: "none", borderRadius: 8, color: "#fff", fontSize: 13, fontWeight: 700, padding: "9px 18px", cursor: "pointer", opacity: creatingJob ? 0.6 : 1 }}>
-                                                    {creatingJob ? "Creating…" : "Push to workshop queue"}
-                                                  </button>
-                                                  <button onClick={() => setJobCardPanel(null)} className="g51-btn g51-ghost" style={s.actionBtn}>Cancel</button>
-                                                </div>
-                                              </div>
-                                            </div>
-                                          ) : (
-                                            <button
-                                              onClick={() => {
-                                                setJobCardPanel(bike.id);
-                                                setJobCardForm({
-                                                  work: bike.service_request_text || "",
-                                                  assignedTo: "",
-                                                  amount: bike.service_request_cost ? String(bike.service_request_cost) : "",
-                                                  date: "",
-                                                });
-                                              }}
-                                              style={{ background: "#ED1C2422", border: "1px solid #ED1C2466", borderRadius: 8, color: "#ED1C24", fontSize: 13, fontWeight: 700, padding: "7px 14px", cursor: "pointer" }}>
-                                              Client confirmed — create job card →
-                                            </button>
-                                          )}
+                                          <button
+                                            onClick={() => router.push(`/admin?ws_bike=${bike.id}&ws_work=${encodeURIComponent(bike.service_request_text || "")}${bike.service_request_cost ? `&ws_amount=${bike.service_request_cost}` : ""}`)}
+                                            style={{ background: "#ED1C2422", border: "1px solid #ED1C2466", borderRadius: 8, color: "#ED1C24", fontSize: 13, fontWeight: 700, padding: "7px 14px", cursor: "pointer" }}>
+                                            Client confirmed — open in workshop intake →
+                                          </button>
                                         </div>
                                       )}
 
@@ -1670,8 +1566,13 @@ export default function StorageBikesScreen() {
                                                 </span>
                                               )}
                                               {!isLogOpen && (
+                                                <>
+                                                <button onClick={() => router.push(`/admin?ws_bike=${bike.id}&ws_item=${item.id}&ws_work=${encodeURIComponent(item.name)}`)}
+                                                  className="g51-btn g51-ghost" style={{ ...s.actionBtn, fontSize: 11.5 }}>Log service</button>
                                                 <button onClick={() => { setLogPanel(item.id); setLogForm({ doneAt: new Date().toISOString().slice(0, 10), doneHours: String(bike.engine_hours || ""), by: myName || "", notes: "" }); }}
-                                                  className="g51-btn g51-ghost" style={{ ...s.actionBtn, fontSize: 11.5 }}>Log</button>
+                                                  title="Backfill a historical entry that never went through the workshop"
+                                                  className="g51-btn g51-ghost" style={{ ...s.actionBtn, fontSize: 11, color: "#6F6862" }}>Past record</button>
+                                                </>
                                               )}
                                               <button onClick={() => removeServiceItem(item)}
                                                 style={{ background: "transparent", border: "none", color: "#3A352F", fontSize: 15, cursor: "pointer", lineHeight: 1, padding: "0 2px" }} title="Remove">×</button>

@@ -78,10 +78,13 @@ type Enquiry = {
   assigned_to: string | null;
   whatsapp_ack_sent_at: string | null;
   whatsapp_ack_error: string | null;
+  storage_bike_id: string | null;
+  job_group_id: string | null;
+  service_item_id: string | null;
 };
 
 type ClientLite = { id: string; name: string | null; whatsapp: string | null; zoho_contact_id: string | null };
-type ClientBike = { label: string; make: string | null; model: string | null; year: string | null; vin: string | null };
+type ClientBike = { id: string | null; engine_hours: number | null; label: string; make: string | null; model: string | null; year: string | null; vin: string | null };
 // One bike within a multi-bike motorcycle-storage booking created from the
 // "+ New booking" form — each becomes its own `enquiries` row on submit.
 type StorageBikeEntry = { category: string; details: string; estimatedValue: number };
@@ -413,6 +416,13 @@ export default function Admin() {
   const [wsClientSearch, setWsClientSearch] = useState("");
   const [wsShowDrop, setWsShowDrop] = useState(false);
   const [wsClientBikes, setWsClientBikes] = useState<ClientBike[]>([]);
+  // Multi-bike workshop intake: ticked storage_bikes ids, "other bike" toggle, and per-bike work/estimate overrides (key = bike id or "__other").
+  const [wsPicked, setWsPicked] = useState<string[]>([]);
+  const [wsOther, setWsOther] = useState(false);
+  const [wsOverrides, setWsOverrides] = useState<Record<string, { work?: string; amount?: string }>>({});
+  // Set when intake is opened from the Storage Bikes page for a tracked service item, so the job links back to that item.
+  const [wsItem, setWsItem] = useState<{ bikeId: string; itemId: string } | null>(null);
+  const wsDeepLink = useRef<{ bike: string; item: string | null; work: string; amount: string } | null>(null);
   const [wsForm, setWsForm] = useState({ client: "", phone: "", email: "", make: "", model: "", year: "", vin: "", work: "", assignedTo: "", amount: "", date: "" });
   const [creatingWs, setCreatingWs] = useState(false);
   const [linkBusy, setLinkBusy] = useState<string | null>(null);
@@ -469,7 +479,7 @@ export default function Admin() {
       const [{ data: cliData }, { data: enqContacts }, { data: sbContacts }] = await Promise.all([
         supabase.from("clients").select("name, whatsapp, email"),
         supabase.from("enquiries").select("customer_name, phone, email").order("created_at", { ascending: false }),
-        supabase.from("storage_bikes").select("client_name, client_phone, client_email, make, model, year, vin, reference_number").eq("active", true),
+        supabase.from("storage_bikes").select("id, engine_hours, client_name, client_phone, client_email, make, model, year, vin, reference_number").eq("active", true),
       ]);
       const seen = new Set<string>();
       const merged: { name: string; phone: string; email: string | null; bikes: ClientBike[] }[] = [];
@@ -483,16 +493,16 @@ export default function Admin() {
       // Storage bike owners — attach full bike records (not just a label) per
       // phone, so callers can auto-fill make/model/year/VIN individually
       // instead of re-parsing a joined string.
-      const sbList = (sbContacts || []) as { client_name: string | null; client_phone: string | null; client_email: string | null; make: string | null; model: string | null; year: string | null; vin: string | null; reference_number: string | null }[];
+      const sbList = (sbContacts || []) as { id: string; engine_hours: number | null; client_name: string | null; client_phone: string | null; client_email: string | null; make: string | null; model: string | null; year: string | null; vin: string | null; reference_number: string | null }[];
       for (const b of sbList) {
         const phone = (b.client_phone || "").trim();
         if (!phone) continue;
         const bikeLabel = [b.make, b.model, b.year].filter(Boolean).join(" ");
         if (!bikeLabel) continue;
-        const bike: ClientBike = { label: bikeLabel, make: b.make, model: b.model, year: b.year, vin: b.vin };
+        const bike: ClientBike = { id: b.id, engine_hours: b.engine_hours, label: bikeLabel, make: b.make, model: b.model, year: b.year, vin: b.vin };
         const existing = merged.find(m => m.phone === phone);
         if (existing) {
-          if (!existing.bikes.some(bk => bk.label === bikeLabel)) existing.bikes.push(bike);
+          if (!existing.bikes.some(bk => bk.id === b.id)) existing.bikes.push(bike);
         } else {
           seen.add(phone);
           merged.push({ name: b.client_name || "", phone, email: b.client_email, bikes: [bike] });
@@ -879,7 +889,7 @@ export default function Admin() {
     }
   }
 
-  // Combined actions for a same-client, same-term multi-bike storage batch
+  // Combined actions for a multi-bike storage batch or workshop job
   // (see displayGroups below) — mirror the single-row versions above but
   // apply to every member row at once.
   async function markGroupPaid(groupRows: Enquiry[]) {
@@ -894,9 +904,10 @@ export default function Admin() {
   function buildGroupMessage(groupRows: Enquiry[]): string {
     const first = groupRows[0];
     const total = groupRows.reduce((sum, r) => sum + (Number(r.estimated_value) || 0), 0);
-    const lines = groupRows.map(r => `- ${r.bike_details || "Bike"}: ${aed(r.estimated_value)}`).join("\n");
+    const isWorkshop = first.service_type === "workshop";
+    const lines = groupRows.map(r => `- ${r.bike_details || "Bike"}${isWorkshop && r.work_required ? ` (${r.work_required})` : ""}: ${aed(r.estimated_value)}`).join("\n");
     const linkLine = first.payment_link ? `\n\nPay securely: ${first.payment_link}` : "";
-    return `Hi ${first.customer_name}, here's your Garage51 storage booking summary:\n\n${lines}\n\nTotal: ${aed(total)}${linkLine}`;
+    return `Hi ${first.customer_name}, here's your Garage51 ${isWorkshop ? "workshop job" : "storage booking"} summary:\n\n${lines}\n\nTotal: ${aed(total)}${linkLine}`;
   }
 
   function messageGroup(groupRows: Enquiry[]) {
@@ -953,6 +964,15 @@ export default function Admin() {
   // paid via Ziina. Reuses the customer's stored Zoho contact if they have
   // one; otherwise creates one and saves it back to their client record so
   // future invoices for the same person don't create duplicate contacts.
+  // A storage-bike job's service log row is written when the workshop completes
+  // it; once it's invoiced, stamp the invoice on that log (no-op if none yet).
+  async function stampInvoiceOnServiceLog(row: Enquiry, invoiceNumber: string) {
+    if (!row.storage_bike_id) return;
+    await supabase.from("sb_service_log")
+      .update({ invoice_ref: invoiceNumber, amount_charged: Number(row.estimated_value) || null })
+      .eq("enquiry_id", row.id);
+  }
+
   async function createZohoInvoiceForBooking(row: Enquiry) {
     setZohoBusy(row.id);
     try {
@@ -986,6 +1006,8 @@ export default function Admin() {
         zoho_invoice_url: data.invoice_url,
       });
 
+      await stampInvoiceOnServiceLog(row, data.zoho_invoice_number);
+
       if (row.client?.id && data.zoho_contact_id && row.client.zoho_contact_id !== data.zoho_contact_id) {
         await supabase.from("clients").update({ zoho_contact_id: data.zoho_contact_id }).eq("id", row.client.id);
         const clientId = row.client.id;
@@ -1013,9 +1035,12 @@ export default function Admin() {
       const { data: { session } } = await supabase.auth.getSession();
       const authHeader: Record<string, string> = session?.access_token
         ? { Authorization: `Bearer ${session.access_token}` } : {};
+      const isWorkshop = first.service_type === "workshop";
       const lineItems = groupRows.map(r => ({
-        name: "Motorcycle Storage",
-        description: r.bike_details || "Bike",
+        name: isWorkshop ? "Workshop Service" : "Motorcycle Storage",
+        description: isWorkshop
+          ? [r.bike_details || "Bike", r.work_required].filter(Boolean).join(" — ")
+          : r.bike_details || "Bike",
         rate: Number(r.estimated_value) || 0,
       }));
       const res = await fetch("/api/zoho/create-invoice", {
@@ -1043,6 +1068,7 @@ export default function Admin() {
           zoho_invoice_number: data.zoho_invoice_number,
           zoho_invoice_url: data.invoice_url,
         });
+        await stampInvoiceOnServiceLog(row, data.zoho_invoice_number);
       }
 
       if (first.client?.id && data.zoho_contact_id && first.client.zoho_contact_id !== data.zoho_contact_id) {
@@ -1256,38 +1282,118 @@ export default function Admin() {
     setPwMsg("Password updated."); setNewPw(""); setConfirmPw("");
   }
 
+  // Storage Bikes hands off here (?ws_bike=…&ws_item=…&ws_work=…&ws_amount=…) to start a workshop job for a bike.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const q = new URLSearchParams(window.location.search);
+    const bike = q.get("ws_bike");
+    if (bike && !wsDeepLink.current) {
+      wsDeepLink.current = { bike, item: q.get("ws_item"), work: q.get("ws_work") || "", amount: q.get("ws_amount") || "" };
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
+  useEffect(() => {
+    const link = wsDeepLink.current;
+    if (!link || clientList.length === 0) return;
+    const client = clientList.find(c => c.bikes.some(b => b.id === link.bike));
+    wsDeepLink.current = null;
+    if (!client) { showToast("Couldn't find that bike's client — start the intake manually.", "err"); return; }
+    setWsForm(f => ({ ...f, client: client.name, phone: client.phone, email: client.email || "", make: "", model: "", year: "", vin: "", work: link.work, amount: link.amount }));
+    setWsClientSearch(client.name);
+    setWsClientBikes(client.bikes);
+    setWsPicked([link.bike]);
+    setWsOther(false);
+    setWsOverrides({});
+    setWsItem(link.item ? { bikeId: link.bike, itemId: link.item } : null);
+    setWsOpen(true);
+  }, [clientList]);
+
   if (!ready) return <main style={s.loading}>Loading…</main>;
+
+  // One entry per ticked on-file bike, plus the manual "other" bike (or the only bike when none are on file).
+  type WsEntry = { key: string; bikeId: string | null; make: string; model: string; year: string; vin: string; work: string; amount: string };
+  function wsEntries(): WsEntry[] {
+    const entries: WsEntry[] = [];
+    for (const bike of wsClientBikes) {
+      if (!bike.id || !wsPicked.includes(bike.id)) continue;
+      const o = wsOverrides[bike.id] || {};
+      entries.push({ key: bike.id, bikeId: bike.id, make: bike.make || "", model: bike.model || "", year: bike.year || "", vin: bike.vin || "", work: o.work ?? wsForm.work, amount: o.amount ?? wsForm.amount });
+    }
+    if (wsClientBikes.length === 0 || wsOther) {
+      const o = wsOverrides["__other"] || {};
+      entries.push({ key: "__other", bikeId: null, make: wsForm.make, model: wsForm.model, year: wsForm.year, vin: wsForm.vin, work: o.work ?? wsForm.work, amount: o.amount ?? wsForm.amount });
+    }
+    return entries;
+  }
 
   async function createWorkshopIntake() {
     if (!wsForm.client.trim() || !wsForm.phone.trim()) { showToast("Client name and phone are required.", "err"); return; }
-    if (!wsForm.work.trim()) { showToast("Work required field is empty.", "err"); return; }
+    const entries = wsEntries();
+    if (entries.length === 0) { showToast("Tick at least one bike.", "err"); return; }
+    if (entries.some(en => !en.work.trim())) { showToast("Work required field is empty.", "err"); return; }
     setCreatingWs(true);
-    const bikeDetails = [wsForm.make, wsForm.model, wsForm.year].filter(Boolean).join(" ");
-    const { data, error } = await supabase.from("enquiries").insert({
-      service_type: "workshop",
-      customer_name: wsForm.client.trim(),
-      phone: wsForm.phone.trim(),
-      email: wsForm.email.trim() || null,
-      bike_details: bikeDetails || null,
-      vin: wsForm.vin.trim() || null,
-      work_required: wsForm.work.trim(),
-      assigned_to: wsForm.assignedTo || null,
-      estimated_value: Number(wsForm.amount) || 0,
-      preferred_date: wsForm.date || null,
-      stage: "booked",
-      job_status: "queued",
-      source: "internal",
-      notes: "",
-      sessions_total: 0,
-    }).select("*, sessions(*), client:clients(id,name,whatsapp,zoho_contact_id)").single();
-    if (error || !data) { showToast(error?.message || "Could not create workshop job.", "err"); setCreatingWs(false); return; }
-    setRows(prev => [data as Enquiry, ...prev]);
+    const jobGroupId = entries.length > 1 ? crypto.randomUUID() : null;
+    // Sequential (not Promise.all) so a partial failure is easy to report.
+    const created: Enquiry[] = [];
+    for (let i = 0; i < entries.length; i++) {
+      const en = entries[i];
+      const bikeDetails = [en.make, en.model, en.year].filter(Boolean).join(" ");
+      const { data, error } = await supabase.from("enquiries").insert({
+        service_type: "workshop",
+        customer_name: wsForm.client.trim(),
+        phone: wsForm.phone.trim(),
+        email: wsForm.email.trim() || null,
+        bike_details: bikeDetails || null,
+        vin: en.vin.trim() || null,
+        work_required: en.work.trim(),
+        assigned_to: wsForm.assignedTo || null,
+        estimated_value: Number(en.amount) || 0,
+        preferred_date: wsForm.date || null,
+        stage: "booked",
+        job_status: "queued",
+        source: "internal",
+        notes: "",
+        sessions_total: 0,
+        storage_bike_id: en.bikeId,
+        job_group_id: jobGroupId,
+        service_item_id: en.bikeId && wsItem?.bikeId === en.bikeId ? wsItem.itemId : null,
+      }).select("*, sessions(*), client:clients(id,name,whatsapp,zoho_contact_id)").single();
+      if (error || !data) {
+        setCreatingWs(false);
+        if (created.length > 0) {
+          setRows(prev => [...created, ...prev]);
+          // Untick what was created so a retry only submits the remainder.
+          const done = entries.slice(0, created.length);
+          setWsPicked(prev => prev.filter(id => !done.some(d => d.bikeId === id)));
+          if (done.some(d => d.bikeId === null)) setWsOther(false);
+        }
+        showToast(error?.message
+          ? `Bike ${i + 1} of ${entries.length}: ${error.message}${created.length > 0 ? ` (${created.length} already created)` : ""}`
+          : `Could not create workshop job for bike ${i + 1} of ${entries.length}.`, "err");
+        return;
+      }
+      created.push(data as Enquiry);
+      // Point the storage bike at its active job so the Storage Bikes page shows it (only if the bike has no job in flight).
+      if (en.bikeId) {
+        await supabase.from("storage_bikes")
+          .update({ service_enquiry_id: (data as Enquiry).id, service_completed_at: null })
+          .eq("id", en.bikeId)
+          .or("service_enquiry_id.is.null,service_completed_at.not.is.null");
+      }
+    }
+    setRows(prev => [...created, ...prev]);
+    setWsItem(null);
     setWsForm({ client: "", phone: "", email: "", make: "", model: "", year: "", vin: "", work: "", assignedTo: "", amount: "", date: "" });
     setWsClientSearch("");
     setWsClientBikes([]);
+    setWsPicked([]);
+    setWsOther(false);
+    setWsOverrides({});
     setWsOpen(false);
     setCreatingWs(false);
-    showToast(`Workshop job created — ${wsForm.client.trim()} added to queue.`);
+    showToast(created.length > 1
+      ? `${created.length} workshop jobs created — ${wsForm.client.trim()} added to queue.`
+      : `Workshop job created — ${wsForm.client.trim()} added to queue.`);
   }
 
   const scoped = me?.roles?.includes("admin") ? rows : rows.filter(r => r.assigned_to === me?.id);
@@ -1323,10 +1429,13 @@ export default function Admin() {
   // combined actions instead of N identical-looking cards. Anything else —
   // every other service type, and storage bookings that don't share this
   // signature — renders exactly as before, one row per entry.
+  // Workshop rows created together in one multi-bike intake share a job_group_id.
   const storageGroupKey = (r: Enquiry): string | null =>
     r.service_type === "motorcycle_storage" && r.storage_start_date && r.storage_end_date
       ? `${r.phone}|${r.storage_start_date}|${r.storage_end_date}`
-      : null;
+      : r.service_type === "workshop" && r.job_group_id
+        ? `job:${r.job_group_id}`
+        : null;
   const groupBuckets = new Map<string, Enquiry[]>();
   for (const r of visible) {
     const key = storageGroupKey(r);
@@ -1429,7 +1538,8 @@ export default function Admin() {
       statePriority.indexOf(b) < statePriority.indexOf(a) ? b : a);
     const badgeLabel = allPaid ? "paid" : worst;
     const badgeColor = allPaid ? PAID_COLOR : (STATE_COLOR[worst] || "#9A938D");
-    const dateRange = first.storage_start_date && first.storage_end_date
+    const isWorkshop = first.service_type === "workshop";
+    const dateRange = !isWorkshop && first.storage_start_date && first.storage_end_date
       ? `${new Date(first.storage_start_date).toLocaleDateString()} – ${new Date(first.storage_end_date).toLocaleDateString()}`
       : "";
     const busy = linkBusy === first.id;
@@ -1441,7 +1551,7 @@ export default function Admin() {
           <span style={{ fontSize: 12, color: "#9A938D" }}>{groupRows.length} bikes</span>
         </div>
         <div style={s.sub}>
-          Motorcycle storage
+          {isWorkshop ? "Workshop job" : "Motorcycle storage"}
           {dateRange && <><span style={s.dotSep}>·</span>{dateRange}</>}
           <span style={s.dotSep}>·</span>Total {aed(total)}
         </div>
@@ -1584,15 +1694,15 @@ export default function Admin() {
                   <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 60, background: "#221F1D", border: "1px solid #3A352F", borderRadius: 10, overflow: "hidden", boxShadow: "0 12px 32px rgba(0,0,0,0.5)", marginTop: 2 }}>
                     {matches.map(c => (
                       <button key={c.phone} onMouseDown={() => {
+                        // Bikes on file are ticked in the picker below; a lone bike is pre-ticked.
                         setWsForm(f => ({
                           ...f, client: c.name, phone: c.phone, email: c.email || "",
-                          // Auto-fill bike fields only when there's exactly one on record —
-                          // with more than one, the picker below lets the admin choose.
-                          ...(c.bikes.length === 1
-                            ? { make: c.bikes[0].make || "", model: c.bikes[0].model || "", year: c.bikes[0].year || "", vin: c.bikes[0].vin || "" }
-                            : {}),
+                          ...(c.bikes.length > 0 ? { make: "", model: "", year: "", vin: "" } : {}),
                         }));
-                        setWsClientBikes(c.bikes.length > 1 ? c.bikes : []);
+                        setWsClientBikes(c.bikes);
+                        setWsPicked(c.bikes.length === 1 && c.bikes[0].id ? [c.bikes[0].id] : []);
+                        setWsOther(false);
+                        setWsOverrides({});
                         setWsClientSearch(c.name); setWsShowDrop(false);
                       }}
                         style={{ display: "flex", flexDirection: "column", width: "100%", textAlign: "left", background: "transparent", border: "none", borderBottom: "1px solid #2A2623", padding: "9px 14px", cursor: "pointer", color: "#F4F2EF", fontFamily: "inherit" }}>
@@ -1615,28 +1725,35 @@ export default function Admin() {
                 <input className="g51-input" value={wsForm.email} onChange={e => setWsForm(f => ({ ...f, email: e.target.value }))} style={s.input} /></label>
             </div>
 
-            {/* Multi-bike picker: shown when the selected client has more than one bike on record */}
-            {wsClientBikes.length > 1 && (
+            {/* Multi-bike picker: tick one, some or all of the client's bikes on file */}
+            {wsClientBikes.length > 0 && (
               <div style={{ marginBottom: 10, background: "#1B1816", border: "1px solid #D85A3044", borderRadius: 9, padding: "8px 12px" }}>
                 <div style={{ fontSize: 11, color: "#D85A30", fontWeight: 600, letterSpacing: "0.07em", textTransform: "uppercase", marginBottom: 6 }}>
-                  Which bike is this job for?
+                  Which bikes is this job for?
                 </div>
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                   {wsClientBikes.map(bike => {
-                    const isSel = wsForm.make === (bike.make || "") && wsForm.model === (bike.model || "") && wsForm.year === (bike.year || "");
+                    const isSel = !!bike.id && wsPicked.includes(bike.id);
                     return (
-                      <button key={bike.label} onClick={() => setWsForm(f => ({ ...f, make: bike.make || "", model: bike.model || "", year: bike.year || "", vin: bike.vin || "" }))}
-                        style={{ background: isSel ? "#D85A3022" : "transparent", border: `1px solid ${isSel ? "#D85A30" : "#3A352F"}`, borderRadius: 8, color: isSel ? "#D85A30" : "#B5AEA8", fontSize: 13, padding: "6px 12px", cursor: "pointer", fontFamily: "inherit", fontWeight: isSel ? 700 : 400 }}>
+                      <label key={bike.id || bike.label}
+                        style={{ display: "flex", alignItems: "center", gap: 6, background: isSel ? "#D85A3022" : "transparent", border: `1px solid ${isSel ? "#D85A30" : "#3A352F"}`, borderRadius: 8, color: isSel ? "#D85A30" : "#B5AEA8", fontSize: 13, padding: "6px 12px", cursor: "pointer", fontWeight: isSel ? 700 : 400 }}>
+                        <input type="checkbox" checked={isSel} disabled={!bike.id}
+                          onChange={() => { const id = bike.id; if (id) setWsPicked(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }} />
                         {bike.label}
-                      </button>
+                      </label>
                     );
                   })}
+                  <label
+                    style={{ display: "flex", alignItems: "center", gap: 6, background: wsOther ? "#D85A3022" : "transparent", border: `1px solid ${wsOther ? "#D85A30" : "#3A352F"}`, borderRadius: 8, color: wsOther ? "#D85A30" : "#B5AEA8", fontSize: 13, padding: "6px 12px", cursor: "pointer", fontWeight: wsOther ? 700 : 400 }}>
+                    <input type="checkbox" checked={wsOther} onChange={() => setWsOther(v => !v)} />
+                    Other / not on file
+                  </label>
                 </div>
               </div>
             )}
 
-            {/* Bike details */}
-            <div style={s.controls}>
+            {/* Bike details (manual entry: no bikes on file, or "Other" ticked) */}
+            {(wsClientBikes.length === 0 || wsOther) && <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Make</span>
                 <input className="g51-input" value={wsForm.make} onChange={e => setWsForm(f => ({ ...f, make: e.target.value }))} placeholder="e.g. Yamaha" style={s.input} /></label>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Model</span>
@@ -1645,12 +1762,35 @@ export default function Admin() {
                 <input className="g51-input" value={wsForm.year} onChange={e => setWsForm(f => ({ ...f, year: e.target.value }))} style={s.input} /></label>
               <label style={s.ctrl}><span style={s.ctrlLabel}>VIN (optional)</span>
                 <input className="g51-input" value={wsForm.vin} onChange={e => setWsForm(f => ({ ...f, vin: e.target.value }))} style={s.input} /></label>
-            </div>
+            </div>}
 
             {/* Job details */}
             <label style={{ ...s.ctrl, display: "grid", marginBottom: 10 }}><span style={s.ctrlLabel}>Work required *</span>
               <textarea className="g51-input" value={wsForm.work} onChange={e => setWsForm(f => ({ ...f, work: e.target.value }))}
                 placeholder="Describe the work to be done…" rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
+            {(() => {
+              const entries = wsEntries();
+              if (entries.length < 2) return null;
+              return (
+                <div style={{ marginBottom: 10, display: "grid", gap: 8 }}>
+                  {entries.map(en => (
+                    <div key={en.key} style={{ background: "#1B1816", border: "1px solid #3A352F", borderRadius: 9, padding: "8px 12px" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#F4F2EF", marginBottom: 6 }}>
+                        {[en.make, en.model, en.year].filter(Boolean).join(" ") || "Other bike"}
+                      </div>
+                      <div style={s.controls}>
+                        <label style={{ ...s.ctrl, flex: "2 1 220px" }}><span style={s.ctrlLabel}>Work required</span>
+                          <textarea className="g51-input" value={en.work} rows={2} style={{ ...s.input, resize: "vertical" }}
+                            onChange={e => setWsOverrides(o => ({ ...o, [en.key]: { ...o[en.key], work: e.target.value } }))} /></label>
+                        <label style={s.ctrl}><span style={s.ctrlLabel}>Estimate (AED)</span>
+                          <input className="g51-input" type="number" value={en.amount} style={s.input}
+                            onChange={e => setWsOverrides(o => ({ ...o, [en.key]: { ...o[en.key], amount: e.target.value } }))} /></label>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
             <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Assign to</span>
                 <select className="g51-input" value={wsForm.assignedTo} onChange={e => setWsForm(f => ({ ...f, assignedTo: e.target.value }))} style={s.input}>

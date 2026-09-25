@@ -5,6 +5,7 @@ import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
 import { AdminNav } from "../../../components/AdminNav";
+import { recordServiceForJob } from "../../../lib/serviceLog";
 import {
   type Part,
   type StockMovement,
@@ -46,6 +47,8 @@ type Job = {
   labour_hours: number | null;
   estimated_value: number | null;
   assigned_to: string | null;
+  storage_bike_id: string | null;
+  service_item_id: string | null;
   stage: string;
 };
 
@@ -100,7 +103,7 @@ export default function WorkshopScreen() {
 
       const [{ data: jobsData }, { data: partsData }, { data: movementsData }, { data: spData }, { data: spiData }, { data: appData }] = await Promise.all([
         supabase.from("enquiries")
-          .select("id, customer_name, bike_details, bike_year, bike_hours, vin, work_required, job_status, labour_hours, estimated_value, assigned_to, stage")
+          .select("id, customer_name, bike_details, bike_year, bike_hours, vin, work_required, job_status, labour_hours, estimated_value, assigned_to, storage_bike_id, service_item_id, stage")
           .eq("service_type", "workshop")
           .not("job_status", "is", null)
           .order("created_at", { ascending: true }),
@@ -142,7 +145,7 @@ export default function WorkshopScreen() {
     const { error } = await supabase.from("enquiries").update(patch).eq("id", id);
     if (error) showToast(error.message || "Could not save.", "err");
   }
-  function setStatus(job: Job, status: string) {
+  async function setStatus(job: Job, status: string) {
     if (status === "completed") {
       // Calculate the final total from all actual work done and write it back
       // to estimated_value — this becomes the billing amount on the bookings page.
@@ -152,9 +155,40 @@ export default function WorkshopScreen() {
       const productsTotal = applicationsTotal(productsList);
       const labourTotal = labourCharge(job.labour_hours);
       const finalTotal = Math.round((partsTotal + productsTotal + labourTotal) * 100) / 100;
+      // Storage-bike jobs: capture engine hours before the status flips.
+      let hoursAtService: number | null = null;
+      if (job.storage_bike_id) {
+        let current = "";
+        try {
+          const { data: bike } = await supabase.from("storage_bikes").select("engine_hours").eq("id", job.storage_bike_id).maybeSingle();
+          if (bike?.engine_hours != null) current = String(bike.engine_hours);
+        } catch { /* prefill is best-effort */ }
+        const answer = window.prompt("Engine hours at service?", current);
+        const parsed = answer == null ? NaN : parseFloat(answer.trim());
+        if (Number.isFinite(parsed) && parsed > 0) hoursAtService = parsed;
+      }
       editJobLocal(job.id, { job_status: status, estimated_value: finalTotal });
       saveJob(job.id, { job_status: status, estimated_value: finalTotal } as Partial<Job>);
       showToast(`Job completed · total AED ${finalTotal.toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
+      if (job.storage_bike_id) {
+        let logError: string | undefined;
+        try {
+          const res = await recordServiceForJob(supabase, {
+            enquiryId: job.id,
+            bikeId: job.storage_bike_id,
+            itemId: job.service_item_id,
+            itemName: job.work_required || "Workshop service",
+            doneAtHours: hoursAtService,
+            performedBy: null,
+            amountCharged: finalTotal,
+            notes: "Completed in workshop",
+          });
+          logError = res.error;
+        } catch (e) {
+          logError = e instanceof Error ? e.message : "error";
+        }
+        if (logError) showToast("Job completed, but the storage service log could not be updated", "err");
+      }
     } else {
       editJobLocal(job.id, { job_status: status });
       saveJob(job.id, { job_status: status });
