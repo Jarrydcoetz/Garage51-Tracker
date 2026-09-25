@@ -80,6 +80,7 @@ type Enquiry = {
   whatsapp_ack_error: string | null;
   storage_bike_id: string | null;
   job_group_id: string | null;
+  lesson_group_id: string | null;
   service_item_id: string | null;
 };
 
@@ -88,6 +89,8 @@ type ClientBike = { id: string | null; engine_hours: number | null; label: strin
 // One bike within a multi-bike motorcycle-storage booking created from the
 // "+ New booking" form — each becomes its own `enquiries` row on submit.
 type StorageBikeEntry = { category: string; details: string; estimatedValue: number };
+type LgClient = { name: string; phone: string; email: string; price: number };
+type SessPatch = Partial<Pick<Session, "scheduled_at" | "duration_minutes" | "status">>;
 type Profile = { id: string; name: string | null; roles: string[]; active: boolean; whatsapp: string | null };
 
 const RED = "#ED1C24";
@@ -157,6 +160,9 @@ const BLANK = {
   // per entry on submit. Starts with a single blank bike.
   storageBikes: [{ category: "adult", details: "", estimatedValue: storageTotalPrice("adult", "month_to_month") }] as StorageBikeEntry[],
 };
+
+const blankLgClient = (): LgClient => ({ name: "", phone: "", email: "", price: 0 });
+const newLg = () => ({ on: false, type: "single" as "single" | "package", sessions: 4, instructor: "", start: "", clients: [blankLgClient(), blankLgClient()] });
 
 // ---- session / state helpers ----------------------------------------------
 function sessionDone(ss: Session): boolean {
@@ -229,6 +235,7 @@ function findConflict(allRows: Enquiry[], forRow: Enquiry, forSession: Session):
 
   for (const r of allRows) {
     if (r.assigned_to !== forRow.assigned_to) continue;
+    if (forRow.lesson_group_id && r.lesson_group_id === forRow.lesson_group_id) continue;
     for (const ss of r.sessions || []) {
       if (ss.id === forSession.id || !isActiveSession(ss)) continue;
       const oStart = new Date(ss.scheduled_at as string).getTime();
@@ -237,6 +244,18 @@ function findConflict(allRows: Enquiry[], forRow: Enquiry, forSession: Session):
     }
   }
   return null;
+}
+
+function lessonGroupEligible(r: Enquiry): boolean {
+  return r.service_type === "academy" && r.stage !== "cancelled" && r.stage !== "lost" && !r.lesson_group_id &&
+    (r.sessions_total === 1 || /group/i.test(r.selection || ""));
+}
+
+function nextLessonLabel(members: Enquiry[]): string | null {
+  const now = Date.now();
+  const next = members.flatMap(r => r.sessions || []).filter(isActiveSession)
+    .map(x => new Date(x.scheduled_at as string).getTime()).filter(x => x >= now).sort((a, b) => a - b)[0];
+  return next === undefined ? null : new Date(next).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 }
 
 function bookingHasConflict(allRows: Enquiry[], row: Enquiry): boolean {
@@ -410,6 +429,12 @@ export default function Admin() {
   const [clientSearch, setClientSearch] = useState("");
   const [clientList, setClientList] = useState<{ name: string; phone: string; email: string | null; bikes: ClientBike[] }[]>([]);
   const [showClientDrop, setShowClientDrop] = useState(false);
+  const [lg, setLg] = useState(newLg);
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [groupPanelOpen, setGroupPanelOpen] = useState(false);
+  const [groupInstructor, setGroupInstructor] = useState("");
+  const [groupBusy, setGroupBusy] = useState(false);
   const [clientBikes, setClientBikes] = useState<ClientBike[]>([]);
   // Workshop intake form
   const [wsOpen, setWsOpen] = useState(false);
@@ -596,7 +621,10 @@ export default function Admin() {
     setTimeout(() => setSavedId(null), 1500);
     showToast("Booking saved.");
     if (row.stage === "cancelled") {
-      for (const ss of row.sessions || []) {
+      if (row.lesson_group_id) {
+        const members = rows.map(r => (r.id === row.id ? row : r)).filter(r => r.lesson_group_id === row.lesson_group_id);
+        for (const seq of new Set((row.sessions || []).map(x => x.seq))) syncGroupLesson(members, seq);
+      } else for (const ss of row.sessions || []) {
         if (ss.google_event_id) syncSessionToCalendar(row, { ...ss, scheduled_at: null });
       }
       sendStaffWhatsApp(row.assigned_to, name =>
@@ -617,13 +645,20 @@ export default function Admin() {
 
   async function assignBooking(row: Enquiry, profileId: string) {
     const assigned = profileId || null;
-    await supabase.from("enquiries").update({ assigned_to: assigned }).eq("id", row.id);
-    edit(row.id, { assigned_to: assigned });
-    // Re-sync this booking's sessions so the calendar's "Assigned to" reflects
-    // the new staff member right away. Other bookings are untouched — each
-    // one is assigned independently now, even for the same customer.
-    for (const ss of row.sessions || []) {
-      syncSessionToCalendar({ ...row, assigned_to: assigned }, ss);
+    if (row.lesson_group_id) {
+      const members = rows.filter(r => r.lesson_group_id === row.lesson_group_id).map(r => ({ ...r, assigned_to: assigned }));
+      await supabase.from("enquiries").update({ assigned_to: assigned }).in("id", members.map(m => m.id));
+      members.forEach(m => edit(m.id, { assigned_to: assigned }));
+      for (const seq of new Set(members.flatMap(m => (m.sessions || []).map(x => x.seq)))) syncGroupLesson(members, seq);
+    } else {
+      await supabase.from("enquiries").update({ assigned_to: assigned }).eq("id", row.id);
+      edit(row.id, { assigned_to: assigned });
+      // Re-sync this booking's sessions so the calendar's "Assigned to" reflects
+      // the new staff member right away. Other bookings are untouched — each
+      // one is assigned independently now, even for the same customer.
+      for (const ss of row.sessions || []) {
+        syncSessionToCalendar({ ...row, assigned_to: assigned }, ss);
+      }
     }
     if (assigned) {
       const nextSession = (row.sessions || []).find(isActiveSession);
@@ -642,7 +677,7 @@ export default function Admin() {
   // Pushes a session's current schedule/status to Google Calendar (create, update,
   // or remove the event as appropriate), then saves the returned event ID. Failures
   // are surfaced as a toast but never block the Supabase save that already happened.
-  async function syncSessionToCalendar(row: Enquiry, ss: Session) {
+  async function callCalendar(row: Enquiry, ss: Session, group?: { name: string; phone: string }[]): Promise<{ ok: boolean; id: string | null }> {
     try {
       const staffName = staff.find(p => p.id === row.assigned_to)?.name || null;
       const res = await fetch("/api/calendar/sync-session", {
@@ -673,19 +708,166 @@ export default function Admin() {
             rider_category: row.rider_category,
             rider_count: row.rider_count,
             own_gear: row.own_gear,
+            ...(group && group.length > 1 ? { group } : {}),
           },
         }),
       });
       const data = await res.json();
-      if (!res.ok) { showToast(data.error || "Could not sync this session to the calendar.", "err"); return; }
-      const googleEventId = (data.google_event_id ?? null) as string | null;
-      if (googleEventId !== ss.google_event_id) {
-        editSessionLocal(row.id, ss.id, { google_event_id: googleEventId });
-        await supabase.from("sessions").update({ google_event_id: googleEventId }).eq("id", ss.id);
-      }
+      if (!res.ok) { showToast(data.error || "Could not sync this session to the calendar.", "err"); return { ok: false, id: null }; }
+      return { ok: true, id: (data.google_event_id ?? null) as string | null };
     } catch {
       showToast("Could not reach the calendar service.", "err");
+      return { ok: false, id: null };
     }
+  }
+
+  async function saveEventId(row: Enquiry, ss: Session, id: string | null) {
+    if (id === ss.google_event_id) return;
+    editSessionLocal(row.id, ss.id, { google_event_id: id });
+    await supabase.from("sessions").update({ google_event_id: id }).eq("id", ss.id);
+  }
+
+  async function syncSessionToCalendar(row: Enquiry, ss: Session) {
+    const res = await callCalendar(row, ss);
+    if (res.ok) await saveEventId(row, ss, res.id);
+  }
+
+  // One shared calendar event per lesson (seq) of a lesson group: built from the
+  // members whose session at that seq is active; deleted once when none are.
+  async function syncGroupLesson(members: Enquiry[], seq: number) {
+    const entries = members
+      .map(m => ({ m, ss: (m.sessions || []).find(x => x.seq === seq) }))
+      .filter((e): e is { m: Enquiry; ss: Session } => !!e.ss);
+    if (entries.length === 0) return;
+    const active = entries.filter(e => isActiveSession(e.ss) && e.m.stage !== "cancelled" && e.m.stage !== "lost");
+    const holder = active.find(e => e.ss.google_event_id) || entries.find(e => e.ss.google_event_id);
+    if (active.length === 0) {
+      if (!holder) return;
+      const res = await callCalendar(holder.m, { ...holder.ss, scheduled_at: null });
+      if (res.ok) for (const e of entries) await saveEventId(e.m, e.ss, null);
+      return;
+    }
+    const lead = active.find(e => e.ss.google_event_id) || active[0];
+    const group = active.map(e => ({ name: e.m.customer_name, phone: e.m.phone }));
+    const res = await callCalendar(lead.m, { ...lead.ss, google_event_id: holder?.ss.google_event_id ?? null }, group);
+    if (res.ok) for (const e of entries) await saveEventId(e.m, e.ss, res.id);
+  }
+
+  function addSessionLocal(enqId: string, session: Session) {
+    setRows(prev => prev.map(r => (r.id === enqId ? { ...r, sessions: [...(r.sessions || []), session] } : r)));
+  }
+
+  // Applies a patch to the same-seq session of a group member, creating it if missing.
+  async function mirrorToRow(target: Enquiry, seq: number, patch: SessPatch): Promise<Enquiry> {
+    const cur = (target.sessions || []).find(x => x.seq === seq);
+    if (cur) {
+      if (Object.keys(patch).length === 0) return target;
+      await persistSession(cur.id, patch);
+      editSessionLocal(target.id, cur.id, patch);
+      return { ...target, sessions: target.sessions.map(x => (x.id === cur.id ? { ...x, ...patch } : x)) };
+    }
+    if ((target.sessions || []).length >= target.sessions_total) return target;
+    const { data, error } = await supabase.from("sessions").insert({
+      enquiry_id: target.id,
+      seq,
+      status: patch.status ?? "scheduled",
+      scheduled_at: patch.scheduled_at ?? null,
+      ...(patch.duration_minutes != null ? { duration_minutes: patch.duration_minutes } : {}),
+    }).select().single();
+    if (error || !data) { showToast(error?.message || `Could not add lesson ${seq} for ${target.customer_name}.`, "err"); return target; }
+    addSessionLocal(target.id, data as Session);
+    return { ...target, sessions: [...(target.sessions || []), data as Session] };
+  }
+
+  // Mirrors a session edit on a grouped row to the other members, then syncs the lesson's event once.
+  async function mirrorGroupSessions(row: Enquiry, ss: Session, patch: SessPatch) {
+    const gid = row.lesson_group_id;
+    if (!gid) return;
+    const src = { ...row, sessions: (row.sessions || []).map(x => (x.id === ss.id ? { ...x, ...patch } : x)) };
+    const updated: Enquiry[] = [];
+    for (const o of rows.filter(r => r.lesson_group_id === gid && r.id !== row.id)) {
+      updated.push(await mirrorToRow(o, ss.seq, patch));
+    }
+    await syncGroupLesson([src, ...updated], ss.seq);
+  }
+
+  // After the shared id is cleared: one member keeps each lesson's event, the rest get their own.
+  async function splitLessonEvents(members: Enquiry[]) {
+    const seqs = new Set(members.flatMap(m => (m.sessions || []).map(x => x.seq)));
+    for (const seq of seqs) {
+      let kept = false;
+      for (const m of members) {
+        const ss = (m.sessions || []).find(x => x.seq === seq);
+        if (!ss) continue;
+        if (isActiveSession(ss) && m.stage !== "cancelled" && m.stage !== "lost") {
+          const res = await callCalendar(m, kept ? { ...ss, google_event_id: null } : ss);
+          kept = true;
+          if (res.ok) await saveEventId(m, ss, res.id);
+        } else if (ss.google_event_id) {
+          await saveEventId(m, ss, null);
+        }
+      }
+    }
+  }
+
+  async function ungroupLesson(gid: string) {
+    const members = rows.filter(r => r.lesson_group_id === gid);
+    if (members.length === 0) return;
+    const { error } = await supabase.from("enquiries").update({ lesson_group_id: null }).in("id", members.map(m => m.id));
+    if (error) { showToast(error.message || "Could not ungroup.", "err"); return; }
+    members.forEach(m => edit(m.id, { lesson_group_id: null }));
+    await splitLessonEvents(members.map(m => ({ ...m, lesson_group_id: null })));
+    showToast("Group lesson ungrouped.");
+  }
+
+  async function removeFromGroup(row: Enquiry) {
+    const gid = row.lesson_group_id;
+    if (!gid) return;
+    const others = rows.filter(r => r.lesson_group_id === gid && r.id !== row.id);
+    if (others.length <= 1) { await ungroupLesson(gid); return; }
+    const { error } = await supabase.from("enquiries").update({ lesson_group_id: null }).eq("id", row.id);
+    if (error) { showToast(error.message || "Could not remove from group.", "err"); return; }
+    edit(row.id, { lesson_group_id: null });
+    const solo = { ...row, lesson_group_id: null };
+    for (const ss of row.sessions || []) {
+      const othersHave = others.some(o => (o.sessions || []).some(x => x.seq === ss.seq));
+      if (othersHave) await syncGroupLesson(others, ss.seq);
+      if (isActiveSession(ss) && row.stage !== "cancelled" && row.stage !== "lost") {
+        const res = await callCalendar(solo, othersHave ? { ...ss, google_event_id: null } : ss);
+        if (res.ok) await saveEventId(solo, ss, res.id);
+      } else if (othersHave && ss.google_event_id) {
+        await saveEventId(solo, ss, null);
+      }
+    }
+    showToast(`${row.customer_name} removed from the group lesson.`);
+  }
+
+  async function applyLessonGrouping() {
+    const picked = selectedIds.map(id => rows.find(r => r.id === id)).filter((r): r is Enquiry => !!r);
+    if (picked.length < 2) return;
+    setGroupBusy(true);
+    const gid = crypto.randomUUID();
+    const assigned = groupInstructor || null;
+    const { error } = await supabase.from("enquiries").update({ lesson_group_id: gid, assigned_to: assigned }).in("id", picked.map(r => r.id));
+    if (error) { showToast(error.message || "Could not group these bookings.", "err"); setGroupBusy(false); return; }
+    picked.forEach(r => edit(r.id, { lesson_group_id: gid, assigned_to: assigned }));
+    const work: Enquiry[] = picked.map(r => ({ ...r, lesson_group_id: gid, assigned_to: assigned }));
+    // Followers' old individual events are removed; the shared event replaces them.
+    for (let i = 1; i < work.length; i++) {
+      for (const ss of work[i].sessions || []) {
+        if (!ss.google_event_id) continue;
+        await callCalendar(work[i], { ...ss, scheduled_at: null });
+        await saveEventId(work[i], ss, null);
+      }
+      work[i] = { ...work[i], sessions: (work[i].sessions || []).map(x => ({ ...x, google_event_id: null })) };
+    }
+    for (const ls of work[0].sessions || []) {
+      const patch: SessPatch = { scheduled_at: ls.scheduled_at, status: ls.status, ...(ls.duration_minutes != null ? { duration_minutes: ls.duration_minutes } : {}) };
+      for (let i = 1; i < work.length; i++) work[i] = await mirrorToRow(work[i], ls.seq, patch);
+    }
+    for (const seq of new Set(work.flatMap(m => (m.sessions || []).map(x => x.seq)))) await syncGroupLesson(work, seq);
+    setSelectMode(false); setSelectedIds([]); setGroupPanelOpen(false); setGroupBusy(false);
+    showToast(`${work.length} bookings grouped into one lesson.`);
   }
 
   // Sends a WhatsApp message to whichever staff member holds staffId, if they
@@ -735,7 +917,9 @@ export default function Admin() {
     if (error || !data) { showToast(error?.message || "Could not add session.", "err"); return; }
     const newSession = data as Session;
     edit(row.id, { sessions: [...(row.sessions || []), newSession] });
-    syncSessionToCalendar(row, newSession);
+    if (row.lesson_group_id) {
+      mirrorGroupSessions({ ...row, sessions: [...(row.sessions || []), newSession] }, newSession, newSession.scheduled_at ? { scheduled_at: newSession.scheduled_at } : {});
+    } else syncSessionToCalendar(row, newSession);
     if (newSession.scheduled_at) {
       sendStaffWhatsApp(row.assigned_to, name =>
         `Hi ${name}, your ${row.service_type.replace("_", " ")} booking with ${row.customer_name} is set for ${formatSessionTime(newSession.scheduled_at as string)}.`);
@@ -1123,7 +1307,68 @@ export default function Admin() {
     } catch { showToast("Could not reach the server to connect the webhook.", "err"); }
   }
 
+  async function createLessonGroup() {
+    const clients = lg.clients.map(c => ({ ...c, name: c.name.trim(), phone: c.phone.trim() }));
+    if (clients.length < 2 || clients.some(c => !c.name || !c.phone)) { setAddError("Add at least 2 clients, each with a name and phone."); return; }
+    setCreating(true); setAddError("");
+    const total = lg.type === "single" ? 1 : Math.max(1, Number(lg.sessions) || 4);
+    const gid = crypto.randomUUID();
+    const startIso = localInputToIso(lg.start);
+    const instructor = lg.instructor || (!me?.roles?.includes("admin") ? me?.id || null : null);
+    const created: Enquiry[] = [];
+    let failure = "";
+    // Sequential (not Promise.all) so a partial failure is easy to report.
+    for (let i = 0; i < clients.length; i++) {
+      const c = clients[i];
+      const { data, error } = await supabase.from("enquiries").insert({
+        customer_name: c.name,
+        phone: c.phone,
+        email: c.email.trim() || null,
+        service_type: "academy",
+        source: form.source,
+        stage: form.stage,
+        estimated_value: Number(c.price) || 0,
+        sessions_total: total,
+        booking_at: startIso,
+        preferred_date: null,
+        selection: lg.type === "single" ? "Group lesson" : "Group package",
+        notes: form.notes || "",
+        assigned_to: instructor,
+        lesson_group_id: gid,
+      }).select("*, sessions(*)").single();
+      if (error || !data) {
+        failure = error?.message ? `Client ${i + 1} of ${clients.length}: ${error.message}` : `Could not create booking for client ${i + 1} of ${clients.length}.`;
+        break;
+      }
+      created.push(data as Enquiry);
+    }
+    let members = created;
+    if (startIso && created.length > 0) {
+      members = [];
+      for (const enq of created) {
+        const { data: ses } = await supabase.from("sessions")
+          .insert({ enquiry_id: enq.id, seq: 1, status: "scheduled", scheduled_at: startIso })
+          .select().single();
+        members.push(ses ? { ...enq, sessions: [...(enq.sessions || []), ses as Session] } : enq);
+      }
+    }
+    if (members.length > 0) setRows(prev => [...members, ...prev]);
+    if (startIso && members.length > 0) await syncGroupLesson(members, 1);
+    setCreating(false);
+    if (failure) {
+      setAddError(created.length > 0 ? `${failure} (${created.length} already created — remove them from the list before retrying)` : failure);
+      return;
+    }
+    setForm({ ...BLANK });
+    setLg(newLg());
+    setClientSearch("");
+    setClientBikes([]);
+    setAdding(false);
+    showToast(`Group lesson created for ${created.length} clients.`);
+  }
+
   async function createEnquiry() {
+    if (form.service_type === "academy" && lg.on) { await createLessonGroup(); return; }
     if (!form.customer_name.trim() || !form.phone.trim()) { setAddError("Name and phone are required."); return; }
     setCreating(true); setAddError("");
     const isStorage = form.service_type === "motorcycle_storage";
@@ -1431,7 +1676,9 @@ export default function Admin() {
   // signature — renders exactly as before, one row per entry.
   // Workshop rows created together in one multi-bike intake share a job_group_id.
   const storageGroupKey = (r: Enquiry): string | null =>
-    r.service_type === "motorcycle_storage" && r.storage_start_date && r.storage_end_date
+    r.service_type === "academy" && r.lesson_group_id
+      ? `lesson:${r.lesson_group_id}`
+      : r.service_type === "motorcycle_storage" && r.storage_start_date && r.storage_end_date
       ? `${r.phone}|${r.storage_start_date}|${r.storage_end_date}`
       : r.service_type === "workshop" && r.job_group_id
         ? `job:${r.job_group_id}`
@@ -1457,6 +1704,13 @@ export default function Admin() {
     emittedGroups.add(key);
     displayGroups.push({ key, kind: "group", rows: bucket });
   }
+
+  const selectedRows = selectedIds.map(id => rows.find(r => r.id === id)).filter((r): r is Enquiry => !!r);
+  const sameSize = selectedRows.length > 0 && selectedRows.every(r => r.sessions_total === selectedRows[0].sessions_total);
+  const toggleSelected = (id: string) => setSelectedIds(prev => (prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]));
+  const lgOn = form.service_type === "academy" && lg.on;
+  const setLgClient = (i: number, patch: Partial<LgClient>) =>
+    setLg(prev => ({ ...prev, clients: prev.clients.map((c, idx) => (idx === i ? { ...c, ...patch } : c)) }));
 
   const currentLabel = FILTER_OPTS.find(o => o.key === filter)?.label ?? "All";
   const set = (k: string, v: string | number) => setForm(prev => ({ ...prev, [k]: v }));
@@ -1543,6 +1797,28 @@ export default function Admin() {
       ? `${new Date(first.storage_start_date).toLocaleDateString()} – ${new Date(first.storage_end_date).toLocaleDateString()}`
       : "";
     const busy = linkBusy === first.id;
+    if (groupKey.startsWith("lesson:")) {
+      const members = rows.filter(r => r.lesson_group_id === first.lesson_group_id);
+      const paidN = members.filter(r => r.paid_at || r.stage === "paid").length;
+      const instructor = staff.find(p => p.id === first.assigned_to)?.name || "Unassigned";
+      const next = nextLessonLabel(members);
+      return (
+        <div style={s.groupHeaderInner}>
+          <div style={s.nameRow}>
+            <span style={s.name}>Group lesson</span>
+            <span style={{ ...s.pill, color: badgeColor, borderColor: badgeColor + "66", background: badgeColor + "1c" }}>{badgeLabel}</span>
+          </div>
+          <div style={s.sub}>
+            {members.length} clients<span style={s.dotSep}>·</span>Instructor: {instructor}
+            {next && <><span style={s.dotSep}>·</span>Next: {next}</>}
+            <span style={s.dotSep}>·</span>{paidN}/{members.length} paid
+          </div>
+          <div style={s.quick}>
+            <button onClick={() => ungroupLesson(first.lesson_group_id as string)} className="g51-btn" style={s.quickBtn}>Ungroup</button>
+          </div>
+        </div>
+      );
+    }
     return (
       <div style={s.groupHeaderInner}>
         <div style={s.nameRow}>
@@ -1819,7 +2095,7 @@ export default function Admin() {
             <div style={s.addTitle}>New booking</div>
 
             {/* Client search — select existing to auto-fill, or skip to type manually */}
-            <div style={{ marginBottom: 12, position: "relative" }}>
+            {!lgOn && <div style={{ marginBottom: 12, position: "relative" }}>
               <label style={s.ctrl}>
                 <span style={s.ctrlLabel}>Search existing client</span>
                 <div style={{ position: "relative" }}>
@@ -1869,14 +2145,14 @@ export default function Admin() {
                   </div>
                 );
               })()}
-            </div>
+            </div>}
 
-            <div style={s.controls}>
+            {!lgOn && <div style={s.controls}>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
                 <input className="g51-input" value={form.customer_name} onChange={e => set("customer_name", e.target.value)} style={s.input} /></label>
               <label style={s.ctrl}><span style={s.ctrlLabel}>Phone *</span>
                 <input className="g51-input" value={form.phone} onChange={e => set("phone", e.target.value)} style={s.input} /></label>
-            </div>
+            </div>}
             {/* Multi-bike picker: shown when a client has more than one storage bike on record */}
             {clientBikes.length > 1 && (
               <div style={{ marginBottom: 10, background: "#1B1816", border: "1px solid #3B9EFF44", borderRadius: 9, padding: "8px 12px" }}>
@@ -1894,8 +2170,8 @@ export default function Admin() {
               </div>
             )}
             <div style={s.controls}>
-              <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
-                <input className="g51-input" value={form.email} onChange={e => set("email", e.target.value)} style={s.input} /></label>
+              {!lgOn && <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
+                <input className="g51-input" value={form.email} onChange={e => set("email", e.target.value)} style={s.input} /></label>}
               <label style={s.ctrl}><span style={s.ctrlLabel}>Service</span>
                 <select className="g51-input" value={form.service_type} onChange={e => setServiceType(e.target.value)} style={s.input}>
                   <option value="academy">academy</option>
@@ -1949,7 +2225,52 @@ export default function Admin() {
                 </div>
               </div>
             )}
-            <div style={s.controls}>
+            {form.service_type === "academy" && (
+              <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 13, fontSize: 13.5, cursor: "pointer" }}>
+                <input type="checkbox" checked={lg.on} onChange={e => setLg(prev => ({ ...prev, on: e.target.checked }))} />
+                Group lesson (2+ clients, one instructor)
+              </label>
+            )}
+            {lgOn && (
+              <div style={{ marginBottom: 13 }}>
+                <div style={s.controls}>
+                  <label style={s.ctrl}><span style={s.ctrlLabel}>Type</span>
+                    <select className="g51-input" value={lg.type} onChange={e => setLg(prev => ({ ...prev, type: e.target.value as "single" | "package" }))} style={s.input}>
+                      <option value="single">Single lesson</option>
+                      <option value="package">Group package</option>
+                    </select></label>
+                  {lg.type === "package" && (
+                    <label style={s.ctrl}><span style={s.ctrlLabel}>Number of sessions</span>
+                      <input className="g51-input" type="number" min={1} value={lg.sessions} onChange={e => setLg(prev => ({ ...prev, sessions: Math.max(1, Number(e.target.value) || 1) }))} style={s.input} /></label>
+                  )}
+                  <label style={s.ctrl}><span style={s.ctrlLabel}>Instructor</span>
+                    <select className="g51-input" value={lg.instructor} onChange={e => setLg(prev => ({ ...prev, instructor: e.target.value }))} style={s.input}>
+                      <option value="">Unassigned</option>
+                      {staff.map(p => <option key={p.id} value={p.id}>{p.name || "(no name)"} · {(p.roles || []).join(", ")}</option>)}
+                    </select></label>
+                  <label style={s.ctrl}><span style={s.ctrlLabel}>First lesson date &amp; time</span>
+                    <input className="g51-input" type="datetime-local" value={lg.start} onChange={e => setLg(prev => ({ ...prev, start: e.target.value }))} style={s.input} /></label>
+                </div>
+                {lg.clients.map((c, i) => (
+                  <div key={i} style={{ ...s.controls, alignItems: "flex-end", marginBottom: 8 }}>
+                    <label style={s.ctrl}><span style={s.ctrlLabel}>Name *</span>
+                      <input className="g51-input" value={c.name} onChange={e => setLgClient(i, { name: e.target.value })} style={s.input} /></label>
+                    <label style={s.ctrl}><span style={s.ctrlLabel}>Phone *</span>
+                      <input className="g51-input" value={c.phone} onChange={e => setLgClient(i, { phone: e.target.value })} style={s.input} /></label>
+                    <label style={s.ctrl}><span style={s.ctrlLabel}>Email</span>
+                      <input className="g51-input" value={c.email} onChange={e => setLgClient(i, { email: e.target.value })} style={s.input} /></label>
+                    <label style={{ ...s.ctrl, flex: "0 1 120px" }}><span style={s.ctrlLabel}>Price (AED)</span>
+                      <input className="g51-input" type="number" value={c.price} onChange={e => setLgClient(i, { price: Number(e.target.value) })} style={s.input} /></label>
+                    {lg.clients.length > 2 && (
+                      <button type="button" onClick={() => setLg(prev => ({ ...prev, clients: prev.clients.filter((_, idx) => idx !== i) }))} title="Remove this client"
+                        style={{ background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 13, padding: "0 2px 13px", flexShrink: 0 }}>× Remove</button>
+                    )}
+                  </div>
+                ))}
+                <button type="button" onClick={() => setLg(prev => ({ ...prev, clients: [...prev.clients, blankLgClient()] }))} className="g51-btn g51-ghost" style={s.addSes}>+ Add client</button>
+              </div>
+            )}
+            {!lgOn && <div style={s.controls}>
               {form.service_type !== "motorcycle_storage" && (
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Est. value (AED)</span>
                   <input className="g51-input" type="number" value={form.estimated_value} onChange={e => set("estimated_value", Number(e.target.value))} style={s.input} /></label>
@@ -1972,7 +2293,7 @@ export default function Admin() {
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
                   <input className="g51-input" type="datetime-local" value={form.booking_at} onChange={e => set("booking_at", e.target.value)} style={s.input} /></label>
               )}
-            </div>
+            </div>}
             <label style={s.ctrl}><span style={s.ctrlLabel}>Notes</span>
               <textarea className="g51-input" value={form.notes} onChange={e => set("notes", e.target.value)} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
             {addError && <p style={s.addError}>{addError}</p>}
@@ -1984,6 +2305,10 @@ export default function Admin() {
         )}
 
         <div style={s.toolbar}>
+          <button onClick={() => { setSelectMode(m => !m); setSelectedIds([]); setGroupPanelOpen(false); }} className="g51-btn g51-ghost"
+            style={{ ...s.ghostBtn, height: 42, ...(selectMode ? { color: BUSINESS_UNIT_COLOR.academy, borderColor: BUSINESS_UNIT_COLOR.academy + "66" } : {}) }}>
+            Group lessons
+          </button>
           <div style={s.searchWrap}>
             <svg width="15" height="15" viewBox="0 0 24 24" style={{ flexShrink: 0, opacity: 0.5 }}><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" strokeWidth="2" /><path d="M21 21l-4.3-4.3" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
             <input className="g51-input" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search name, phone, or service" style={s.search} />
@@ -2012,6 +2337,41 @@ export default function Admin() {
             )}
           </div>
         </div>
+
+        {selectMode && (
+          <div style={s.groupBar}>
+            {selectedRows.length >= 2 && sameSize ? (
+              !groupPanelOpen ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                  <button onClick={() => { setGroupInstructor(selectedRows[0].assigned_to || ""); setGroupPanelOpen(true); }} className="g51-btn g51-primary" style={s.save}>
+                    Group {selectedRows.length} selected
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 10 }}>
+                  <label style={{ ...s.ctrl, marginBottom: 0 }}><span style={s.ctrlLabel}>Instructor</span>
+                    <select className="g51-input" value={groupInstructor} onChange={e => setGroupInstructor(e.target.value)} style={s.input}>
+                      <option value="">Unassigned</option>
+                      {staff.map(p => <option key={p.id} value={p.id}>{p.name || "(no name)"} · {(p.roles || []).join(", ")}</option>)}
+                    </select></label>
+                  <div style={{ fontSize: 12.5, color: "#FFB02E" }}>
+                    {selectedRows[0].customer_name}&apos;s lesson times will overwrite the other bookings&apos; lesson times, and their individual calendar events will be replaced by one shared event.
+                  </div>
+                  <div style={s.actions}>
+                    <button onClick={applyLessonGrouping} disabled={groupBusy} className="g51-btn g51-primary" style={s.save}>{groupBusy ? "Grouping…" : "Confirm group"}</button>
+                    <button onClick={() => setGroupPanelOpen(false)} disabled={groupBusy} className="g51-btn g51-ghost" style={s.ghostBtn}>Back</button>
+                  </div>
+                </div>
+              )
+            ) : (
+              <span style={{ fontSize: 13, color: "#9A938D" }}>
+                {selectedRows.length >= 2
+                  ? "These bookings have different package sizes — tick bookings with the same number of lessons."
+                  : "Tick 2 or more academy bookings (single lessons or group packages) to group them into one lesson."}
+              </span>
+            )}
+          </div>
+        )}
 
         {loading ? (
           <p style={s.muted}>Loading bookings…</p>
@@ -2044,6 +2404,9 @@ export default function Admin() {
               return (
                 <div key={r.id} className="g51-card" style={s.card}>
                   <div className="g51-row g51-card-head" style={s.cardHead} onClick={() => toggleExpand(r.id)}>
+                    {selectMode && lessonGroupEligible(r) && (
+                      <input type="checkbox" checked={selectedIds.includes(r.id)} onClick={e => e.stopPropagation()} onChange={() => toggleSelected(r.id)} style={{ flexShrink: 0 }} />
+                    )}
                     <span style={{ width: 9, height: 9, borderRadius: "50%", background: isPaid ? PAID_COLOR : sc, flexShrink: 0 }} />
                     <div style={s.headMain}>
                       <div style={s.nameRow}>
@@ -2096,6 +2459,9 @@ export default function Admin() {
                     )}
                     {r.phone && (
                       <a href={waChat(r.phone)} target="_blank" rel="noreferrer" className="g51-btn" style={s.quickBtn}>Message</a>
+                    )}
+                    {isAcademy && r.lesson_group_id && (
+                      <button onClick={() => removeFromGroup(r)} className="g51-btn" style={s.quickBtn}>Remove from group</button>
                     )}
                     {(r.stage === "booked" || r.payment_link) && (
                       <div style={s.payWrap}>
@@ -2240,7 +2606,8 @@ export default function Admin() {
                                 // so the display reorders immediately without any seq juggling
                                 editSessionLocal(r.id, ss.id, { scheduled_at: iso });
                                 persistSession(ss.id, { scheduled_at: iso });
-                                syncSessionToCalendar(r, { ...ss, scheduled_at: iso });
+                                if (r.lesson_group_id) mirrorGroupSessions(r, ss, { scheduled_at: iso });
+                                else syncSessionToCalendar(r, { ...ss, scheduled_at: iso });
                                 if (iso) {
                                   sendStaffWhatsApp(r.assigned_to, name =>
                                     `Hi ${name}, your ${r.service_type.replace("_", " ")} booking with ${r.customer_name} is now set for ${formatSessionTime(iso)}.`);
@@ -2255,7 +2622,8 @@ export default function Admin() {
                                   const minutes = Math.max(60, Math.min(240, Number(e.target.value) || SESSION_DURATION_MINUTES));
                                   editSessionLocal(r.id, ss.id, { duration_minutes: minutes });
                                   persistSession(ss.id, { duration_minutes: minutes });
-                                  syncSessionToCalendar(r, { ...ss, duration_minutes: minutes });
+                                  if (r.lesson_group_id) mirrorGroupSessions(r, ss, { duration_minutes: minutes });
+                                  else syncSessionToCalendar(r, { ...ss, duration_minutes: minutes });
                                 }}
                                 style={{ ...s.input, width: 64, padding: "8px 6px", textAlign: "center" }} />
                               <span style={s.durationUnit}>min</span>
@@ -2265,7 +2633,8 @@ export default function Admin() {
                                 const v = e.target.value;
                                 editSessionLocal(r.id, ss.id, { status: v });
                                 persistSession(ss.id, { status: v });
-                                syncSessionToCalendar(r, { ...ss, status: v });
+                                if (r.lesson_group_id) mirrorGroupSessions(r, ss, { status: v });
+                                else syncSessionToCalendar(r, { ...ss, status: v });
                                 if (v === "cancelled") {
                                   sendStaffWhatsApp(r.assigned_to, name =>
                                     `Hi ${name}, your ${r.service_type.replace("_", " ")} booking with ${r.customer_name} has been cancelled.`);
@@ -2500,6 +2869,7 @@ const s: Record<string, CSSProperties> = {
   list: { display: "flex", flexDirection: "column", gap: 10 },
   card: { background: "#221F1D", border: "1px solid #2F2B27", borderRadius: 14 },
   groupWrap: { background: "#1C1A18", border: "1px dashed #3A342E", borderRadius: 14, padding: "14px 17px 4px", display: "flex", flexDirection: "column", gap: 10 },
+  groupBar: { background: "#221F1D", border: "1px solid #14B8A655", borderRadius: 14, padding: "12px 14px", marginBottom: 16 },
   groupHeaderInner: { display: "flex", flexDirection: "column", gap: 6, paddingBottom: 10, borderBottom: "1px solid #2F2B27" },
   cardHead: { display: "flex", alignItems: "center", gap: 13, padding: "14px 17px", cursor: "pointer", borderTopLeftRadius: 14, borderTopRightRadius: 14 },
   headMain: { flex: 1, minWidth: 0 },

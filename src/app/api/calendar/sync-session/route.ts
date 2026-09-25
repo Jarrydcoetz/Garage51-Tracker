@@ -26,6 +26,7 @@ type Body = {
     rider_category?: string | null;
     rider_count?: number | null;
     own_gear?: boolean | null;
+    group?: { name?: string; phone?: string | null }[];
   };
 };
 
@@ -67,6 +68,9 @@ export async function POST(req: Request) {
     riderCategory: enquiry.rider_category ?? null,
     riderCount: enquiry.rider_count ?? null,
     ownGear: enquiry.own_gear ?? null,
+    group: Array.isArray(enquiry.group)
+      ? enquiry.group.filter(c => !!c?.name).map(c => ({ name: c.name as string, phone: c.phone ?? null }))
+      : undefined,
   };
 
   try {

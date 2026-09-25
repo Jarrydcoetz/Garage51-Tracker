@@ -60,3 +60,17 @@ Started: 2026-09-25. Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md
 - [x] workshop/page.tsx: completion passes service_item_id so the interval item's last_done_hours updates
 - [ ] storage-bikes/page.tsx (agent): 'Log service' hand-off button, 'Past record' backfill form (log-only), request flow hands off instead of creating job cards
 - [ ] Verify (tsc/eslint/build), review diff, commit on go-ahead
+
+---
+
+# TODO — Round: Group lessons (two+ coaching clients, one instructor)
+
+Started: 2026-09-25. Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md` (approved). Scope: single lesson or predetermined group package only; individual packs never grouped; each client pays separately.
+
+- [x] Explore academy/session/calendar/conflict model (Explore agent)
+- [x] Plan approved; combined payment/invoice deliberately out of scope
+- [x] Calendar lib + sync route accept `enquiry.group` (shared 'Group lesson' event)
+- [ ] Jarryd runs: `alter table enquiries add column lesson_group_id uuid;`
+- [ ] Agent: admin/page.tsx — eligibility, conflict exemption, session mirroring + single shared calendar event, create-group flow, merge-existing flow, group header, ungroup/remove
+- [ ] Verify (tsc, eslint, build), review diff
+- [ ] Commit/push on Jarryd's go-ahead, then click-through per plan's Verification section

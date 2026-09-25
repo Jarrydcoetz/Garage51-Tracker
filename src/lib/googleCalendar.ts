@@ -66,6 +66,8 @@ export type CalendarEnquiryInput = {
   riderCategory?: string | null;
   riderCount?: number | null;
   ownGear?: boolean | null;
+  // Shared group lesson: every client on the lesson (event covers all of them).
+  group?: { name: string; phone?: string | null }[];
 };
 
 // Google Calendar's fixed event-color palette: valid colorId values are the
@@ -91,7 +93,10 @@ function buildEventBody(session: CalendarSessionInput, enquiry: CalendarEnquiryI
   const minutes = session.durationMinutes ?? 120;
   const end = new Date(start.getTime() + minutes * 60000);
 
-  const descriptionParts: string[] = [`Phone: ${enquiry.phone}`];
+  const isGroup = !!enquiry.group && enquiry.group.length > 1;
+  const descriptionParts: string[] = isGroup
+    ? [`Group lesson — ${enquiry.group!.length} clients:`, ...enquiry.group!.map(c => `• ${c.name}${c.phone ? ` (${c.phone})` : ""}`)]
+    : [`Phone: ${enquiry.phone}`];
   if (enquiry.assignedStaffName) descriptionParts.push(`Assigned to: ${enquiry.assignedStaffName}`);
   if (enquiry.selection) descriptionParts.push(`Requested: ${enquiry.selection}`);
   if (enquiry.riderCategory) descriptionParts.push(`Rider category: ${enquiry.riderCategory}`);
@@ -107,7 +112,9 @@ function buildEventBody(session: CalendarSessionInput, enquiry: CalendarEnquiryI
   const titleSuffix = enquiry.assignedStaffName ? ` · ${enquiry.assignedStaffName}` : "";
 
   return {
-    summary: `${enquiry.customerName} — ${enquiry.serviceType.replace("_", " ")}${titleSuffix}`,
+    summary: isGroup
+      ? `Group lesson — ${enquiry.group!.map(c => c.name).join(", ")}${titleSuffix}`
+      : `${enquiry.customerName} — ${enquiry.serviceType.replace("_", " ")}${titleSuffix}`,
     description: descriptionParts.join("\n"),
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },
