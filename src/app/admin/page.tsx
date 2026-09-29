@@ -90,9 +90,10 @@ function fleetBikeLabel(b: FleetBikeLite): string {
   return [b.make, b.model, b.year].filter(Boolean).join(" ") || b.name;
 }
 // Bookings that ride a fleet bike: rentals, or academy lessons that include rental (own_gear === false).
-function usesFleetBike(r: { service_type: string; own_gear?: boolean | null; selection?: string | null }): boolean {
-  return r.service_type === "rental" ||
-    (r.service_type === "academy" && (r.own_gear === false || /rental/i.test(r.selection || "")));
+function usesFleetBike(r: { service_type: string }): boolean {
+  // Any ride booking can be put on a specific fleet bike — rentals, academy
+  // lessons (rental-included or not, so existing ones can be tagged) and tours.
+  return r.service_type === "rental" || r.service_type === "academy" || r.service_type === "desert_tour";
 }
 
 type ClientLite = { id: string; name: string | null; whatsapp: string | null; zoho_contact_id: string | null };
