@@ -84,3 +84,14 @@ Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md`
 - [x] Remove a part from a booking card (× on parts line; restores stock, re-syncs estimate)
 - [ ] Jarryd runs the `part_categories` SQL in Supabase
 - [ ] Commit/push on go-ahead, then click-through
+
+---
+
+# TODO — Round: Connect fleet bikes to bookings (2026-09-29)
+Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md`
+- [x] fleet_bike_id on Enquiry, FleetBikeLite type, usesFleetBike/fleetBikeLabel helpers
+- [x] Load active fleet_bikes; fleet-bike picker on booking card + New booking form (rental & academy-with-rental)
+- [x] assignFleetBike handler; fleet_bike_id written on create
+- [x] fleetBikeConflict overlap check + "Bike double-booked" badge
+- [ ] Jarryd runs: alter table enquiries add column fleet_bike_id uuid references fleet_bikes(id) on delete set null;
+- [ ] Commit/push on go-ahead, then click-through

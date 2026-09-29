@@ -82,7 +82,18 @@ type Enquiry = {
   job_group_id: string | null;
   lesson_group_id: string | null;
   service_item_id: string | null;
+  fleet_bike_id: string | null;
 };
+
+type FleetBikeLite = { id: string; name: string; make: string | null; model: string | null; year: string | null; category: string | null };
+function fleetBikeLabel(b: FleetBikeLite): string {
+  return [b.make, b.model, b.year].filter(Boolean).join(" ") || b.name;
+}
+// Bookings that ride a fleet bike: rentals, or academy lessons that include rental (own_gear === false).
+function usesFleetBike(r: { service_type: string; own_gear?: boolean | null; selection?: string | null }): boolean {
+  return r.service_type === "rental" ||
+    (r.service_type === "academy" && (r.own_gear === false || /rental/i.test(r.selection || "")));
+}
 
 type ClientLite = { id: string; name: string | null; whatsapp: string | null; zoho_contact_id: string | null };
 type ClientBike = { id: string | null; engine_hours: number | null; label: string; make: string | null; model: string | null; year: string | null; vin: string | null };
@@ -155,7 +166,7 @@ const BLANK = {
   customer_name: "", phone: "", email: "", service_type: "academy",
   source: "whatsapp", stage: "new", estimated_value: 0, booking_at: "", notes: "",
   storage_start_date: "", storage_end_date: "", bike_category: "adult", storage_term: "month_to_month",
-  preferred_date: "", sessions_total: 1, bike_details: "",
+  preferred_date: "", sessions_total: 1, bike_details: "", fleet_bike_id: "",
   // Multi-bike motorcycle-storage entries — one `enquiries` row is created
   // per entry on submit. Starts with a single blank bike.
   storageBikes: [{ category: "adult", details: "", estimatedValue: storageTotalPrice("adult", "month_to_month") }] as StorageBikeEntry[],
@@ -259,6 +270,27 @@ function nextLessonLabel(members: Enquiry[]): string | null {
 
 function bookingHasConflict(allRows: Enquiry[], row: Enquiry): boolean {
   return (row.sessions || []).some(ss => !!findConflict(allRows, row, ss));
+}
+
+// Same-bike double-booking: another booking sharing this row's fleet_bike_id with an overlapping active session.
+function fleetBikeConflict(allRows: Enquiry[], row: Enquiry): Enquiry | null {
+  if (!row.fleet_bike_id) return null;
+  for (const ss of row.sessions || []) {
+    if (!isActiveSession(ss)) continue;
+    const start = new Date(ss.scheduled_at as string).getTime();
+    const end = start + (ss.duration_minutes ?? SESSION_DURATION_MINUTES) * 60000;
+    for (const r of allRows) {
+      if (r.id === row.id || r.fleet_bike_id !== row.fleet_bike_id) continue;
+      if (r.stage === "cancelled" || r.stage === "lost") continue;
+      for (const os of r.sessions || []) {
+        if (!isActiveSession(os)) continue;
+        const oStart = new Date(os.scheduled_at as string).getTime();
+        const oEnd = oStart + (os.duration_minutes ?? SESSION_DURATION_MINUTES) * 60000;
+        if (start < oEnd && oStart < end) return r;
+      }
+    }
+  }
+  return null;
 }
 
 // Flags a storage booking whose committed term has ended ("overdue" — the
@@ -464,6 +496,7 @@ export default function Admin() {
   const [applyProductSelection, setApplyProductSelection] = useState("");
   const [me, setMe] = useState<Profile | null>(null);
   const [staff, setStaff] = useState<Profile[]>([]);
+  const [fleetBikes, setFleetBikes] = useState<FleetBikeLite[]>([]);
   const [myEmail, setMyEmail] = useState("");
   const [profileOpen, setProfileOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
@@ -493,6 +526,8 @@ export default function Admin() {
       if (meRoles.length === 1 && meRoles[0] === "mechanic") { router.replace("/admin/workshop"); return; }
       setMe((prof as Profile) || null);
       setStaff((people as Profile[]) || []);
+      supabase.from("fleet_bikes").select("id,name,make,model,year,category").eq("active", true).order("name")
+        .then(({ data: fb }) => setFleetBikes((fb as FleetBikeLite[]) || []));
       setReady(true);
       const { data: rowsData } = await supabase
         .from("enquiries")
@@ -669,6 +704,12 @@ export default function Admin() {
         `Hi ${name}, you've been assigned a new ${row.service_type.replace("_", " ")} booking with ${row.customer_name}.${timeNote}`);
     }
   }
+  async function assignFleetBike(row: Enquiry, fleetBikeId: string) {
+    const id = fleetBikeId || null;
+    await supabase.from("enquiries").update({ fleet_bike_id: id }).eq("id", row.id);
+    edit(row.id, { fleet_bike_id: id });
+  }
+
 
   async function persistSession(sessId: string, patch: Partial<Session>) {
     await supabase.from("sessions").update(patch).eq("id", sessId);
@@ -1473,6 +1514,7 @@ export default function Admin() {
       storage_end_date: isStorage ? (form.storage_end_date || null) : null,
       bike_category: isStorage ? form.bike_category : null,
       storage_term: isStorage ? form.storage_term : null,
+      fleet_bike_id: usesFleetBike(form) ? (form.fleet_bike_id || null) : null,
       notes: form.notes || "",
       // Non-admins are auto-assigned to themselves so the booking immediately
       // appears in their filtered view — a coach creating a booking for their
@@ -2304,6 +2346,13 @@ export default function Admin() {
                 <label style={s.ctrl}><span style={s.ctrlLabel}>Booking date &amp; time</span>
                   <input className="g51-input" type="datetime-local" value={form.booking_at} onChange={e => set("booking_at", e.target.value)} style={s.input} /></label>
               )}
+              {usesFleetBike(form) && (
+                <label style={s.ctrl}><span style={s.ctrlLabel}>Fleet bike</span>
+                  <select className="g51-input" value={form.fleet_bike_id} onChange={e => set("fleet_bike_id", e.target.value)} style={s.input}>
+                    <option value="">None yet</option>
+                    {fleetBikes.map(b => <option key={b.id} value={b.id}>{fleetBikeLabel(b)}</option>)}
+                  </select></label>
+              )}
             </div>}
             <label style={s.ctrl}><span style={s.ctrlLabel}>Notes</span>
               <textarea className="g51-input" value={form.notes} onChange={e => set("notes", e.target.value)} rows={2} style={{ ...s.input, resize: "vertical" }} /></label>
@@ -2411,6 +2460,7 @@ export default function Admin() {
               const isPaid = !!(r.paid_at || r.stage === "paid");
               const hasRemainingSessions = isPkg && done < r.sessions_total && !["cancelled", "lost", "completed"].includes(st);
               const conflicted = bookingHasConflict(rows, r);
+              const bikeClash = fleetBikeConflict(rows, r);
               const renewal = storageRenewalStatus(r);
               const sortedSessions = [...(r.sessions || [])].sort((a, b) => {
                 if (!a.scheduled_at && !b.scheduled_at) return (a.seq ?? 0) - (b.seq ?? 0);
@@ -2441,6 +2491,7 @@ export default function Admin() {
                           <span style={{ ...s.pill, color: sc, borderColor: sc + "66", background: sc + "1c" }}>{st}</span>
                         )}
                         {conflicted && <span style={s.conflictBadge} title="One of this booking's sessions overlaps another booking for the same staff member">⚠ Conflict</span>}
+                        {bikeClash && <span style={s.conflictBadge} title={`This fleet bike is also booked for ${bikeClash.customer_name} at an overlapping time`}>⚠ Bike double-booked</span>}
                         {renewal === "overdue" && <span style={s.conflictBadge} title="This storage term has ended — confirm renewal payment or arrange bike pick-up">⚠ Pick-up overdue</span>}
                         {renewal === "due_soon" && <span style={s.renewalDueBadge} title="This storage term ends soon — confirm renewal or pick-up">⏰ Renewal due</span>}
                         {r.whatsapp_ack_error && (
@@ -2565,6 +2616,17 @@ export default function Admin() {
                           ) : (
                             <span style={s.assignVal}>{staff.find(p => p.id === r.assigned_to)?.name || "—"}</span>
                           )}
+                        </div>
+                      )}
+
+                      {usesFleetBike(r) && me?.roles?.includes("admin") && (
+                        <div style={s.assignRow}>
+                          <span style={s.assignLabel}>Fleet bike</span>
+                          <select className="g51-input" value={r.fleet_bike_id || ""}
+                            onChange={e => assignFleetBike(r, e.target.value)} style={s.assignSelect}>
+                            <option value="">Unassigned</option>
+                            {fleetBikes.map(b => <option key={b.id} value={b.id}>{fleetBikeLabel(b)}</option>)}
+                          </select>
                         </div>
                       )}
 
