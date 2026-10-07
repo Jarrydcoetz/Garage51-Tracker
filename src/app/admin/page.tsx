@@ -1472,9 +1472,16 @@ export default function Admin() {
       for (let i = 0; i < created.length; i++) {
         const enq = created[i];
         const bike = form.storageBikes[i];
+        const details = (bike?.details || "").trim();
         const { error: sbError } = await supabase.from("storage_bikes").insert({
-          name: `${form.customer_name} — ${bike?.details || "bike"}`,
+          name: `${form.customer_name} — ${details || "bike"}`,
+          // The form captures one free-text "make / model" field; store it as
+          // `make` so the storage-bikes card label shows it cleanly (that label
+          // is make/model/year, falling back to name).
+          make: details || null,
           enquiry_id: enq.id,
+          engine_hours: 0,
+          active: true,
           storage_start_date: form.storage_start_date || null,
           storage_end_date: form.storage_end_date || null,
           client_name: form.customer_name,
