@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import type { CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../../lib/supabase-browser";
+import { deleteEnquiryFully } from "../../lib/deleteEnquiry";
 import { AdminNav } from "../../components/AdminNav";
 import { STORAGE_TERMS, storageTermMonths, storageTotalPrice, storageMonthlyRate, addMonths } from "../../lib/storagePricing";
 import {
@@ -709,6 +710,15 @@ export default function Admin() {
     const id = fleetBikeId || null;
     await supabase.from("enquiries").update({ fleet_bike_id: id }).eq("id", row.id);
     edit(row.id, { fleet_bike_id: id });
+  }
+
+  async function deleteBooking(row: Enquiry) {
+    if (!me?.roles?.includes("admin")) return;
+    if (!window.confirm(`Permanently delete ${row.customer_name}'s ${row.service_type.replace("_", " ")} booking?\n\nThis removes the booking, its sessions, parts usage (stock is returned), products and any linked storage service log. This cannot be undone.`)) return;
+    const err = await deleteEnquiryFully(supabase, row.id);
+    if (err) { showToast(err, "err"); return; }
+    setRows(prev => prev.filter(x => x.id !== row.id));
+    showToast("Booking deleted.");
   }
 
 
@@ -2909,6 +2919,14 @@ export default function Admin() {
                           )} className="g51-btn g51-ghost" style={s.ghostBtn}>Job card</button>
                         )}
                       </div>
+                      {me?.roles?.includes("admin") && (
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Delete booking</summary>
+                          <button onClick={() => deleteBooking(r)} className="g51-btn g51-ghost" style={{ ...s.ghostBtn, color: "#FF7A7A", marginTop: 8 }}>
+                            Delete this booking permanently
+                          </button>
+                        </details>
+                      )}
                     </div>
                   )}
                 </div>

@@ -373,6 +373,15 @@ export default function StorageBikesScreen() {
     showToast(`${item.name} logged.`);
   }
 
+  async function deleteServiceLog(entry: SbServiceLog) {
+    if (!isAdmin) return;
+    if (!window.confirm(`Delete this service log entry ("${entry.item_name}")? This only removes the log line, not any linked booking. This cannot be undone.`)) return;
+    const { error } = await supabase.from("sb_service_log").delete().eq("id", entry.id);
+    if (error) { showToast(error.message || "Could not delete the log entry.", "err"); return; }
+    setSvcLogs(prev => prev.filter(l => l.id !== entry.id));
+    showToast("Service log entry deleted.");
+  }
+
   // ---- bike field helpers ----
   function editBikeLocal(id: string, patch: Partial<StorageBike>) {
     setBikes(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
@@ -1646,6 +1655,10 @@ export default function StorageBikesScreen() {
                                                 {entry.performed_by && <span>👤 {entry.performed_by}</span>}
                                                 {entry.amount_charged && <span style={{ color: GREEN, fontWeight: 600 }}>AED {entry.amount_charged.toLocaleString()}</span>}
                                                 {entry.invoice_ref && <span style={{ color: GOLD, fontWeight: 600 }}>🧾 {entry.invoice_ref}</span>}
+                                                {isAdmin && (
+                                                  <button onClick={() => deleteServiceLog(entry)} title="Delete this log entry"
+                                                    style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#6F6862", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: "0 2px" }}>×</button>
+                                                )}
                                               </div>
                                               {entry.notes && <div style={{ fontSize: 11, color: "#6F6862", marginTop: 2, fontStyle: "italic" }}>{entry.notes}</div>}
                                             </div>

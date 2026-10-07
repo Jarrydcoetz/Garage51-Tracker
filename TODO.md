@@ -95,3 +95,13 @@ Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md`
 - [x] fleetBikeConflict overlap check + "Bike double-booked" badge
 - [ ] Jarryd runs: alter table enquiries add column fleet_bike_id uuid references fleet_bikes(id) on delete set null;
 - [ ] Commit/push on go-ahead, then click-through
+
+---
+
+# TODO — Round: Service-log single source of truth + hard delete (2026-10-07)
+Plan: `/Users/jarryd/.claude/plans/abundant-popping-kahn.md`
+- [x] Workshop completion on a storage bike without a pre-linked item: prompt which tracked item(s) it covered, reset their last_done_hours (no manual log needed)
+- [x] Delete a service-log entry (× on history rows, admin only) to clear duplicates
+- [x] Shared deleteEnquiryFully cascade helper (src/lib/deleteEnquiry.ts)
+- [x] Delete booking (admin booking card) and Delete job (workshop queue), admin-only, confirm, cascade
+- [ ] Commit/push on go-ahead, then click-through

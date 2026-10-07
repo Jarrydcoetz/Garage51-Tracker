@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "../../../lib/supabase-browser";
 import { AdminNav } from "../../../components/AdminNav";
 import { recordServiceForJob } from "../../../lib/serviceLog";
+import { deleteEnquiryFully } from "../../../lib/deleteEnquiry";
 import {
   type Part,
   type StockMovement,
@@ -188,12 +189,40 @@ export default function WorkshopScreen() {
           logError = e instanceof Error ? e.message : "error";
         }
         if (logError) showToast("Job completed, but the storage service log could not be updated", "err");
+
+        // Single source of truth: if this job wasn't started from a specific
+        // tracked item, let staff tick which interval item(s) it covered so
+        // they reset here — no separate manual log needed.
+        if (!job.service_item_id && hoursAtService != null) {
+          const { data: items } = await supabase.from("sb_service_items")
+            .select("id, name").eq("bike_id", job.storage_bike_id).eq("active", true);
+          const list = (items as { id: string; name: string }[] | null) || [];
+          if (list.length > 0) {
+            const menu = list.map((it, i) => `${i + 1}) ${it.name}`).join("\n");
+            const answer = window.prompt(`Which tracked service item(s) did this cover? Enter number(s), comma-separated, or leave blank.\n\n${menu}`, "");
+            if (answer && answer.trim()) {
+              const chosen = answer.split(",").map(x => parseInt(x.trim(), 10) - 1).filter(i => i >= 0 && i < list.length);
+              for (const idx of chosen) {
+                await supabase.from("sb_service_items").update({ last_done_hours: hoursAtService }).eq("id", list[idx].id);
+              }
+            }
+          }
+        }
       }
     } else {
       editJobLocal(job.id, { job_status: status });
       saveJob(job.id, { job_status: status });
     }
   }
+  async function deleteJob(job: Job) {
+    if (!myRoles.includes("admin")) return;
+    if (!window.confirm(`Permanently delete the workshop job for ${job.customer_name}?\n\nThis removes the job, its parts usage (stock is returned), products and any linked storage service log. This cannot be undone.`)) return;
+    const err = await deleteEnquiryFully(supabase, job.id);
+    if (err) { showToast(err, "err"); return; }
+    setJobs(prev => prev.filter(j => j.id !== job.id));
+    showToast("Workshop job deleted.");
+  }
+
   // Recomputes parts + products + labour and writes the total straight to
   // estimated_value — the field the office uses to create the invoice — so
   // the picker and hours adjuster keep the estimate current on their own.
@@ -399,6 +428,15 @@ export default function WorkshopScreen() {
                           </div>
                         )}
                       </div>
+                      {myRoles.includes("admin") && (
+                        <details style={{ marginTop: 10 }}>
+                          <summary style={{ cursor: "pointer", fontSize: 11.5, color: "#6F6862", fontWeight: 600 }}>Delete job</summary>
+                          <button onClick={() => deleteJob(job)} className="g51-btn g51-ghost"
+                            style={{ ...s.smallBtn, color: "#FF7A7A", marginTop: 8 }}>
+                            Delete this job permanently
+                          </button>
+                        </details>
+                      )}
                     </div>
                   )}
                 </div>
